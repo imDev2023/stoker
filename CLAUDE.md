@@ -17,10 +17,10 @@ Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `ston
 7. `docs/agents/` - this file's long form, read on demand: `code-map.md`, `run-and-test.md`, `settled.md`, `history.md` and `traps/`.
    Read the file the Traps index below names before the work it covers; none of them is loaded for you.
 
-### The frontier (2026-11-18)
+### The frontier (2026-11-22)
 
 - **Running:** nothing. No relay lane is on a ticket.
-- **Next unit:** none is named; ask the owner before starting one.
+- **Next unit:** Stoker on EVM chains, built here and not in kiln (owner, 2026-11-22): the PRD is #231; the research (#232, #233) and the spike (#234) come first, then the grilling with the owner (#235), and only then build tickets.
   The rewards roadmap is built through the Stoke Launch (#215, PR #219, merged 2026-11-16 on the owner's word; migration `0034`); what is left before mainnet is the owner's go-live list below.
   #185 (`/updates`) is built in kiln as imDev2023/kiln#53 and is closed here.
 - **The rehearsal's findings (#221 and #222)** are fixed and on `main`, the web alone, with nothing waiting for the owner from them: #222 (PR #226, 0f2849c) is the launch page, every function tried and eight defects fixed; #221 (PR #225, c231ff9) is the trade panel's result and the About's First Buy on a coin with a tax, the board's cards level in a row, and a sell preset after a trade.
