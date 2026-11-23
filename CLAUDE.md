@@ -9,6 +9,7 @@ Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `ston
 ## Read first
 
 1. GitHub issue #5 (`gh issue view 5`) - the v1 PRD; slices are issues #8 to #23, each with "Blocked by", and a slice's latest comment is its current status.
+   The EVM PRD is #231, its slices #241 to #257.
 2. `CONTEXT.md` - the domain glossary; use its terms in code, issues and UI copy.
 3. `docs/adr/` - the decisions; `docs/agents/settled.md` opens with what each one holds.
 4. `spike/launchlab-devnet/README.md` - what LaunchLab really does on devnet, with tx evidence and gotchas.
@@ -17,23 +18,22 @@ Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `ston
 7. `docs/agents/` - this file's long form, read on demand: `code-map.md`, `run-and-test.md`, `settled.md`, `history.md` and `traps/`.
    Read the file the Traps index below names before the work it covers; none of them is loaded for you.
 
-### The frontier (2026-11-22)
+### The frontier (2026-11-23)
 
 - **Running:** nothing. No relay lane is on a ticket.
-- **Next unit:** Stoker on EVM chains, built here and not in kiln (owner, 2026-11-22): the PRD is #231; the research (#232, #233) and the spike (#234) come first, then the grilling with the owner (#235), and only then build tickets.
-  The rewards roadmap is built through the Stoke Launch (#215, PR #219, merged 2026-11-16 on the owner's word; migration `0034`); what is left before mainnet is the owner's go-live list below.
-  #185 (`/updates`) is built in kiln as imDev2023/kiln#53 and is closed here.
-- **The rehearsal's findings (#221 and #222)** are fixed and on `main`, the web alone, with nothing waiting for the owner from them: #222 (PR #226, 0f2849c) is the launch page, every function tried and eight defects fixed; #221 (PR #225, c231ff9) is the trade panel's result and the About's First Buy on a coin with a tax, the board's cards level in a row, and a sell preset after a trade.
-  All twelve fixes were tried again on the rehearsal after its redeploy; the records are the last comments of #221 and #222.
-  The two defects #222 found outside the page are fixed and on `main` too: #224 (PR #229, 1e12d6d; at phone width a control the keyboard reaches stops clear of the tab bar) and #223 (PR #228, 967e564; a coin's link takes its own site's hosts alone, `LINK_HOSTS` in the contract); both were tried on the site after their deploys (the tickets' last comments).
+- **Next unit:** Stoker on EVM chains, built here and not in kiln (owner, 2026-11-22): the PRD is #231, rewritten on 2026-11-23 after the grilling with the owner (#235, ADRs 0024 to 0030).
+  The contracts start now: #241 (the Foundry workspace and the first path) and #249 (research) are ready, and #242 to #248 and #251 follow by their "Blocked by".
+  The stack's slices (#252 to #257) wait for Solana's go-live (#23).
+  The evidence: `docs/evm/research/` and `spike/evm-robinhood-fork/README.md` (read "for the build not to copy" before #241).
+- **Solana:** the rewards roadmap is built through the Stoke Launch (#215) and the rehearsal's findings (#221 to #224) are fixed and on `main` (`docs/agents/history.md`).
 - **Row-Level Security (#201)** is built and merged (migration `0030`, the lint check, the stack's plain owner role); devnet took it on 2026-11-16 (`runMigrations` ends by checking every table); the issue stays open until Supabase's advisor shows neither finding on both projects.
-- **Done on the rewards roadmap:** #187 (Budget Table), #188 (Creator Ladder), #113 with #184's Creator half (Creator Earnings Destinations), #196 (volume rebates), #199 (Holding Weight), #183 (the Reward Burn, PR #207), #184's open half (budgets pointed at liquidity, PR #206), #186 (the Creator Lock, PRs #208, #210 and #213), #214 (the Reward Liquidity, PR #217) and #215 (the Stoke Launch, PR #219).
 - **Devnet rehearsal** (`devnet.stoker.markets`, `api-devnet.stoker.markets`, and the apex with a devnet notice): redeployed from `main` at 967e564 on 2026-11-18 by the main session, on the owner's word: the API (#223 changed the contract), then the web; the database is through `0034`, with no migration pending.
   After every merge the rehearsal is redeployed from `main`, the database first when `packages/db` changed, and the record goes on the issue; the line is in #193's last comment.
 - **Mainnet:** `stoker-api` is live on `api.stoker.markets` on its build from before these merges; its database is through `0020` and takes `0021` to `0034` at go-live.
   Go-live is #23: the checklist is `docs/runbooks/mainnet.md` section 12, and #23's latest comment says which item is open.
 - **The owner still owes:** the name Stoke Launch, theirs to overrule; the calls each lane left to overrule on #183, #184, #186, #211, #214, #215 and #221 to #224 (each issue's last comments, and the bodies of PRs #213, #217, #219, #225, #226, #228 and #229); on #23, item 9 (Always Use HTTPS), step 5b's backup disk, Helius Developer, then items 8, 10 and 12 at go-live; a Budget Table version with a share for `rebates` before the rebates pay anything (runbook section 17); the Reward Rounds' version 2 before the first Reward Launch (runbook section 6), and with it or after it the first Holding Weights (section 18); answers on #159; closing #128 and #129; three calls each on #193, #198 and #199 that are theirs to overrule (`docs/agents/settled.md`); and on #201, Supabase's advisor read again on both projects now that devnet has `0030` (mainnet's tables by the block on the issue, or at go-live).
-- **Open PRs on 2026-11-18:** #168 (`sign-in`) and #132 (`design-research`: merge its `docs/design/research/` or close it).
+  On EVM: #250 (the question to Robinhood), a hardware wallet address for the Admin (#251), the agent's calls in #231's Further Notes, and pushing the knowledge bases' local commits.
+- **Open PRs on 2026-11-23:** #168 (`sign-in`) and #132 (`design-research`: merge its `docs/design/research/` or close it).
   Check `gh pr list` before starting work, since cloud sessions also push here, and push every working branch.
 - **Site work** (phase 6, #137, and anything in the Playground's design) belongs in kiln unless the owner says otherwise.
 
@@ -135,6 +135,16 @@ Positioning:
 
 - StonkFun is a LaunchLab `PlatformConfig` pair plus an off-chain backend; its creator share is an off-chain forward.
 - Asset pairing is not StonkFun-only; our wedge is open (any Raydium GlobalConfig quote) plus accountable (every forward on a public Ledger).
+
+EVM chains (owner, 2026-11-23, #235; Solana's verdicts stand):
+
+- The launch (ADR 0024): a Direct Seed on Uniswap v4; Graduation is the target held for one hour; the Opening Value and the multiple are settings.
+- The hook keeps the books (ADR 0025): Credits in the swap, paid by a call anyone can make; the tax goes to the Tax Vault and under the price as Support Liquidity from the first trade.
+- The Opening Fee (ADR 0026): buys in the first 20 seconds pay a falling fee into the coin's liquidity; EVM alone.
+- Fees (ADR 0027): 1.00% for life, a Referrer Fee on top, no Graduation Fee, Uniswap's protocol fee read from the chain.
+- Quote Assets (ADR 0028): an issuer's powers are labels, never a bar; the registry key is cold; "Stock Tokens", text only, on Robinhood Chain.
+- Holder rewards (ADR 0029): a Round Root waits 24 hours and a cold Guard can cancel it; one claim model everywhere.
+- Keys (ADR 0030): one hardware wallet as the Admin, three server keys, no audit and the unaudited statement; STOKER on Solana only.
 
 Design and brand:
 
