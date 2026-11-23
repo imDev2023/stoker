@@ -63,6 +63,7 @@ contract StokerFactory is IUnlockCallback {
     /// @param creatorDestination Where the Creator's share of every Platform Fee is credited; zero means the
     ///        Creator's own wallet. Fixed at launch; nobody can change it.
     /// @param firstBuy The Quote Asset the Creator spends on the First Buy, fee included; zero for none.
+    ///        With the native asset as the Quote Asset it is the value the launch is sent, exactly.
     struct LaunchParams {
         string name;
         string symbol;
@@ -109,6 +110,9 @@ contract StokerFactory is IUnlockCallback {
     error NotListed(address quote);
     error InvalidStartTick(int24 startTick);
     error NotPoolManager();
+    /// @notice The launch was sent value other than its native First Buy: any value with an ERC-20 Quote
+    ///         Asset, or value that differs from `firstBuy` with the native asset.
+    error ValueMismatch(uint256 expected, uint256 sent);
 
     /// @param hookSalt The CREATE2 salt that gives the hook an address carrying its permission bits.
     constructor(
@@ -136,19 +140,22 @@ contract StokerFactory is IUnlockCallback {
 
     // ------------------------------------------------------------------ launching
 
-    /// @notice Launches a coin; a First Buy needs the Creator's allowance for the factory.
-    function launch(LaunchParams calldata p) external returns (address coin, PoolId poolId) {
+    /// @notice Launches a coin. A First Buy in an ERC-20 needs the Creator's allowance for the factory; a
+    ///         First Buy in the native asset is the value sent with this call, so the launch is one
+    ///         transaction and one signature (#242).
+    function launch(LaunchParams calldata p) external payable returns (address coin, PoolId poolId) {
         return _launch(p);
     }
 
     /// @notice Launches a coin with the First Buy's allowance given by an ERC-2612 signature, in the same
     ///         transaction. A permit already used (someone submitted the signature first) does not stop the
-    ///         launch while the allowance stands.
+    ///         launch while the allowance stands. Not payable: a permit is an ERC-20's, and a native First
+    ///         Buy goes through `launch`.
     function launchWithPermit(LaunchParams calldata p, PermitSignature calldata s)
         external
         returns (address coin, PoolId poolId)
     {
-        if (p.firstBuy > 0) {
+        if (p.firstBuy > 0 && p.quote != address(0)) {
             try IERC20Permit(p.quote).permit(msg.sender, address(this), p.firstBuy, s.deadline, s.v, s.r, s.s) {}
                 catch {}
         }
@@ -157,7 +164,11 @@ contract StokerFactory is IUnlockCallback {
 
     function _launch(LaunchParams calldata p) internal returns (address coin, PoolId poolId) {
         IQuoteListings.Listing memory listing = listings.listingOf(p.quote);
-        if (!listing.listed || p.quote == address(0)) revert NotListed(p.quote);
+        if (!listing.listed) revert NotListed(p.quote);
+        // The factory keeps nothing it was not sent and refunds nothing: the value is the native First Buy
+        // to the wei, and an ERC-20 launch takes none.
+        uint256 expectedValue = p.quote == address(0) ? p.firstBuy : 0;
+        if (msg.value != expectedValue) revert ValueMismatch(expectedValue, msg.value);
         int24 startTick = listing.startTick;
         int24 minUsable = TickMath.minUsableTick(tickSpacing);
         int24 maxUsable = TickMath.maxUsableTick(tickSpacing);
@@ -269,8 +280,9 @@ contract StokerFactory is IUnlockCallback {
         if (dust > 0) StokerCoin(seed.coin).burn(dust);
     }
 
-    /// @dev The Creator's First Buy: an exact-in buy of `firstBuy`, paid from the Creator's allowance, the
-    ///      coins sent to the Creator. It passes through the hook and pays the Platform Fee like any buy.
+    /// @dev The Creator's First Buy: an exact-in buy of `firstBuy`, paid from the Creator's allowance or,
+    ///      in the native asset, from the value the launch was sent; the coins go to the Creator. It passes
+    ///      through the hook and pays the Platform Fee like any buy.
     function _firstBuy(Seed memory seed) internal returns (uint256 coinsBought) {
         bool zeroForOne = seed.quoteIsCurrency0;
         BalanceDelta delta = poolManager.swap(
@@ -287,11 +299,18 @@ contract StokerFactory is IUnlockCallback {
 
         uint256 paid = OZSafeCast.toUint256(-int256(quoteDelta));
         poolManager.sync(Currency.wrap(seed.quote));
-        // `seed.creator` is the launch's own caller: the data comes from the factory's own unlock.
-        // forge-lint: disable-next-line(arbitrary-send-erc20)
-        IERC20(seed.quote).safeTransferFrom(seed.creator, address(poolManager), paid);
-        // forge-lint: disable-next-line(unused-return)
-        poolManager.settle();
+        if (seed.quote == address(0)) {
+            // The whole value sent, never `paid`: were they ever to differ, the factory's delta would not
+            // close and the unlock would revert, so no wei of the launch's value can stay here.
+            // forge-lint: disable-next-line(unused-return)
+            poolManager.settle{value: seed.firstBuy}();
+        } else {
+            // `seed.creator` is the launch's own caller: the data comes from the factory's own unlock.
+            // forge-lint: disable-next-line(arbitrary-send-erc20)
+            IERC20(seed.quote).safeTransferFrom(seed.creator, address(poolManager), paid);
+            // forge-lint: disable-next-line(unused-return)
+            poolManager.settle();
+        }
 
         coinsBought = OZSafeCast.toUint256(coinDelta);
         poolManager.take(Currency.wrap(seed.coin), seed.creator, coinsBought);

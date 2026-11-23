@@ -125,11 +125,13 @@ contract LaunchTest is LocalBase {
         factory.launch(p);
     }
 
-    function test_launch_refusesTheNativeAsset() public {
-        // The native asset is its own slice (#242); until then no Listing can name it.
-        vm.prank(listingWriter);
-        vm.expectRevert();
-        listings.list(address(0), START_TICK);
+    function test_launch_refusesTheNativeAssetUntilListed() public {
+        // The native asset is a Quote Asset like any other (#242): it needs a Listing first.
+        StokerFactory.LaunchParams memory p = _params(true, 0);
+        p.quote = address(0);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(StokerFactory.NotListed.selector, address(0)));
+        factory.launch(p);
     }
 
     function test_launch_creatorCannotChooseTheShare() public {

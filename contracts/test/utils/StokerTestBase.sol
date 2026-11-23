@@ -220,6 +220,102 @@ abstract contract StokerTestBase is Test {
         );
     }
 
+    // ---------------------------------------------------------------- the native asset (#242)
+
+    /// The native asset in a v4 pool key: the zero address, always currency0 (never WETH, #249).
+    Currency internal constant NATIVE = Currency.wrap(address(0));
+
+    /// The coin opens with its whole supply worth about 1.6 of the native asset (about $5,000 of ETH, the
+    /// Opening Value of ADR 0024; a Listing's real value is the registry's). Wei per coin raw unit.
+    int24 internal constant NATIVE_START_TICK = -271_200;
+
+    uint256 internal _nativeLaunches;
+
+    function _listNative() internal {
+        vm.prank(listingWriter);
+        listings.list(address(0), NATIVE_START_TICK);
+    }
+
+    function _nativeParams(uint256 firstBuy, address destination)
+        internal
+        returns (StokerFactory.LaunchParams memory p)
+    {
+        p.name = "Native Coin";
+        p.symbol = "NATV";
+        p.quote = address(0);
+        // The native asset sorts first whatever the coin's address, so any fresh salt will do.
+        p.salt = bytes32(++_nativeLaunches);
+        p.creatorDestination = destination;
+        p.firstBuy = firstBuy;
+    }
+
+    /// One call with value: the Creator launches a coin paired with the native asset, the First Buy paid
+    /// with the value sent. No approval and no permit.
+    function _launchNative(uint256 firstBuy, address destination) internal returns (address coin, PoolKey memory key) {
+        StokerFactory.LaunchParams memory p = _nativeParams(firstBuy, destination);
+        PoolId id;
+        vm.prank(creator);
+        (coin, id) = factory.launch{value: firstBuy}(p);
+        key = _nativeKey(coin);
+        assertEq(PoolId.unwrap(key.toId()), PoolId.unwrap(id), "pool id");
+    }
+
+    function _nativeKey(address coin) internal view returns (PoolKey memory) {
+        return PoolKey({
+            currency0: NATIVE,
+            currency1: Currency.wrap(coin),
+            fee: 0,
+            tickSpacing: TICK_SPACING,
+            hooks: IHooks(address(hook))
+        });
+    }
+
+    function _nativeCredit(address owner) internal view returns (uint256) {
+        return hook.creditOf(owner, NATIVE);
+    }
+
+    /// The hook's ERC-6909 claims on the native asset in the PoolManager: what backs every native Credit.
+    function _nativeClaims() internal view returns (uint256) {
+        return pm.balanceOf(address(hook), NATIVE.toId());
+    }
+
+    /// A swap in a pool paired with the native asset through the test router. A buy sends its native side
+    /// as value: `amount` on exact in, `maxIn` on exact out, the rest refunded by the router.
+    function _swapNative(PoolKey memory key, address who, bool buy, bool exactIn, uint256 amount, uint256 maxIn)
+        internal
+        returns (BalanceDelta d)
+    {
+        vm.prank(who);
+        IERC20(Currency.unwrap(key.currency1)).approve(address(swapRouter), type(uint256).max);
+        d = _swapNativeApproved(
+            key, who, buy, exactIn, amount, maxIn, buy ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+        );
+    }
+
+    /// The swap alone, one external call, with a price limit of the caller's choosing.
+    function _swapNativeApproved(
+        PoolKey memory key,
+        address who,
+        bool buy,
+        bool exactIn,
+        uint256 amount,
+        uint256 maxIn,
+        uint160 limit
+    ) internal returns (BalanceDelta d) {
+        uint256 value = buy ? (exactIn ? amount : maxIn) : 0;
+        vm.prank(who);
+        d = swapRouter.swap{value: value}(
+            key,
+            SwapParams({
+                zeroForOne: buy, // the native asset is currency0, so a buy is zero for one
+                amountSpecified: exactIn ? -int256(amount) : int256(amount),
+                sqrtPriceLimitX96: limit
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+
     /// The Platform Fee on a swap whose gross Quote Asset side is known (a buy's input, a sell's output
     /// before the fee), rounded up in the platform's favour.
     function _feeOnGross(uint256 gross) internal pure returns (uint256) {
