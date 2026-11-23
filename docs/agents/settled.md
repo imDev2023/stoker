@@ -7,6 +7,7 @@ The text is the original's, one sentence a line.
 ## The ADRs
 
 `docs/adr/` - fee model and the Creator Forward (0009, which supersedes 0007 and 0001: 1.00% Platform Fee and 0% Creator Fee on-chain, half of what the platform collects on a coin's trades forwarded to its Creator on the curve and after Graduation), Cloudflare hosting (0002), server-built transactions (0003), key custody (0004), price-banded curve rules (0005), Reward Rounds and Burn budgets (0006, amended by #43's Payout Asset and by 0019), the Platform Net and the Budget Table (0019, which amends 0006: the Burn's and the Flywheel's shares are rows of one versioned table), the Creator Ladder (0020, which amends 0009's half and supersedes 0019's tier table: a graduated coin's Creator Tier, climbed by Active Days, sets the Creator's share of its pool fees), Creator Earnings Destinations (0011, which amends 0009 and 0006: a Creator points a coin's earnings at their wallet, its holders, a buyback and burn, or locked liquidity, fixed at launch, each coin with a rule having a pot of its own), the Creator Lock (0023, which amends 0005: where a Quote Asset allows a lock its rule groups carry ranges for the sale and the lock, and the Indexer holds a coin with a lock to the launch shape).
+The EVM chain family's seven (0024 to 0030, owner 2026-11-23, #235, not built; Solana's ADRs stand beside them): the Direct Seed and Graduation as the target held for one hour (0024), the hook that keeps the books, with Credits, Payout Calls, the Tax Vault and Support Liquidity (0025), the Opening Fee (0026, which sets the rule of 2026-10-26 aside for EVM alone), the fees (0027), Quote Assets and the registry's cold key (0028), Holder Rewards by Round Root (0029), and the keys, the unaudited statement and STOKER on Solana only (0030).
 
 ## Chain and launches
 
@@ -117,6 +118,51 @@ The text is the original's, one sentence a line.
   The API reaches Postgres through Hyperdrive as the tables' owner, whom it does not apply to, so nothing of ours changed; every other role reads and writes nothing, which is what closes Supabase's Data API over the same schema whether its dashboard switch is off (it is, in both projects, since 2026-11-12) or ever on again.
   A new table is declared with `.enableRLS()`; the lint (`scripts/row-security.mjs`) and `runMigrations` both refuse one without it.
   A policy is a decision to open a table to another role and none is planned: the site and every client read through the API alone.
+
+## EVM chains (owner, 2026-11-23, #235)
+
+The grilling of #231 after the research (#232, #233) and the spike (#234); eighteen answers picked by the owner in a dialog, recorded as ADR 0024 to 0030, none of it built.
+Solana's verdicts above stand untouched; these hold for the EVM chain family alone, Robinhood Chain first.
+The glossary's "On EVM chains" section has the terms.
+
+- The Direct Seed and Graduation (ADR 0024): one transaction deploys a plain coin (1 trillion at 18 decimals, no owner, mint, tax or blocklist; a holder may burn their own), opens its Uniswap v4 pool at the Listing's start price and places the whole sold supply in the Seed Position, which the factory holds with no code that removes liquidity; no curve and no migration (owner, 2026-11-22).
+  Graduation is the Graduation Target, a price, held for one hour without a break (the Graduation Hold; the owner's pick over the agent's 24 hours), recorded once by a swap or a public call and never undone, because a touch could be forced for about 2% of the target with a flash loan (`spike/evm-robinhood-fork/test/Review.t.sol`).
+  It starts the Creator Lock's clock and the count of Active Days and marks the coin; it switches on no liquidity and takes no fee.
+  The Opening Value (about $5,000) and the Graduation multiple (20) are settings of a Listing, never constants: "keep it flexible because I will change it later for both Solana and EVMS" (owner).
+  The launch is always one transaction, and one signature only with a native-asset First Buy; an ERC-20 First Buy is a permit signature and the transaction.
+- The hook keeps the books (ADR 0025): a swap takes the fees on the Quote Asset's side and records Credits; it pays nobody, buys nothing and adds no liquidity.
+  A Payout Call anyone can make pays Credits to their owners, the Keeper makes it on a schedule, and an owner may pull their own; a Credit owed to an address the asset refuses stays owed there, never redirected and never revenue.
+  The hook holds nothing: the Tax Vault receives the Reward Tax, the Stoke Tax and the Opening Fee and does the Reward Burn's buy and the liquidity additions by public calls in capped pieces (a buy at most 0.5% of the Quote Asset in the pool, the agent's call).
+  The Reward Liquidity, the Stoke Tax and the Opening Fee become Support Liquidity: Quote Asset alone in a locked position just below the price, from the first trade, never waiting for Graduation, since tax that waited was taken by whoever crossed (58% and 70% in the review's tests); unproven until the first tax slice's fork test, and never called a floor.
+  Solana's steps are kept (none, a tenth, a quarter, half; at most half together; a Stoke Launch whole).
+  Trading outside the coin's own pool is accepted and shown: only swaps in that pool carry the fee and the tax, a transfer is never taxed, and the coin's page shows the share traded elsewhere.
+  The site never says "paid in the trade"; it says the share is the Creator's on the chain from the trade's block.
+- The Opening Fee (ADR 0026): buys in a Launch's first 20 seconds pay an extra fee that falls from 99% of the buy, all fees together, to nothing, all of it Support Liquidity, so neither the platform nor the Creator earns from it; the Creator's First Buy is exempt and sells never pay it.
+  It sets the owner's rule of 2026-10-26 (First Buy, vesting and labels, never a tax) aside for the EVM chain family alone; Solana keeps the rule.
+  The start figure and the duration are terms written at launch from platform settings (the agent's call); on EVM the Snipe Window is the time it runs.
+- Fees on EVM (ADR 0027): the Platform Fee is 1.00% of the Quote Asset's side of every swap in the coin's own pool for the coin's life, with the pool's LP fee at zero and no change at Graduation.
+  The Creator's share follows the Creator Ladder (50%, 60%, 70%), written into the Launch by the factory from platform settings and never the launcher's to choose; the ladder key raises a tier and can never lower one.
+  A Referrer Fee is added on top of a trade by the front-end that brought it, capped per Listing and recorded as a Credit; nothing comes out of the platform's part outside the Budget Table.
+  There is no Graduation Fee on EVM.
+  Uniswap's protocol fee is already charged (17 of the 20 deepest Stock Token pools on Robinhood Chain, up to 0.1%), so `/fees` and every quote read it from the chain.
+  An Active Day on EVM is 1% of the Quote Asset it took to reach the Graduation Target from the start price (the agent's call).
+- Quote Assets and the registry (ADR 0028): a Listing needs no transfer fee, no rebasing balance, and that our contracts can hold and pay the asset with nobody's permission; an issuer's blocklist, pause, burn or upgrade power is a Quote Risk Label, never a bar, and the custody line is "no key of ours".
+  All 205 Stock Tokens can be listed; later chains' issuers are judged at their chain's turn.
+  The Quote Registry is a contract written only by the Admin's hardware wallet: a price is rewritten only past a 20% band, the contract refuses more than one routine write per Listing per day and any over 25%, a deliberate change of the figures takes effect no sooner than 48 hours after it is posted, and no write touches a launched coin.
+  Robinhood Chain's terms: the owner asks `robinhoodchain@robinhood.com` first, and until an answer the site names the chain in plain text only, in full, with no badge or logo, calls the assets Stock Tokens, and the launch form refuses the chain's marks, HOOD and a listed Stock Token's symbol as a ticker.
+  Switzerland joins the disclaimer's list when the EVM version goes live; nothing is withheld (ADR 0014 stands).
+  USDG and ETH are researched before either is listed.
+- Holder Rewards by Round Root (ADR 0029): the Reward Engine computes each round off-chain with Holding Weight as on Solana and the round key posts its Round Root to the Distributor, which never pays more than that coin's tax.
+  A root pays nothing for 24 hours (the Round Delay); the API recomputes it and raises an alarm, and the Guard, a cold power of the Admin's, can cancel it and can never post one.
+  One claim model on every chain, Ethereum included: the Keeper pushes each payment on its own while gas is under a ceiling, and anyone may claim for a holder, paid to the holder.
+  The tax is collected in the Quote Asset on EVM, so a Payout Asset of the Quote Asset needs no sale and a Payout Asset of the coin is a capped buy through the Tax Vault.
+- Keys, custody and no audit (ADR 0030): no proxy, no upgrade, no pause; no key of ours reaches a coin's liquidity, a Credit or a Creator Lock, and losing every key never stops trading.
+  The Admin is one hardware wallet address of the owner's per chain (the registry, the Guard, replacing a server key in two steps, and where the platform's share is paid), with the seed phrase on paper as its backup.
+  Three keys sit on a server, each bounded: the round key, the ladder key (raise only) and the Keeper, which has no power.
+  The owner's decision against an audit (2026-11-22) is not reopened; the hook scores 17 as #231 described it and 13 with the Tax Vault, meets two hard stops, and the site says "Stoker's contracts on [chain] have not been audited by an independent firm. Their source is public and verified: [link]." on the launch form's review step, the trade panel, the coin page's contract card, `/fees` and a contracts page, never blocking.
+  STOKER is never issued on EVM: the owner carries each chain's Burn budget to Solana by hand, with a Ledger entry on each side, and the Flywheel's budget stays on its chain.
+- The build's order (owner, 2026-11-23): the contract slices start at once; the slices that change the API, the database and the site are cut and wait for Solana's go-live (#23).
+  Still the lanes' calls, the owner's to overrule: Base before BSC after Robinhood Chain, and whether BSC needs a PancakeSwap adapter, decided when Robinhood Chain is live.
 
 ## Positioning
 

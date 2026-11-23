@@ -1,6 +1,10 @@
 # Stoker
 
-A Solana launchpad where anyone launches a coin paired with any Quote Asset, with no gatekeeper choosing which assets are allowed, and a Creator earns from every trade: half of what the platform collects on their coin, forwarded by us on a public Ledger, where what is owed can be checked against the indexed trades.
+A launchpad where anyone launches a coin paired with a Quote Asset of their choosing and a Creator earns from every trade on it, with every payment public.
+On Solana, where it was built first, any Quote Asset can be paired with no gatekeeper choosing which are allowed, and half of what the platform collects on a coin is forwarded to its Creator by us on a public Ledger, where what is owed can be checked against the indexed trades.
+On EVM chains (PRD #231, ADR 0024 to 0030, not built) the same Launches run on contracts of our own, which record the Creator's share to them in the trade's own block.
+
+The entries below say what each term means on Solana; "On EVM chains" holds the terms that exist only there and what each of the others means there instead.
 
 ## Language
 
@@ -271,6 +275,193 @@ _Avoid_: Score, points, shares
 **Region gate**:
 The table that removes a feature from the visitors of one country once someone has asked for its removal there (owner, 2026-10-29: nothing is withheld upfront, every feature works everywhere and the disclosure does its job): the API reads the visitor's country from Cloudflare and answers which features are withheld there; the web hides a withheld feature. The table starts empty (ADR 0014).
 _Avoid_: Geoblock, ban
+
+### On EVM chains
+
+Decided on 2026-11-23 (#235, ADR 0024 to 0030) and not built.
+A term with no entry here means on an EVM chain what it means above.
+
+**Chain family**:
+Solana, or the EVM chains taken together; a term can mean one thing in each.
+_Avoid_: Ecosystem, network type, VM
+
+**EVM chain**:
+A chain of the EVM chain family that Stoker runs on, each with its own contracts, Quote Registry and Admin: Robinhood Chain first.
+_Avoid_: L2, network (on its own), EVM (as a noun for one chain)
+
+**Direct Seed**:
+The Launch Shape on an EVM chain: one transaction creates the coin, opens its pool against the Quote Asset at the Listing's start price and places the whole sold supply in it, with no curve and no migration (ADR 0024).
+_Avoid_: Fair launch, single-sided launch, bonding curve, stealth launch
+
+**Seed Position**:
+The one locked position that holds a Direct Seed's sold supply in the coin's pool, which nothing can remove.
+_Avoid_: LP, locked liquidity (on its own), the curve
+
+**Opening Value**:
+What a coin's whole supply is worth at its start price, a setting of its Quote Asset's Listing.
+_Avoid_: Starting market cap, initial FDV, floor
+
+**Graduation Hold**:
+The hour a coin's price must stay at or above its Graduation Target, without a break, before the coin graduates on an EVM chain.
+_Avoid_: Bonding, TWAP, cooldown
+
+**Listing**:
+One Quote Asset's entry in an EVM chain's Quote Registry: the start price, the Graduation multiple and the Referrer Fee's cap every new Launch on it takes (ADR 0028).
+_Avoid_: Whitelist entry, pair config, quote config
+
+**Credit**:
+An amount in a Quote Asset that the contract has recorded as owed to an address by a trade: a Creator's share, a Referrer Fee or the platform's share (ADR 0025).
+It belongs to that address from the trade's own block, and nobody can move it elsewhere.
+_Avoid_: Claimable, balance, accrued fee, Creator Forward (that is Solana's payment by us)
+
+**Payout Call**:
+The call anyone can make that pays Credits to the addresses they belong to; an owner may also pull their own.
+_Avoid_: Claim (nobody has to), withdrawal, harvest
+
+**Keeper**:
+Our server wallet on an EVM chain that makes the calls anyone can make, on a schedule, and has no power of its own.
+_Avoid_: Bot, operator, relayer, Operations Wallet (that is Solana's, and holds revenue)
+
+**Tax Vault**:
+The contract that receives a coin's Reward Tax, Stoke Tax and Opening Fee on an EVM chain and turns them into the Reward Burn, Support Liquidity and the holders' part.
+_Avoid_: Treasury, pot (that is a coin's own figure), fee vault
+
+**Support Liquidity**:
+Quote Asset alone, added to a coin's own pool in a locked position just below the current price, with no coin bought (ADR 0025).
+On an EVM chain it is what the Reward Liquidity, the Stoke Tax and the Opening Fee become, from a coin's first trade.
+_Avoid_: Floor, price floor, buy wall, Protocol-Owned Liquidity (that is the Burn's and the Flywheel's)
+
+**Opening Fee**:
+The extra fee on buys in a Launch's first seconds on an EVM chain, falling to nothing, all of it becoming the coin's Support Liquidity; the Creator's First Buy never pays it (ADR 0026).
+_Avoid_: Sniper tax, anti-snipe fee, launch tax, Platform Fee (nobody earns it)
+
+**Referrer Fee**:
+A fee the front-end that brought a trade adds on top of it on an EVM chain, capped by the Listing and recorded as a Credit to the address the trade names (ADR 0027).
+_Avoid_: Referral share (Solana's mechanism, #21), kickback, affiliate fee, integrator share (that is a Budget Table row)
+
+**Protocol fee** (on an EVM chain):
+Uniswap's own fee on a pool, set by Uniswap, never ours; a quote includes it and `/fees` shows it as Uniswap's.
+_Avoid_: Platform Fee, pool fee, LP fee
+
+**Distributor**:
+The contract that holds each coin's collected tax for its holders on an EVM chain and pays a Reward Round from it, never more than that coin's own (ADR 0029).
+_Avoid_: Airdrop contract, Merkle drop, rewards pool
+
+**Round Root**:
+The one value posted to the Distributor that fixes every holder's share of a Reward Round, computed from the round's published figures.
+_Avoid_: Snapshot (that is the round's reading), proof, epoch root
+
+**Round Delay**:
+The 24 hours after a Round Root is posted during which it pays nothing and can be cancelled.
+_Avoid_: Timelock, vesting, claim window
+
+**Guard**:
+The power to cancel a Round Root inside its Round Delay, and nothing else; the Admin holds it.
+_Avoid_: Veto key, pauser, multisig
+
+**Admin**:
+The owner's one hardware wallet address on an EVM chain: it writes the Quote Registry, holds the Guard, replaces a server key and receives the platform's share (ADR 0030).
+It can reach no coin's liquidity, no Credit and no Creator Lock.
+_Avoid_: Owner (the contracts have none), deployer, Treasury (Solana's), multisig
+
+**Stock Token**:
+Robinhood Chain's name for one of its tokenized stocks, and the only name the site gives that chain's assets (ADR 0028).
+_Avoid_: Tokenized stock (on that chain), stock coin, RWA, synthetic
+
+**Unaudited statement**:
+The sentence the site shows wherever money moves on an EVM chain: "Stoker's contracts on [chain] have not been audited by an independent firm. Their source is public and verified: [link]." (ADR 0030).
+_Avoid_: Disclaimer (that is the site's country notice), risk warning, audit badge
+
+**Launch** (on an EVM chain):
+A new coin created on our platform together with its own pool, for the coin's whole life: nothing ends at Graduation, since the coin never moves pools.
+_Avoid_: Token, pool, project, curve
+
+**Launch Shape** (on an EVM chain):
+The Direct Seed: 1 trillion coins at 18 decimals, a plain coin with no owner, the sold supply in the Seed Position and the Creator Lock held out of it.
+_Avoid_: Tokenomics, curve settings
+
+**Graduation** (on an EVM chain):
+The moment a coin's price has held its Graduation Target for the Graduation Hold; recorded once and never undone (ADR 0024).
+It starts the Creator Lock's clock and the count of Active Days, and nothing moves.
+_Avoid_: Migration, bonding, listing, touching the target
+
+**Graduation Target** (on an EVM chain):
+A price, the Listing's start price times its Graduation multiple, fixed for a coin when it launches; not an amount raised.
+_Avoid_: Bonding target, market cap target, raise
+
+**Creator Lock** (on an EVM chain):
+Coins held out of the Seed Position for the Creator, with the same limits as on Solana; the clock starts at Graduation as defined here.
+_Avoid_: Vesting, team allocation, locked liquidity
+
+**Quote Asset** (on an EVM chain):
+An existing asset a Launch is priced and traded against that the chain's Quote Registry lists: the chain's native asset, a stablecoin or a Stock Token among them.
+Listed only when it takes no fee on a transfer, does not rebase and can be held and paid out by our contracts with nobody's permission; an issuer's powers over it are Quote Risk Labels, never a bar (ADR 0028).
+_Avoid_: Pair token, base, collateral, whitelisted token
+
+**Asset category** (on an EVM chain):
+The same ten kinds; a tokenized stock on Robinhood Chain is shown as a Stock Token.
+_Avoid_: Type, sector, class
+
+**First Buy** (on an EVM chain):
+The Creator's own buy inside the launch transaction, as on Solana; it pays the Platform Fee and is the one buy the Opening Fee never touches.
+_Avoid_: Dev buy, initial buy, snipe
+
+**Snipe Window** (on an EVM chain):
+The seconds a Launch's Opening Fee runs.
+_Avoid_: Block 0, launch block
+
+**Bundle Radar** (on an EVM chain):
+Labels only, as on Solana; the Opening Fee is the one thing a Sniper pays that others do not.
+_Avoid_: Anti-sniper, bundle checker
+
+**Platform Fee** (on an EVM chain):
+Our share of every trade in a coin's own pool, one rate for the coin's life, taken by the contract in the Quote Asset; the Creator's part of it is theirs as a Credit by the coin's Creator Tier (ADR 0027).
+A trade of the coin anywhere else pays none.
+_Avoid_: Protocol fee (that is Uniswap's), pool fee, LP fee
+
+**Fee Key** (on an EVM chain):
+There is none: a coin's pool pays no fee to liquidity, and no locked position earns anything.
+_Avoid_: LP NFT, position NFT
+
+**Creator Fee**, **Creator Forward** (on an EVM chain):
+There is neither: the Creator's share is a Credit, paid by a Payout Call.
+_Avoid_: Forward, payout by us, claim
+
+**Active Day** (on an EVM chain):
+A UTC day on which a graduated coin's pool traded at least 1% of the Quote Asset it took to carry the coin from its start price to its Graduation Target (ADR 0027).
+_Avoid_: Trading day, streak
+
+**Graduation Fee** (on an EVM chain):
+There is none.
+_Avoid_: Migration fee, listing fee
+
+**Operations Wallet**, **Treasury** (on an EVM chain):
+There is neither: the Keeper holds no revenue, and the platform's share is paid to the Admin.
+_Avoid_: Hot wallet, cold wallet
+
+**Reward Tax**, **Stoke Tax** (on an EVM chain):
+The percentage taken from every trade of the coin in its own pool, in the Quote Asset; a transfer between wallets and a trade in any other pool pay none (ADR 0025).
+_Avoid_: Transfer fee, tax (on its own), coin tax
+
+**Payout Asset** (on an EVM chain):
+The same two choices, fixed at launch: the Quote Asset, paid as it was collected, or the coin, bought with the tax.
+_Avoid_: Reward token, payout mode
+
+**Reward Sale** (on an EVM chain):
+There is none, since the tax is collected in the Quote Asset; a Payout Asset of the coin is a bounded buy instead.
+_Avoid_: Dump, conversion
+
+**Reward Burn** (on an EVM chain):
+The same share and steps; the tax buys the coin in bounded pieces and what was bought is burned.
+_Avoid_: Tax burn, auto-burn, Burn (on its own)
+
+**Reward Liquidity** (on an EVM chain):
+The same share and steps; it becomes Support Liquidity from the coin's first trade and does not wait for Graduation.
+_Avoid_: Auto-liquidity, LP tax, floor
+
+**Reward Round** (on an EVM chain):
+The same published cycle, paid from the Distributor by its Round Root after the Round Delay; the Keeper sends each payment and anyone may claim for a holder.
+_Avoid_: Distribution, epoch, airdrop
 
 ### Platform Token
 
