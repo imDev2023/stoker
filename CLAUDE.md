@@ -22,7 +22,7 @@ Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `ston
 
 - **Running:** nothing. No relay lane is on a ticket.
 - **Next unit:** Stoker on EVM chains, built here and not in kiln (owner, 2026-11-22): the PRD is #231, rewritten on 2026-11-23 after the grilling with the owner (#235, ADRs 0024 to 0030).
-  The contracts start now: #241 (the Foundry workspace and the first path) and #249 (research) are ready, and #242 to #248 and #251 follow by their "Blocked by".
+  The contracts: #241 built in `contracts/` (its README is the map; the PR waits for review), #249 (research) runs, and #242 to #248 and #251 follow by their "Blocked by".
   The stack's slices (#252 to #257) wait for Solana's go-live (#23).
   The evidence: `docs/evm/research/` and `spike/evm-robinhood-fork/README.md` (read "for the build not to copy" before #241).
 - **Solana:** the rewards roadmap is built through the Stoke Launch (#215) and the rehearsal's findings (#221 to #224) are fixed and on `main` (`docs/agents/history.md`).

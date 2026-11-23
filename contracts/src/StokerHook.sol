@@ -7,11 +7,16 @@ import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockC
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
+import {SafeCast as OZSafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {
+    BeforeSwapDelta,
+    BeforeSwapDeltaLibrary,
+    toBeforeSwapDelta
+} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 
 /// @title StokerHook
@@ -88,8 +93,10 @@ contract StokerHook is BaseHook, IUnlockCallback {
     error SeedPositionLocked();
     error DonationsRefused();
     error SwapTooSmall();
+    error ZeroAddress();
 
     constructor(IPoolManager poolManager_, address platform_) BaseHook(poolManager_) {
+        if (platform_ == address(0)) revert ZeroAddress();
         factory = msg.sender;
         platform = platform_;
     }
@@ -185,12 +192,12 @@ contract StokerHook is BaseHook, IUnlockCallback {
         }
         uint256 fee;
         if (exactIn) {
-            uint256 gross = uint256(-params.amountSpecified);
+            uint256 gross = OZSafeCast.toUint256(-params.amountSpecified);
             fee = _feeOnGross(gross, t.platformFeeBps);
             // Never consume the whole specified amount: a swap the hook swallowed would be a NoOp swap.
             if (fee >= gross) revert SwapTooSmall();
         } else {
-            fee = _feeOnNet(uint256(params.amountSpecified), t.platformFeeBps);
+            fee = _feeOnNet(OZSafeCast.toUint256(params.amountSpecified), t.platformFeeBps);
         }
         _book(id, key, t, fee);
         return (this.beforeSwap.selector, toBeforeSwapDelta(fee.toInt128(), 0), 0);
@@ -214,10 +221,10 @@ contract StokerHook is BaseHook, IUnlockCallback {
         uint256 fee;
         if (exactIn) {
             // A sell: the pool owes the trader `quoteDelta` (positive), the gross, before the fee.
-            fee = quoteDelta > 0 ? _feeOnGross(uint256(int256(quoteDelta)), t.platformFeeBps) : 0;
+            fee = quoteDelta > 0 ? _feeOnGross(OZSafeCast.toUint256(quoteDelta), t.platformFeeBps) : 0;
         } else {
             // A buy: the trader owes the pool `-quoteDelta`, the net, before the fee.
-            fee = quoteDelta < 0 ? _feeOnNet(uint256(-int256(quoteDelta)), t.platformFeeBps) : 0;
+            fee = quoteDelta < 0 ? _feeOnNet(OZSafeCast.toUint256(-int256(quoteDelta)), t.platformFeeBps) : 0;
         }
         if (fee == 0) return (this.afterSwap.selector, 0);
         _book(id, key, t, fee);
@@ -235,6 +242,8 @@ contract StokerHook is BaseHook, IUnlockCallback {
         _credits[t.creatorDestination][currency] += creatorCredit;
         _credits[platform][currency] += platformCredit;
         totalCredits[currency] += fee;
+        // The only call before it is the PoolManager's own `mint`.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit FeeCredited(id, currency, t.creatorDestination, fee, creatorCredit, platformCredit);
     }
 
@@ -259,11 +268,16 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         call it, for any owners; the Keeper calls it on a schedule, and an owner may pull their own.
     ///         An owner the currency refuses keeps their Credit, and the others are still paid.
     function payout(Currency currency, address[] calldata owners) external {
+        // The callback returns nothing worth reading; every outcome is an event.
+        // forge-lint: disable-next-line(unused-return)
         poolManager.unlock(abi.encode(currency, owners));
     }
 
     /// @dev Each payment is isolated: a failed `take` rolls back that payment alone and the Credit is
-    ///      restored. The Credit is cleared before the transfer and the claims burned after it.
+    ///      restored. The Credit is cleared before the transfer and the claims burned after it, and a
+    ///      restored Credit is added back, never overwritten, so a Credit recorded by a swap made inside
+    ///      the transfer (only a hostile Quote Asset could) is kept. The loop's calls are the PoolManager's
+    ///      and the Quote Asset's; the caller pays for as many owners as they pass.
     function unlockCallback(bytes calldata data) external onlyPoolManager returns (bytes memory) {
         (Currency currency, address[] memory owners) = abi.decode(data, (Currency, address[]));
         uint256 id = currency.toId();
@@ -273,12 +287,16 @@ contract StokerHook is BaseHook, IUnlockCallback {
             if (amount == 0) continue;
             _credits[owner][currency] = 0;
             totalCredits[currency] -= amount;
+            // forge-lint: disable-next-line(reentrancy-no-eth, calls-loop)
             try poolManager.take(currency, owner, amount) {
+                // forge-lint: disable-next-line(calls-loop)
                 poolManager.burn(address(this), id, amount);
+                // forge-lint: disable-next-line(reentrancy-events)
                 emit CreditPaid(owner, currency, amount);
             } catch {
-                _credits[owner][currency] = amount;
+                _credits[owner][currency] += amount;
                 totalCredits[currency] += amount;
+                // forge-lint: disable-next-line(reentrancy-events)
                 emit CreditRefused(owner, currency, amount);
             }
         }

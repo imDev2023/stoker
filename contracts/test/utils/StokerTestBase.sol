@@ -36,8 +36,8 @@ abstract contract StokerTestBase is Test {
     uint256 internal constant SUPPLY = 1e12 * 1e18;
 
     uint160 internal constant HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
-        | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-        | Hooks.BEFORE_DONATE_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
+        | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_DONATE_FLAG
+        | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
 
     IPoolManager internal pm;
     IERC20 internal quote;
@@ -84,7 +84,11 @@ abstract contract StokerTestBase is Test {
 
     // ---------------------------------------------------------------- launching
 
-    function _params(bool quoteIsCurrency0, uint256 firstBuy) internal view returns (StokerFactory.LaunchParams memory p) {
+    function _params(bool quoteIsCurrency0, uint256 firstBuy)
+        internal
+        view
+        returns (StokerFactory.LaunchParams memory p)
+    {
         p.name = "Test Coin";
         p.symbol = "TEST";
         p.quote = address(quote);

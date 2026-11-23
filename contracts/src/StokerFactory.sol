@@ -15,6 +15,7 @@ import {LiquidityAmounts} from "@uniswap/v4-periphery/src/libraries/LiquidityAmo
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {SafeCast as OZSafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {StokerCoin} from "./StokerCoin.sol";
 import {StokerHook} from "./StokerHook.sol";
@@ -31,7 +32,6 @@ import {IQuoteListings} from "./interfaces/IQuoteListings.sol";
 contract StokerFactory is IUnlockCallback {
     using SafeERC20 for IERC20;
     using SafeCast for uint256;
-    using SafeCast for int256;
 
     uint256 internal constant SUPPLY = 1e12 * 1e18;
 
@@ -206,12 +206,20 @@ contract StokerFactory is IUnlockCallback {
             })
         );
         _launches[poolId] = Launch({
-            coin: coin, quote: p.quote, creator: msg.sender, seedTickLower: seed.tickLower, seedTickUpper: seed.tickUpper
+            coin: coin,
+            quote: p.quote,
+            creator: msg.sender,
+            seedTickLower: seed.tickLower,
+            seedTickUpper: seed.tickUpper
         });
 
+        // The tick it returns is `openTick`, by construction.
+        // forge-lint: disable-next-line(unused-return)
         poolManager.initialize(seed.key, TickMath.getSqrtPriceAtTick(openTick));
         (uint128 liquidity, uint256 coinsBought) = abi.decode(poolManager.unlock(abi.encode(seed)), (uint128, uint256));
 
+        // The calls before it are the PoolManager's, our hook's, the new coin's and the listed Quote Asset's.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit Launched(poolId, coin, msg.sender, p.quote, destination, startTick, liquidity, p.firstBuy, coinsBought);
     }
 
@@ -234,6 +242,8 @@ contract StokerFactory is IUnlockCallback {
             ? LiquidityAmounts.getLiquidityForAmount1(sqrtLower, sqrtUpper, SUPPLY)
             : LiquidityAmounts.getLiquidityForAmount0(sqrtLower, sqrtUpper, SUPPLY);
 
+        // A new position has accrued no fees, so the second value is zero.
+        // forge-lint: disable-start(unused-return)
         (BalanceDelta delta,) = poolManager.modifyLiquidity(
             seed.key,
             ModifyLiquidityParams({
@@ -244,12 +254,15 @@ contract StokerFactory is IUnlockCallback {
             }),
             ""
         );
+        // forge-lint: disable-end(unused-return)
         int128 coinDelta = seed.quoteIsCurrency0 ? delta.amount1() : delta.amount0();
-        uint256 owed = uint256(-int256(coinDelta));
+        uint256 owed = OZSafeCast.toUint256(-int256(coinDelta));
 
         Currency coinCurrency = Currency.wrap(seed.coin);
         poolManager.sync(coinCurrency);
         IERC20(seed.coin).safeTransfer(address(poolManager), owed);
+        // What it returns is `owed`; any shortfall would fail the unlock's own delta check.
+        // forge-lint: disable-next-line(unused-return)
         poolManager.settle();
 
         uint256 dust = SUPPLY - owed;
@@ -272,12 +285,15 @@ contract StokerFactory is IUnlockCallback {
         (int128 quoteDelta, int128 coinDelta) =
             seed.quoteIsCurrency0 ? (delta.amount0(), delta.amount1()) : (delta.amount1(), delta.amount0());
 
-        uint256 paid = uint256(-int256(quoteDelta));
+        uint256 paid = OZSafeCast.toUint256(-int256(quoteDelta));
         poolManager.sync(Currency.wrap(seed.quote));
+        // `seed.creator` is the launch's own caller: the data comes from the factory's own unlock.
+        // forge-lint: disable-next-line(arbitrary-send-erc20)
         IERC20(seed.quote).safeTransferFrom(seed.creator, address(poolManager), paid);
+        // forge-lint: disable-next-line(unused-return)
         poolManager.settle();
 
-        coinsBought = uint256(int256(coinDelta));
+        coinsBought = OZSafeCast.toUint256(coinDelta);
         poolManager.take(Currency.wrap(seed.coin), seed.creator, coinsBought);
     }
 

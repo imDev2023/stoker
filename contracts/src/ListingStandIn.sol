@@ -20,6 +20,7 @@ contract ListingStandIn is IQuoteListings {
     error NativeAssetNotYet();
 
     constructor(address writer_) {
+        if (writer_ == address(0)) revert NotWriter();
         writer = writer_;
     }
 

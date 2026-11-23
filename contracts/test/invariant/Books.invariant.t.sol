@@ -77,7 +77,9 @@ contract BooksHandler is Test {
     function tryRemove(uint256 actorSeed, uint256 liquidity) external {
         (int24 lower, int24 upper) = t.seedRangeOf();
         vm.prank(actors[actorSeed % actors.length]);
-        try lpRouter.modifyLiquidity(key, ModifyLiquidityParams(lower, upper, -int256(bound(liquidity, 0, 1e30)), 0), "") {
+        try lpRouter.modifyLiquidity(
+            key, ModifyLiquidityParams(lower, upper, -int256(bound(liquidity, 0, 1e30)), 0), ""
+        ) {
             lockBreaches++;
         } catch {}
     }
