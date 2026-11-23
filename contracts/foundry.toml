@@ -1,0 +1,45 @@
+# Stoker on EVM chains (#231): the contracts' own Foundry workspace (#241).
+# The standards behind these settings: the evm-security-standards repository's tooling/foundry.toml.
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib"]
+# Pinned, never floating. 0.8.26 is the version v4-core's PoolManager pins, which the local tests deploy.
+solc_version = "0.8.26"
+# v4's flash accounting needs transient storage (EIP-1153); every target chain supports Cancun.
+evm_version = "cancun"
+bytecode_hash = "none"
+optimizer = true
+optimizer_runs = 200
+# The hook's fee paths need the IR pipeline (stack too deep under the legacy one).
+via_ir = true
+ffi = false
+deny = "warnings"
+fs_permissions = [{ access = "read", path = "./out" }]
+
+[profile.default.fuzz]
+runs = 256
+
+[profile.default.invariant]
+runs = 128
+depth = 64
+# Kept false: a handler input the system rightly refuses is not a failure.
+fail_on_revert = false
+
+# Deeper campaigns in CI, same properties.
+[profile.ci.fuzz]
+runs = 1024
+
+[profile.ci.invariant]
+runs = 256
+depth = 128
+
+[rpc_endpoints]
+# An archive endpoint for Robinhood Chain (4663): the fork tests pin a block the public RPC no
+# longer serves. Never print or commit the URL; it carries a key.
+robinhood = "${ROBINHOOD_RPC_URL}"
+
+[fmt]
+line_length = 120
