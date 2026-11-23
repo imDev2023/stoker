@@ -74,3 +74,11 @@ The research found what such an asset carries (`docs/evm/research/robinhood-chai
 - A yes from Robinhood adds the badge later; a no is learned before mainnet.
 - The chain picker, the board and the share images are designed text-first for this chain, and their baselines change again if the badge arrives.
 - The Asset category "tokenized stock" keeps its identifier and gains a second display name on this chain.
+
+## Note of 2026-11-23 (#249)
+
+Added by the research of #249 (`docs/evm/research/quote-assets-and-rehearsal.md`, section 1); the decision above stands.
+The consequence "USDG and ETH were not read as Quote Assets" is answered: both meet the three clauses of the listing rule.
+USDG (`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`) has no transfer fee, no rebasing balance and no allowlist; its issuer can pause it, freeze any address (sender, recipient and the caller of `transferFrom`), burn a frozen address's balance, and upgrade it after a 24-hour timelock, all held by one externally owned account, and two bridge contracts it owns may mint and burn.
+Its Listing carries "Can freeze wallets", "Can pause all transfers", "Upgradeable by its issuer" and "Bridged with mint and burn"; the last two need label kinds `QUOTE_LABEL_KINDS` does not have yet, and the Stock Tokens need the upgrade label too.
+The native asset's Listing is native ETH in the pool key (`currency0` the zero address), where the chain's v4 ETH liquidity sits, never WETH, which the chain owner can upgrade.
