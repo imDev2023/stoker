@@ -219,6 +219,7 @@ A chain profile's gas model for Robinhood Chain is L2 gas alone today, and shoul
   The native asset has no issuer, but a push of ETH hands control to the recipient in the middle of a swap, which the spike left untested (PR #239).
   Both need reading before either is listed.
 - How Uniswap's protocol fee controller chooses a pool's fee, and who may call it, was not read (section 2).
+- Closed on 2026-11-23 by #249 (`quote-assets-and-rehearsal.md`): USDG's and ETH's powers as Quote Assets, the controller's rule (a pool whose hook returns deltas pays 0 under the policy in force), the Universal Router to pin, and how the testnet's faucet hands out the five stand-ins.
 
 ## Lines of #231 the evidence contradicts
 

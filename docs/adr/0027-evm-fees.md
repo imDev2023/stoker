@@ -48,3 +48,11 @@ Three findings shaped the rest.
 - A Creator's shares are written at launch, so a later version of the Creator Ladder reaches new Launches only; on Solana a version applies to what is collected while it is in force.
 - The site's fee copy needs a second set of words for the EVM chain family; the figures all come from the chain.
 - The quote must read three things from the chain at the moment of a trade: the Launch's own terms, the Opening Fee's second (ADR 0026) and Uniswap's protocol fee.
+
+## Note of 2026-11-23 (#249)
+
+Added by the research of #249 (`docs/evm/research/quote-assets-and-rehearsal.md`, section 2); the decision above stands.
+"Uniswap's protocol fee is not ours and is not zero" holds for the chain, not for our pools today.
+The controller is Uniswap's `V4FeeAdapter` with a `V4FeePolicy`, both owned by Uniswap governance's Timelock on Ethereum, and under the policy in force at block 121,654,424 a pool whose hook returns deltas, as ADR 0025's does, has a protocol fee of 0.
+Only a Uniswap governance vote can raise it, to at most 0.1% each way, after which anyone can switch it on for a launched coin.
+So `/fees` and every quote still read it, from `StateView.getSlot0(poolId)` (the V4 Quoter includes it), and the hook does not implement `protocolFeeFlags()`, which would opt its pools into a fee.
