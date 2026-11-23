@@ -3,6 +3,7 @@
 Research for #231 (Stoker on EVM chains), on the six chains after Robinhood Chain: Base, Arbitrum, BSC, Polygon, Ethereum and HyperEVM.
 Every figure was read on 2026-11-22 unless it says otherwise, and each carries its source.
 Nothing here was deployed or sent to any chain; every on-chain figure is a read through a public RPC.
+Corrected on 2026-11-23 after the review of PR #238: Polygon's cost, what "listable" means for a stock token, what Base's stock tokens report as code, and four more lines of #231 in the closing list.
 
 ## The answer in short
 
@@ -11,18 +12,20 @@ Nothing here was deployed or sent to any chain; every on-chain figure is a read 
    No chain needs a venue adapter to host the one contract set.
 2. **Where coin launches actually trade differs sharply.**
    On Base and Ethereum nearly all launch trading is on Uniswap v4; on BSC it is on PancakeSwap (V2, V3 and Infinity) and almost none is on v4; on HyperEVM it is on HyperSwap and Project X; Arbitrum and Polygon have no launch market to speak of.
-3. **Listable stock tokens exist on Base, BSC, Ethereum and HyperEVM, not on Arbitrum or Polygon.**
+3. **Stock tokens that pass #231's two listing tests exist on Base, BSC, Ethereum and HyperEVM, not on Arbitrum or Polygon.**
    Coinbase's B20 stock tokens on Base use the same display-only multiplier as Robinhood Chain's (ERC-8056); Ondo Global Markets tokens (Ethereum, BSC, HyperEVM) and Binance's bStocks (BSC) do not rebase.
    Backed's xStocks and Dinari's dShares rebase, so #231's listing rule excludes them on every chain.
+   "Listable" in this report means no more than passing those two tests (no transfer fee, no rebasing balance): every one of the three passing issuers can refuse, freeze or seize, which #231's rule does not test, so whether each is listed is the owner's call at #235 (line 6 of the closing list).
 4. **Our launch shape and our wedge are already on the market.**
    o1 Launchpad (Base, BSC, Robinhood Chain), BaseStonk (Base), Stockereum and fusi.ng (Ethereum) each seed a whole supply single-sided into a locked Uniswap v4 position with a fee hook, and each pairs coins with stock tokens.
 5. **Recommended order after Robinhood Chain: Base, BSC, Ethereum, HyperEVM, Arbitrum, Polygon** (the reasons are under "Recommended order").
 6. **HyperEVM had no security profile; one is now written** (`evm-security-standards/profiles/hyperevm.md`, committed locally there).
-   The Base and Polygon profiles carry stale facts that matter to this design (under "The security profiles").
+   The Base and Polygon profiles carried stale facts that matter to this design, corrected there on 2026-11-23 (under "The security profiles").
 
 ## Method and sources
 
 - **Uniswap deployments:** the live feed `https://developers.uniswap.org/deployments.json` (generatedAt 2026-11-09T21:49:59Z, `Uniswap/contracts@3b872969`), compared with the knowledge base's capture (`resources/uniswap/DEPLOYMENTS.md`, generatedAt 2026-07-15, refreshed 2026-09-03); then every address's bytecode read with `cast codesize` on each chain's public RPC.
+  The knowledge base's copy was brought up to this feed on 2026-11-23 (`resources/uniswap/DEPLOYMENTS.md`, "Refresh of 2026-11-23"), with every address read again that day.
 - **Volumes and fees:** DefiLlama's free API, `https://api.llama.fi/overview/dexs/<chain>` and `https://api.llama.fi/overview/fees/<chain>`, 30-day totals read 2026-11-22.
   DefiLlama tracks some launchpads' bonding curve only and some not at all; a volume worked out from fees is marked "inferred".
 - **Quote Assets:** addresses from CoinGecko's free `coins/list?include_platform=true` and the issuers' own lists, then `symbol`, `decimals`, `totalSupply` and the proxy slots read on-chain.
@@ -55,6 +58,12 @@ The Universal Router struct-layout trap the knowledge base records for Robinhood
 v4 lets that controller set a protocol fee of up to 0.1% per direction on any pool, hooked or not, so a pool with a zero LP fee can still carry one.
 The quote in #231's user story 24 must read the pool's protocol fee from the chain rather than assume zero.
 
+Read again on 2026-11-23, the fee is already charged, not only possible.
+Each of those controllers is the `V4FeeAdapter` that Uniswap's feed of 2026-11-09 lists under `protocol-fees`, with a `V4FeePolicy` and a `TokenJar` beside it, on Robinhood Chain too (`0x6d0009504D129CF5002Dba61D9Ae8575AA79314c`).
+Of 40 pools that had just traded, 15 on Base and 25 on Robinhood Chain carried a protocol fee (`getSlot0` on each chain's StateView), on a schedule that follows the pool's LP fee: 25 pips on a 0.01% pool, 500 on a 0.3% pool, and v4's ceiling of 1,000 pips (0.1%) from 0.8% up.
+One pool on Robinhood Chain with an LP fee of zero carried 1 pip (0.0001%) in each direction, so a zero LP fee is not a zero protocol fee.
+Why the other pools read zero, and who may set a pool's fee through the adapter, was not established; the figures and the method are in the knowledge base (`resources/uniswap/DEPLOYMENTS.md`, "Refresh of 2026-11-23").
+
 **How much of each chain's trading is on v4** (DefiLlama, 30 days to 2026-11-22):
 
 | Chain | All DEX volume | Uniswap v4 | v4 share | Largest venue |
@@ -78,19 +87,28 @@ The launch-trading share is in each chain's section.
 #231 lists a Quote Asset only when it is an ERC-20 with no transfer fee and no rebasing balance.
 Read on-chain on 2026-11-22:
 
-| Issuer | Chains (counts from CoinGecko, 2026-11-22) | Decimals | Balance model, read on-chain | Transfer controls | Listable under #231 |
+| Issuer | Chains (counts from CoinGecko, 2026-11-22) | Decimals | Balance model, read on-chain | Transfer controls | Under #231's listing rule |
 | --- | --- | --- | --- | --- | --- |
-| Coinbase (B20, Base) | Base: 415 in Coinbase's API, 90 with supply | 8 | display-only multiplier: `multiplier()` = `uiMultiplier()` = 1.0005 on AAPLc while `balanceOf` stays raw (ERC-8056, as on Robinhood Chain) | issuer policies (blocklist or allowlist per token), pause per feature, seize; native precompiles with no bytecode | **yes** |
-| Ondo Global Markets | Ethereum 462, BSC 460, HyperEVM 35 | 18 | plain balances; no multiplier found | every transfer checked by a `compliance` contract the issuer controls (`checkIsCompliant(address,address)`) | **yes**, with the compliance risk below |
-| Binance bStocks | BSC 111 | 18 | display-only `uiMultiplier()` (1.00078 on NVDAB) | `compliance` contract, same interface as Ondo's | **yes**, with the compliance risk below |
-| Backed xStocks | Ethereum 111, Arbitrum 90, BSC 77, HyperEVM 12 | 18 | **rebasing**: `balanceOf` = `sharesOf` x `multiplier` (a holder of NVDAx read 78,250.68 against 78,117.79 shares at multiplier 1.0017) | upgradeable proxy, mint and burn by the issuer | **no**, except through an ERC-4626 wrapper (o1 lists wrapped xStocks on Monad this way) |
-| Dinari dShares | Ethereum, Base, Arbitrum 253 each; HyperEVM 18 | 18 | **rebasing** by `balancePerShare()` (10.0 on NVDA after its 10-for-1 split) | `transferRestrictor` blacklist, pause | **no** |
+| Coinbase (B20, Base) | Base: 415 in Coinbase's API, 90 with supply | 8 | display-only multiplier: `multiplier()` = `uiMultiplier()` = 1.0005 on AAPLc while `balanceOf` stays raw (ERC-8056, as on Robinhood Chain) | issuer policies (blocklist or allowlist per token), pause per feature, seize; native precompiles whose code is one marker byte | **passes** the fee and rebase tests; the issuer controls are the owner's call at #235 |
+| Ondo Global Markets | Ethereum 462, BSC 460, HyperEVM 35 | 18 | plain balances; no multiplier found | every transfer checked by a `compliance` contract the issuer controls (`checkIsCompliant(address,address)`) | **passes** the fee and rebase tests; the issuer controls are the owner's call at #235, with the compliance risk below |
+| Binance bStocks | BSC 111 | 18 | display-only `uiMultiplier()` (1.00078 on NVDAB) | `compliance` contract, same interface as Ondo's | **passes** the fee and rebase tests; the issuer controls are the owner's call at #235, with the compliance risk below |
+| Backed xStocks | Ethereum 111, Arbitrum 90, BSC 77, HyperEVM 12 | 18 | **rebasing**: `balanceOf` = `sharesOf` x `multiplier` (a holder of NVDAx read 78,250.68 against 78,117.79 shares at multiplier 1.0017) | upgradeable proxy, mint and burn by the issuer | **fails** (rebasing), except through an ERC-4626 wrapper (o1 lists wrapped xStocks on Monad this way) |
+| Dinari dShares | Ethereum, Base, Arbitrum 253 each; HyperEVM 18 | 18 | **rebasing** by `balancePerShare()` (10.0 on NVDA after its 10-for-1 split) | `transferRestrictor` blacklist, pause | **fails** (rebasing) |
 
 The v4 PoolManager already holds Ondo, xStocks and bStocks coins on Ethereum and BSC (for example 75.5 CRCLon on Ethereum, 79.2 NVDAB on BSC) and Coinbase's AAPLc and AMDc on Base, so their compliance policies do not refuse the PoolManager today.
 The risk is that each issuer can refuse an address later: a policy that refused our hook, a Destination contract or the distributor would freeze that coin's fees or rewards in that stock token.
 A Launch paired with a compliance-checked stock token should be able to pay out somewhere else if a payout reverts, or the site should say the risk in words.
 
-Base's B20 tokens are precompiles with no bytecode (AAPLc's code is the single byte `0xef`), so any check of `token.code.length` fails on them; OpenZeppelin's `SafeERC20` only checks code length when a call returns no data, and B20 returns a bool, but our own code must never gate on code length.
+**Passing the two tests is not the same as being listed.**
+#231's rule asks only for no transfer fee and no rebasing balance, and its custody line says no key of ours can reach a coin's liquidity.
+Coinbase can seize a B20 stock token, block or allowlist its holders one stock token at a time and pause it; Ondo and Binance check every transfer against a contract they control.
+So on a coin paired with any of the three an issuer's key can reach the Quote Asset side of the pool and every payout in it, exactly as #232 found for Robinhood Chain's Stock Tokens (a blocklist, `adminBurn`, a pause and one beacon).
+The rule needs a third clause for issuer controls, and whether each issuer's stock tokens are listed is the owner's call at #235, issuer by issuer (line 6 of the closing list).
+The same clause reaches the stablecoins in the tables below: USDC (blacklist, pause, upgradeable), USDT0 (blocklist), USDH (blocklist and pause), USD1 (freeze and pause) and Ethereum's USDT (blacklist, pause, `destroyBlackFunds`).
+
+Base's B20 tokens are precompiles, and each reports the single byte `0xef` as its code: AAPLc's `extcodesize` is 1 and its code hash is `keccak256(0xef)` (`0x309b8896...48d2a3`), read again on 2026-11-23.
+A check that an address has code therefore passes on them (corrected 2026-11-23; this line said that any check of `token.code.length` fails), but nothing can be learned from that code: every B20 token has the same byte and the same hash, so our own code must never tell one from another, or from a contract, by code size or code hash.
+OpenZeppelin's `SafeERC20` only reads code length when a call returns no data, and B20 returns a bool.
 
 ## Base (8453)
 
@@ -118,7 +136,8 @@ Inferred from DefiLlama fees: about $50M a month of launch trading, 95% or more 
 
 Also on Base: **BaseStonk** ($679k of volume), a v4 hook launchpad whose coins are priced in a stock token, an ETF, a major coin or a stablecoin, and in its advanced mode in any coin from an approved launchpad (`docs.basestonk.io`).
 
-**Security profile.** `profiles/base.md` exists but is stale on two points (see "The security profiles"): Base now makes a block every 0.2 s, and B20 stock tokens are an ERC-8056 asset class the profile does not mention.
+**Security profile.** `profiles/base.md` was stale on two points when this was read (see "The security profiles"): Base now makes a block every 0.2 s, and B20 stock tokens are an ERC-8056 asset class the profile did not mention.
+Both are corrected there as of 2026-11-23.
 
 **Cost.** Gas price 0.006 gwei: about $0.01 of execution per million gas at $1,710.71 per ETH (DefiLlama coins API), plus an L1 data fee.
 
@@ -196,9 +215,12 @@ A Stoker pool on Uniswap v4 would hold the coin's whole supply, so the coin stil
 
 **Rivals.** None meaningful: wen markets and Fjord show $0 of fees on DefiLlama; WhaleCom and Mintz appear only in their own posts and listings (unverified).
 
-**Security profile.** `profiles/polygon-pos.md` exists (2026-08-06) but says blocks come about every 2 s; the measured interval is 1.5 s, at every sample back to 2026-08-10.
+**Security profile.** `profiles/polygon-pos.md` exists (2026-08-06) and said blocks come about every 2 s; the measured interval is 1.5 s, at every sample back to 2026-08-10.
+It is corrected there as of 2026-11-23.
 
-**Cost.** Gas price 278 gwei of POL: about $0.00002 per million gas at $0.0756 per POL.
+**Cost.** Gas price 278 gwei of POL: a million gas is 0.278 POL, about $0.02 at $0.0756 per POL.
+That is what a million gas costs on Base ($0.01), BSC ($0.03) and Arbitrum ($0.04), not a thousandth of it (corrected 2026-11-23; this line said $0.00002, a slip of three decimal places).
+The gas price read 280 gwei again on 2026-11-23.
 
 ## Ethereum (1)
 
@@ -279,7 +301,11 @@ The six chains against `evm-security-standards/profiles` on 2026-11-22:
 | Ethereum | `ethereum-l1.md` | current (12.04 s) |
 | HyperEVM | none | **written**: `hyperevm.md` |
 
-This lane may add only the HyperEVM profile, so the Base and Polygon corrections are left for the session that owns that repository; the Base one changes a gate verdict, so it should come before any Base deployment.
+The table is the state found on 2026-11-22, when this lane could add only the HyperEVM profile.
+Both stale profiles were corrected in `evm-security-standards` on 2026-11-23, after the review of PR #238, from fresh reads that day.
+Base: 0.2000 s a block over the last 100,000 and the last 1,000,000 blocks, five consecutive blocks sharing each timestamp, since block 53,556,127 (2026-11-05 18:00:01 UTC), before which blocks came every 2 s; AAPLc answers `uiMultiplier()`, `multiplier()`, `newUIMultiplier()` and `effectiveAt()`, so Base's `asset-semantics` gate fact is now `erc-8056`.
+Polygon: 1.5000 s a block over the last 100,000, 1,000,000 and 5,000,000 blocks, the timestamps stepping by 1 s and 2 s in turn.
+The Base correction changes a gate verdict: a project on Base must now simulate a multiplier change or waive the rule with a reason.
 
 ## Recommended order after Robinhood Chain
 
@@ -313,7 +339,32 @@ If the owner weighs market size above fit, BSC goes before Base; nothing else in
    Not corrected in #231: positioning is the owner's to restate at the grilling.
 4. "The pool's own LP fee is zero" together with user story 24 ("quote what reaches my wallet after every fee").
    Uniswap's protocol fee controller is set on five of the six chains and may put up to 0.1% on any pool, so the quote must read it from the chain.
+   On 2026-11-23 the fee was found already charged on live pools on Base and Robinhood Chain, a pool with a zero LP fee among them (the section on Uniswap v4 above).
 5. "The native asset is a Quote Asset on every chain" stands, but "a listing needs an ERC-20 with no transfer fee" excludes Ethereum's USDT in principle (a dormant, settable fee) and the rebasing rule excludes xStocks and Dinari everywhere; those are consequences for the Quote Registry, not contradictions.
+
+Lines 6 to 9 were added on 2026-11-23 from the review of PR #238.
+None of them is corrected in #231 here: each is a decision for the grilling (#235).
+
+6. "A listing needs an ERC-20 with no transfer fee and no rebasing balance" together with "No key can reach a coin's liquidity" (since 2026-11-22, "No key of ours", after #232).
+   The rule has two tests and needs a third, for issuer controls.
+   Every stock token that passes the two tests on these chains can be refused, frozen or seized by its issuer: Coinbase's B20 (seize, a blocklist or an allowlist per stock token, pause), Ondo's and Binance's (a compliance contract on every transfer).
+   An issuer's key therefore reaches the Quote Asset side of the pool and every payout made in it, which is the same contradiction #232 found on Robinhood Chain (a blocklist, `adminBurn`, a pause, one beacon), and it reaches the stablecoins too.
+   This report's tables therefore say "passes the fee and rebase tests" where they first said "yes": whether an issuer's asset is listed, and what the site says of it, is the owner's call at #235, issuer by issuer.
+7. User story 34 ("As a holder on Ethereum, I want to claim my rewards myself") and "on Ethereum holders claim for themselves, rounds added together".
+   #231 has holders on Ethereum claim for themselves because gas is dear there, and the measurements do not bear that out: the base fee ran from 0.044 to 1.998 gwei over twelve samples in 90 days and read 0.122 gwei on 2026-11-22 (0.155 gwei on 2026-11-23).
+   At the 88,600 gas a pushed claim measured on Robinhood Chain (#232), a claim on Ethereum costs about $0.007, $0.02 and $0.30 at those three prices, so a single pushed claim costs cents.
+   What stays dear is a whole round at the top of the range: 16,384 holders cost about $110, $300 and $5,000 to push.
+   So the reason for a separate claim model on Ethereum is gone for a small round and holds only for a large round in a dear week; #235 can choose one model for every chain, with a ceiling on what the keeper spends per round.
+8. User story 45 ("add a chain by deploying the contracts and writing a chain profile, so that a new chain needs no new code") and user story 3 ("one transaction and one signature").
+   HyperEVM needs code no other chain needs: a transfer to a system address (`0x2222...2222`, or a linked token's `0x20...` address) moves the value to HyperCore instead of paying it, so every Destination and every payout must refuse those addresses.
+   A fast block there caps a transaction at 3M gas.
+   The spike's launch measured about 1.14M gas on Robinhood Chain (#234), which fits, but a launch that grows past the cap, and the deployment of the contracts themselves, needs the sender to opt into big blocks through a HyperCore action, which is a second step before the one transaction.
+   The profile says both (`evm-security-standards/profiles/hyperevm.md`); in this list they stood only in passing, under line 3.
+9. "The coin is a plain ERC-20: 1 trillion at 18 decimals" together with user story 46 (a Quote Asset listed "with its start price and Graduation Target").
+   The Quote Assets found here have 6 decimals (USDC, USDT, USDT0, USDH), 8 (Coinbase's B20 stock tokens) and 18 (the native assets, BSC's stablecoins, Ondo, bStocks), and the pool's price is a ratio of raw units, so each decimal moves the start tick by about 23,027 ticks.
+   For illustration, a start at a $4,000 fully diluted value is a raw ratio near tick 193,400 against an 18-decimal dollar stablecoin on BSC, near 469,700 against 6-decimal USDC and near 478,000 against an 8-decimal B20 stock token at $230 (the sign follows the currency order; v4's ticks end at 887,272).
+   So the registry must hold each listing's start price and Graduation Target in raw units worked out with that asset's decimals, never as one figure for a chain, and the tests must cover 6, 8 and 18 decimals in both currency orders; the spike (#234) ran against an 18-decimal Stock Token alone.
+   Also for the registry: Ethereum's USDT returns nothing from `transfer` (an `eth_call` of a zero transfer returns empty data where USDC returns `true`, read 2026-11-23), so every payout of it needs a safe transfer that accepts an empty return.
 
 The lines #231 asks to verify are answered here: the census of Quote Assets on each later chain (the tables above), BSC's routing (confirmed: PancakeSwap carries the launch market), and HyperEVM's venue read fresh (official Uniswap v4).
 
