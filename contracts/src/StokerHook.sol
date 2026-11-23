@@ -38,6 +38,26 @@ contract StokerHook is BaseHook, IUnlockCallback {
 
     uint256 internal constant BPS = 10_000;
 
+    /// @notice The gas a native payment to anyone but the caller carries (#242): enough for a smart wallet's
+    ///         receive, too little to matter to the caller's batch. An owner whose receive needs more is
+    ///         paid in full when they pull their own, with all the gas they bring.
+    uint256 public constant NATIVE_PAYOUT_GAS = 50_000;
+    /// @dev What the call itself costs the caller beyond the gas it forwards: a cold account (2,600), the
+    ///      value transfer (9,000) and a new account (25,000), with room to spare.
+    uint256 internal constant NATIVE_CALL_OVERHEAD = 40_000;
+
+    Currency internal constant NATIVE = Currency.wrap(address(0));
+
+    /// @dev The Payout Call's re-entry guard, in transient storage: keccak256("stoker.hook.payout") - 1.
+    bytes32 internal constant PAYOUT_LOCK_SLOT = 0xd04e813222e68601f425a39df2273a82d60dee2d93f26d04571d85a6074013f3;
+
+    /// @dev What one of the hook's own unlocks is for.
+    enum Action {
+        PayERC20,
+        TakeNative,
+        ReturnNative
+    }
+
     /// @notice The factory that deployed this hook: the only address that opens pools on it and adds
     ///         liquidity to them.
     address public immutable factory;
@@ -95,6 +115,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
     error SwapTooSmall();
     error SwapStoppedEarly();
     error ZeroAddress();
+    error PayoutReentered();
+    /// @notice The Payout Call was given too little gas to carry a native payment's full allowance.
+    error PayoutGasTooLow();
 
     constructor(IPoolManager poolManager_, address platform_) BaseHook(poolManager_) {
         if (platform_ == address(0)) revert ZeroAddress();
@@ -279,10 +302,108 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @notice Pays each owner's whole Credit in `currency` to that owner, and to nobody else. Anyone may
     ///         call it, for any owners; the Keeper calls it on a schedule, and an owner may pull their own.
     ///         An owner the currency refuses keeps their Credit, and the others are still paid.
+    /// @dev An ERC-20 is paid by the PoolManager's `take` inside the unlock, which calls the asset and no
+    ///      recipient. The native asset is paid by a call to the recipient, so it is paid only once the
+    ///      PoolManager is locked again: see `_payoutNative`.
     function payout(Currency currency, address[] calldata owners) external {
-        // The callback returns nothing worth reading; every outcome is an event.
+        if (_payoutLocked()) revert PayoutReentered();
+        _setPayoutLock(true);
+        if (currency.isAddressZero()) {
+            _payoutNative(owners);
+        } else {
+            // The callback returns nothing worth reading; every outcome is an event.
+            // forge-lint: disable-next-line(unused-return)
+            poolManager.unlock(abi.encode(Action.PayERC20, abi.encode(currency, owners)));
+        }
+        _setPayoutLock(false);
+    }
+
+    /// @dev The native asset's Payout Call, in three steps (#242):
+    ///      1. Every owner's Credit is cleared and their sum taken out of the PoolManager into this hook, in
+    ///         one unlock, against the hook's claims.
+    ///      2. With the PoolManager locked again, each owner is sent their Credit by a call carrying
+    ///         `NATIVE_PAYOUT_GAS` (all the gas there is when the owner is the caller, pulling their own).
+    ///         A recipient that reverts, re-enters or burns its gas fails its own call alone: its Credit is
+    ///         added back to it. A re-entering recipient meets a locked PoolManager, so it cannot swap or
+    ///         take as a recipient paid inside an unlock could, and this function's own guard.
+    ///      3. What was refused goes back into the PoolManager as the hook's claims, in a second unlock, so
+    ///         the claims again back every Credit one for one and the hook keeps no native asset.
+    ///      `take` of the native asset inside the unlock would call the recipient with all the gas left and
+    ///      the PoolManager unlocked: a recipient could burn the batch's gas, or leave a delta of its own
+    ///      that reverts everyone's payment. Neither is possible here.
+    function _payoutNative(address[] calldata owners) internal {
+        uint256[] memory amounts = new uint256[](owners.length);
+        uint256 total;
+        for (uint256 i; i < owners.length; i++) {
+            uint256 amount = _credits[owners[i]][NATIVE];
+            if (amount == 0) continue;
+            _credits[owners[i]][NATIVE] = 0;
+            amounts[i] = amount;
+            total += amount;
+        }
+        if (total == 0) return;
+        totalCredits[NATIVE] -= total;
         // forge-lint: disable-next-line(unused-return)
-        poolManager.unlock(abi.encode(currency, owners));
+        poolManager.unlock(abi.encode(Action.TakeNative, abi.encode(total)));
+
+        uint256 refused;
+        for (uint256 i; i < owners.length; i++) {
+            uint256 amount = amounts[i];
+            if (amount == 0) continue;
+            address owner = owners[i];
+            bool paid;
+            if (owner == msg.sender) {
+                // An owner pulling their own may spend all the gas they brought on receiving it.
+                assembly ("memory-safe") {
+                    paid := call(gas(), owner, amount, 0, 0, 0, 0)
+                }
+            } else {
+                // Never let a caller starve a recipient into a refusal: without the full allowance in hand
+                // the whole call reverts and every Credit stays as it was.
+                if (gasleft() < NATIVE_PAYOUT_GAS * 64 / 63 + NATIVE_CALL_OVERHEAD) revert PayoutGasTooLow();
+                // No return data is copied, so a recipient's revert reason costs the caller nothing.
+                assembly ("memory-safe") {
+                    paid := call(NATIVE_PAYOUT_GAS, owner, amount, 0, 0, 0, 0)
+                }
+            }
+            if (paid) {
+                // forge-lint: disable-next-line(reentrancy-events)
+                emit CreditPaid(owner, NATIVE, amount);
+            } else {
+                // Added back, never overwritten: a Credit booked meanwhile by a swap is kept.
+                _credits[owner][NATIVE] += amount;
+                refused += amount;
+                // forge-lint: disable-next-line(reentrancy-events)
+                emit CreditRefused(owner, NATIVE, amount);
+            }
+        }
+        if (refused > 0) {
+            totalCredits[NATIVE] += refused;
+            // forge-lint: disable-next-line(unused-return)
+            poolManager.unlock(abi.encode(Action.ReturnNative, abi.encode(refused)));
+        }
+    }
+
+    /// @dev Runs inside the hook's own unlocks, from `payout` alone.
+    function unlockCallback(bytes calldata data) external onlyPoolManager returns (bytes memory) {
+        (Action action, bytes memory args) = abi.decode(data, (Action, bytes));
+        if (action == Action.PayERC20) {
+            (Currency currency, address[] memory owners) = abi.decode(args, (Currency, address[]));
+            _payERC20(currency, owners);
+        } else if (action == Action.TakeNative) {
+            uint256 total = abi.decode(args, (uint256));
+            poolManager.burn(address(this), NATIVE.toId(), total);
+            poolManager.take(NATIVE, address(this), total);
+        } else {
+            uint256 refused = abi.decode(args, (uint256));
+            // A recipient paid in step 2 may have left the PoolManager synced to an ERC-20, which would
+            // make a native settle revert; syncing the native asset clears it.
+            poolManager.sync(NATIVE);
+            // forge-lint: disable-next-line(unused-return)
+            poolManager.settle{value: refused}();
+            poolManager.mint(address(this), NATIVE.toId(), refused);
+        }
+        return "";
     }
 
     /// @dev Each payment is isolated: a failed `take` rolls back that payment alone and the Credit is
@@ -290,8 +411,7 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///      restored Credit is added back, never overwritten, so a Credit recorded by a swap made inside
     ///      the transfer (only a hostile Quote Asset could) is kept. The loop's calls are the PoolManager's
     ///      and the Quote Asset's; the caller pays for as many owners as they pass.
-    function unlockCallback(bytes calldata data) external onlyPoolManager returns (bytes memory) {
-        (Currency currency, address[] memory owners) = abi.decode(data, (Currency, address[]));
+    function _payERC20(Currency currency, address[] memory owners) internal {
         uint256 id = currency.toId();
         for (uint256 i; i < owners.length; i++) {
             address owner = owners[i];
@@ -312,7 +432,22 @@ contract StokerHook is BaseHook, IUnlockCallback {
                 emit CreditRefused(owner, currency, amount);
             }
         }
-        return "";
+    }
+
+    /// @dev The PoolManager pays the hook the native asset in step 1 of `_payoutNative`; nobody else may,
+    ///      so every wei the hook ever holds is a Credit on its way out.
+    receive() external payable onlyPoolManager {}
+
+    function _payoutLocked() internal view returns (bool locked) {
+        assembly ("memory-safe") {
+            locked := tload(PAYOUT_LOCK_SLOT)
+        }
+    }
+
+    function _setPayoutLock(bool locked) internal {
+        assembly ("memory-safe") {
+            tstore(PAYOUT_LOCK_SLOT, locked)
+        }
     }
 
     // ------------------------------------------------------------------ views
