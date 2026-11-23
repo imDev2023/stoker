@@ -15,6 +15,7 @@ The hook takes the fee on the NVDA side in both directions, pays the Creator, a 
 Swaps go through the chain's Universal Router and price exactly through its V4 Quoter.
 
 Three of #231's decisions need changing, and the hook's safety score is higher than the PRD hopes; see "#231's decisions" and "The safety checklist score" below.
+Two more decisions hold only as the ticket worded them: the main session's review of 2026-11-22 measured what each costs, and its tests are on the branch as `test/Review.t.sol`; see "Held, with a caveat the review measured".
 
 ## Run it
 
@@ -29,7 +30,8 @@ forge test -vv
 - The fork needs an **archive** endpoint: the public RPC keeps only minutes of history, so a pinned block older than that fails there.
   Alchemy's free tier (`ROBINHOOD_RPC_URL` in the owner's global env) serves it; no paid call is involved.
 - The first run reads state over RPC; later runs read Foundry's cache (`~/.foundry/cache/rpc/4663/`) and take about a second.
-- Result at the pinned block: **37 tests passed, 0 failed** across seven suites.
+- Result at the pinned block: **42 tests passed, 0 failed** across eight suites.
+  37 of them, in seven suites, prove the ticket's eight points; the other 5 are the review's measurements in `test/Review.t.sol`.
 - Dependencies are pinned in `script/deps.sh` (no submodule, nothing under `lib/` committed); the revisions are those of the v4 hooks knowledge base's `hooks/foundry.lock`.
 
 ## What is here
@@ -47,6 +49,7 @@ forge test -vv
 | `test/UniversalRouter.t.sol` | Point 6. |
 | `test/Clock.t.sol` | Point 7. |
 | `test/Chain.t.sol` | The chain facts the spike stands on, including Uniswap's protocol fee controller. |
+| `test/Review.t.sol` | The review's measurements (2026-11-22): what a forced Graduation costs, what the wallet that crosses Graduation takes from the waiting tax, and a donation breaking the hook's next liquidity add. |
 
 The listing used throughout: NVDA as Quote Asset, the coin opening at a fully diluted value of about 24.8 NVDA (tick -244,200 of the coin's price in NVDA) and graduating at about 20 times that (tick -214,200), tick spacing 200, a Creator share of half the Platform Fee, a referrer share of a tenth of it.
 The coin's address is chosen by CREATE2 salt, so the tests run every path with the coin on both sides of NVDA in the pool's currency order.
@@ -91,11 +94,14 @@ The coin's address is chosen by CREATE2 salt, so the tests run every path with t
 - `test_rewardTax_liquidityAfterGraduation`: after Graduation the liquidity share, including what waited, is added as a full-range position owned by the hook; rounding leftovers wait as claims; the hook's claims match its books.
 - `test_stokeLaunch_wholeTaxBecomesLiquidity`: a Stoke Launch (liquidity share 100%) sends the whole tax to the pool and keeps no holder pot.
 - `test_rewardTax_termsBounded`: a tax above 5%, or shares above 100%, are refused at launch.
+- `test_review_graduationFlushCapture_tax5`, `..._tax1` and `..._control`: who ends up with the tax that waited for Graduation; see caveat B under "Held, with a caveat the review measured".
+- `test_review_donationBreaksTheNextAdd`: a donation makes the next small liquidity add revert; see "In the spike's code, for the build not to copy".
 
 ### 5. Graduation as a threshold
 
 - `test_graduation_latchesOnce_quoteIsCurrency0` and `..._quoteIsCurrency1`: 50 NVDA of buying leaves the price under the target; 60 NVDA more crosses it, and that swap emits the one `Graduated` event and records the block's timestamp.
   Selling everything back under the target leaves Graduation and its time unchanged, and crossing again emits nothing.
+- `test_review_forcedGraduationCost`: what that latch costs to force; see caveat A under "Held, with a caveat the review measured".
 
 ### 6. The Universal Router, with the six-field struct
 
@@ -160,11 +166,51 @@ Held, each with its evidence above:
 - The position sits with a contract that has no removal path (point 2).
 - The coin is a plain ERC-20, 1 trillion at 18 decimals, with no owner, mint, tax or blocklist (point 1).
 - Graduation is a threshold recorded once and never reversed (point 5).
+  The latch works as the ticket asked; what it is worth is caveat A below.
 - The pool's LP fee is zero and the hook takes every fee in the swap, on the Quote Asset side, in both directions (point 3).
 - The Reward Tax and Stoke Tax as hook fees of 1% to 5%, with the burn and liquidity shares done by our contracts and not by a job (point 4).
+  The liquidity share waiting for Graduation does not hold as #231 words it; see caveat B below.
 - The Universal Router and the V4 Quoter serve a delta-returning hook, so the site needs no router of its own (point 6).
 - The hook reads time only (point 7).
 - Robinhood Chain's stock tokens qualify as Quote Assets: NVDA's raw balances ignore its multiplier (1.000775 at the pinned block, `test_chain_nvdaIsAStockTokenWithPermit`), it carries no transfer fee, and it can sit in a pool and be paid out by a contract.
+  This is proven for NVDA alone, and of the issuer's powers for the blocklist alone (gotcha 1).
+  Not exercised here: the issuer's `adminBurn` from the PoolManager, the global pause, and an upgrade of the one beacon every stock token shares.
+  Those three are why #231's "No key can reach a coin's liquidity" is not true of the Quote Asset's side of a pool; the evidence for them is the Robinhood Chain research (#232, PR #240, `docs/evm/research/robinhood-chain.md`), and what a listing may say about them is for #235.
+
+### Held, with a caveat the review measured
+
+Both were measured on 2026-11-22 by the main session's review of PR #239, with the tests in `test/Review.t.sol`, and measured again when the file was added to this branch; every figure below is from that run at the pinned block.
+
+**A. Graduation as a threshold can be forced for about 2% of the target, and half of that returns to the Creator** (`test_review_forcedGraduationCost`).
+
+- One wallet buys 115 NVDA of a fresh standard Launch, which crosses the Graduation tick, and sells every coin back.
+  It loses 2.2885 NVDA, the 1% Platform Fee on each leg, and 1.14425 NVDA of that lands in the Creator Destination.
+- The coin stays graduated with nothing left in the pool but the seed.
+- With a flash loan this needs no capital, only the 2.2885 NVDA and the loan's fee.
+- In #231 Graduation starts the Creator Lock's clock, takes the Graduation Fee and switches on the Reward Liquidity.
+  A Creator who forces it and whose Destination is their own wallet buys all three for about 1% of the target.
+- For #235: either the owner accepts "touched once" as what Graduation means on EVM, or Graduation needs a price that holds for a time, which the hook can measure, since it reads time.
+
+**B. Tax that waits for Graduation is taken by whoever crosses it** (`test_review_graduationFlushCapture_tax5`, `..._tax1`, `..._control`).
+
+The Reward Liquidity share and the Stoke Tax wait in the hook until Graduation.
+The swap that crosses then adds everything waiting in one flush, and that flush spends half of it on one buy of the coin with no price limit.
+A wallet that crosses and sells out in the same transaction keeps most of it:
+
+| Launch | Tax waiting | Buy to cross | Round-trip result |
+| --- | --- | --- | --- |
+| Stoke Launch, 5% tax | 46.56 NVDA | 125 NVDA | **+27.08 NVDA** |
+| Stoke Launch, 1% tax | 31.68 NVDA | 125 NVDA | **+22.13 NVDA** |
+| Stoke Launch, 5% tax (control) | none | 250 NVDA | -18.46 NVDA |
+
+- That is 58% and 70% of the locked liquidity #231 promises the pool, taken by one wallet.
+- A larger crossing buy takes less, since it pays more in fee and tax: at 5% the result is +21.38 NVDA for a 250 NVDA buy, +5.81 for 500 and -27.91 for 1,000; at 1% it is +20.60, +14.44 and +0.25.
+  So the smallest buy that crosses is the best one, and it is the one a bot would send.
+- The cause is #231's line "Graduation ... switches on the Reward Liquidity, as on Solana".
+  On Solana the pool the liquidity goes into does not exist before Graduation.
+  Here the pool exists from the first block, so nothing needs to wait.
+- For #235: add the liquidity share from the first trade, in threshold-sized pieces, with a cap on each flush's buy.
+- As built, a coin that never graduates also keeps its liquidity share unused for ever, which for a Stoke Launch is the whole tax.
 
 Must change:
 
@@ -183,7 +229,41 @@ Recommended, for the grilling (#235):
 4. **Take the Reward Burn and the Reward Liquidity out of the hook.**
    Doing them in the hook works, but it makes the hook hold tokens and a position and do price-impacting swaps inside other people's trades, which is most of its safety score (below) and one of the checklist's hard stops.
    A separate contract of ours, fed by the hook's push, could do the same work in the trade or on a call anyone can make, and leave the hook holding nothing.
-5. **Not tested here, and the build's first slices:** the Graduation Fee, the Creator Lock's vesting, the distributor and its Merkle rounds, the Creator Ladder's raise-only key, exact-output swaps through the Universal Router, a native-ETH Quote Asset (where a push hands control to the recipient), and every chain after Robinhood Chain.
+   That lowers the hook's score, not the system's risk: the same funds, and the same buys inside other people's trades, would sit in a contract of ours beside the hook (see the score below).
+5. **The native asset is untested, and the factory cannot take it.**
+   `launch` pulls the First Buy with `transferFrom` on the Quote Asset, and nothing in the factory or the hook is payable.
+   #231 makes the native asset a Quote Asset on every chain, and the review notes it is this chain's second most used quote.
+   A push of the native asset also hands control to the recipient in the middle of a swap, which no ERC-20 here does.
+   It should be the build's first slice after the launch itself.
+6. **Not tested here, and the build's first slices:** the Graduation Fee, the Creator Lock's vesting, the distributor and its Merkle rounds (the holders' pot is collected here and has no way out of the hook), the Creator Ladder's raise-only key, exact-output swaps through the Universal Router, and every chain after Robinhood Chain.
+
+## In the spike's code, for the build not to copy
+
+Found by the review of 2026-11-22.
+Nothing under `src/` was changed for them: the spike is throwaway, and this list is where the build learns what not to carry over.
+
+1. **A donation breaks the hook's next liquidity add** (`test_review_donationBreaksTheNextAdd`).
+   `_addFullRange` reads `-d.amount0()` and `-d.amount1()` as the amounts paid, but `modifyLiquidity`'s delta includes the fees the position has accrued, and `beforeDonate` is off, so anyone can donate to the pool.
+   After a 50 NVDA donation to a graduated Reward Launch a 1 NVDA buy reverts with the PoolManager's `CurrencyNotSettled()`: the accrued fees outweigh what the small add pays, the hook reads the credit as a payment, and what it settles no longer matches the PoolManager's books.
+   A 100 NVDA buy, whose add is larger than the accrued fees, clears it, and 1 NVDA buys work again.
+   It costs the donor more than it blocks, so it is a correctness bug more than an attack.
+   The build should refuse donations in `beforeDonate`, or read the fee delta that `modifyLiquidity` returns apart from the principal.
+   The part of a donation that accrues to the factory's seed position can never be collected, since the factory has no code that touches the position.
+2. **`creatorShareBps` is the launcher's to choose, up to 90%.**
+   The fixture passes half, and that is all "the Creator's share is half" means here.
+   `register` checks only that the Creator's share and the referrer's tenth fit inside the Platform Fee.
+   In the build the share is the Creator Ladder's tier, set by the contract and never by the launch's caller.
+3. **Any address in `hookData` is paid a tenth of the Platform Fee.**
+   A trader or a bot can name itself, so the referrer's share is a standing discount out of the platform's share for anyone who fills the field.
+   Whether a referrer's share comes out of the Platform Fee or sits on top of it, and who may be named, is the owner's call at #235.
+4. **A blocked recipient's claim can never be collected.**
+   `claim` pays `msg.sender` alone, so a share owed to a Creator Destination the issuer has blocked stays in the PoolManager for good.
+   What should happen to such a share is a question for #235, not a bug.
+5. **The holders' pot has no way out of the hook.**
+   The hook adds the holders' part of every tax to `holderPot` and holds it as ERC-6909 claims; no function pays it to a distributor or to anyone.
+6. **The casts to `uint128` and `int128` are unchecked, and neither contract uses SafeERC20.**
+   The tests cover the casts for the amounts they trade, and NVDA and the coin both revert on a failed transfer.
+   The build must use checked casts and SafeERC20 (Ethereum's USDT, for one, returns no bool).
 
 ## The safety checklist score
 
@@ -202,12 +282,17 @@ Scored against `research/notes/05-safety-checklist.md` in the v4 hooks knowledge
 | Price impacting behaviour | 0-3 | 3 | A hook fee, plus buy-backs and liquidity adds inside the swap. |
 | **Total** | 0-33 | **17** | **Medium (7 to 17), at its top; 18, High, once the ladder key is added.** |
 
-Hard stops it meets, by the checklist's own wording: the hook holds a liquidity position and holds funds owed to holders and recipients.
+Hard stops it meets, by the checklist's own wording, are two.
+The hook holds a liquidity position and holds funds owed to holders and recipients.
+And by the TVL score it gives itself above, 2, real TVL is past roughly $1M, which is the checklist's last hard stop.
+The checklist says not to ship without a real audit when any hard stop is true, and it has no tier where an audit is optional; #231 records the owner's decision against one, so this is the number to put beside that decision at #235.
 It does not create NoOp swaps: the most it takes from a specified amount is 6% (a 1% Platform Fee plus a tax capped at 5%, `test_rewardTax_termsBounded`).
 
 What would lower it:
 
-- Move the burn, the liquidity and the holder pot to a separate contract (recommendation 4): exposure from 3 to about 1, price impact from 3 to 2, complexity from 4 to 3, which brings the total to about 12 and takes the hook off the "holds liquidity" hard stop.
+- Move the burn, the liquidity and the holder pot to a separate contract (recommendation 4): exposure from 3 to 1, price impact from 3 to 2 and complexity from 4 to 3, which brings the total from 17 to **13** and takes the hook off the "holds liquidity" hard stop.
+  13 is still Medium, and the TVL hard stop stays.
+  It also moves the risk without removing it: the same funds and the same buys inside other people's trades would sit in a second contract of ours, which the checklist's score for the hook no longer counts.
 - Keep the ladder key out of the hook (a Destination contract can hold the tier), so autonomous updates stay at 0.
 - Cap TVL by listing, and re-score at $1M.
 
