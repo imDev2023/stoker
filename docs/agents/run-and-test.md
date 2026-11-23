@@ -32,6 +32,12 @@ The text is the original's, one sentence a line.
 
 - To see a page with data on a running dev or worktree stack (the owner's database is empty), a short `.mts` script inside `tests/ui` that copies the fixtures' thin helpers (airdrop, `POST /v1/launches/prepare` with `tests/ui/fixtures/coin.png`, `POST /v1/trades/prepare`, sign, send, `POST /v1/transactions/:signature`) against that stack's URLs, run with `pnpm exec tsx` from `tests/ui` and deleted after: a file in the scratchpad cannot resolve the packages, `.ts` is transformed as CJS and refuses top-level await, and a sell must stay under what the trader holds (2026-10-10).
 
+## The EVM contracts
+
+- `contracts/` is a Foundry workspace of its own (#241): `./script/deps.sh`, then `forge test --no-match-path 'test/fork/**'` with no RPC, and `forge test --match-path 'test/fork/**'` with `ROBINHOOD_RPC_URL`, an archive endpoint (from a worktree, through `direnv exec "/Volumes/Farhan/Work Folder/Dev/AI/stoker" sh -c '...'`).
+  It touches no stack, no port and no suite of the site, so it runs beside anything; its gotchas are at the end of `contracts/README.md`.
+  CI's `contracts` job runs the fork tests only where the repository has the `ROBINHOOD_RPC_URL` secret, which only the owner can set.
+
 ## The devnet rehearsal
 
 - Devnet rehearsal (`env.devnet` in both `wrangler.jsonc` files): `pnpm exec wrangler deploy --env devnet` in `apps/api`; in `apps/web`, `NEXT_PUBLIC_API_URL=https://api-devnet.stoker.markets pnpm exec opennextjs-cloudflare build` (its `pnpm run build` fetches TradingView's library first with the `gh` token, ADR 0017; an API from before #126 ignores the candles' `before` and `limit`, and the datafeed then shows its latest 500 candles alone), then `... deploy --env devnet` (plus `NEXT_PUBLIC_JUPITER_REFERRAL=<the owner's referral account>` once it exists, runbook section 13, so the landing's swap widget takes its fee; it swaps on mainnet whatever cluster the API is on).

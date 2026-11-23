@@ -57,3 +57,38 @@ jobs:
           STACK_DATABASE_URL: postgres://test:test@127.0.0.1:5432/postgres
           LOCALNET_RUNTIME: surfpool
           WRANGLER_SEND_METRICS: "false"
+
+  # The EVM contracts' Foundry workspace (contracts/, #241): its own job, apart from the site's.
+  # Every test that needs no RPC runs on every push; the fork tests of Robinhood Chain run only where the
+  # ROBINHOOD_RPC_URL secret exists (an archive endpoint; the URL carries a key and is never printed).
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: contracts
+    env:
+      FOUNDRY_PROFILE: ci
+      ROBINHOOD_RPC_URL: ${{ secrets.ROBINHOOD_RPC_URL }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.3
+      - uses: actions/cache@v6
+        with:
+          path: contracts/lib
+          key: contracts-lib-${{ hashFiles('contracts/script/deps.sh') }}
+      - run: ./script/deps.sh
+      - run: forge fmt --check
+      - run: forge build --sizes
+      - run: forge lint src
+      - run: forge test --no-match-path 'test/fork/**'
+      - uses: actions/cache@v6
+        if: env.ROBINHOOD_RPC_URL != ''
+        with:
+          path: ~/.foundry/cache/rpc/4663
+          key: contracts-fork-4663-120800000
+      - name: Fork tests (Robinhood Chain, pinned block)
+        if: env.ROBINHOOD_RPC_URL != ''
+        run: forge test --match-path 'test/fork/**'

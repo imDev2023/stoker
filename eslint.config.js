@@ -17,6 +17,10 @@ export default tseslint.config(
       "**/playwright-report/",
       "research/",
       "spike/",
+      // The EVM contracts' Foundry dependencies and build output, fetched by contracts/script/deps.sh (#241).
+      "contracts/lib/",
+      "contracts/out/",
+      "contracts/cache/",
       "tools/localnet/.ledger/",
       ".claude/",
     ],
