@@ -168,3 +168,9 @@ Not contradictions; facts the build can use now.
 2. Leave `protocolFeeFlags()` out of the hook, and add a fork test that triggers `V4FeeAdapter.triggerFeeUpdate` on a launched coin's pool and reads 0 from `getSlot0` (the policy's answer for a delta-returning hook).
 3. The native asset's pool key is `currency0 = address(0)`; the Payout Call and the Distributor pay native ETH by a call with a re-entry guard.
 4. A USDG stand-in for the testnet rehearsal needs a freeze, a pause and a caller check on `transferFrom` to stand in for USDG's powers.
+
+Checked by the main session's review on 2026-11-23, against the chain and against #241's own hook (PR #260):
+
+- USDG's name, decimals, implementation, empty admin slot, the two roles on the one account, the admin role on the timelock and its 86,400 s delay, the controller, the three owners and `defaultFee` 0 were read again at block 121,706,575 and match.
+- The testnet's code sizes, the missing v2.1.2 router and USDG, the faucet contract and the zero controller were read again and match.
+- Items 1 and 2 above are fork tests in `contracts/test/fork/ForkTrade.t.sol` since that review: a stranger's `triggerFeeUpdate` on a launched coin's pool leaves `getSlot0` at 0 in both currency orders, and the four trades run through `0x204FAca1764B154221e35c0d20aBb3c525710498` as well, both at the pinned block 120,800,000.
