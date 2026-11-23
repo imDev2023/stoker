@@ -93,6 +93,7 @@ contract StokerHook is BaseHook, IUnlockCallback {
     error SeedPositionLocked();
     error DonationsRefused();
     error SwapTooSmall();
+    error SwapStoppedEarly();
     error ZeroAddress();
 
     constructor(IPoolManager poolManager_, address platform_) BaseHook(poolManager_) {
@@ -190,22 +191,17 @@ contract StokerHook is BaseHook, IUnlockCallback {
         if (specifiedIsCurrency0 != t.quoteIsCurrency0) {
             return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
-        uint256 fee;
-        if (exactIn) {
-            uint256 gross = OZSafeCast.toUint256(-params.amountSpecified);
-            fee = _feeOnGross(gross, t.platformFeeBps);
-            // Never consume the whole specified amount: a swap the hook swallowed would be a NoOp swap.
-            if (fee >= gross) revert SwapTooSmall();
-        } else {
-            fee = _feeOnNet(OZSafeCast.toUint256(params.amountSpecified), t.platformFeeBps);
-        }
+        uint256 fee = _feeOnSpecified(params.amountSpecified, t.platformFeeBps);
+        // Never consume the whole specified amount: a swap the hook swallowed would be a NoOp swap.
+        if (exactIn && fee >= OZSafeCast.toUint256(-params.amountSpecified)) revert SwapTooSmall();
         _book(id, key, t, fee);
         return (this.beforeSwap.selector, toBeforeSwapDelta(fee.toInt128(), 0), 0);
     }
 
     /// @dev When the Quote Asset is the unspecified currency the fee is taken here, once the pool's Quote
     ///      Asset amount is known: an exact-in sell (the pool's output, the fee taken from it) or an exact-out
-    ///      buy (the pool's input, the trader pays the fee on top).
+    ///      buy (the pool's input, the trader pays the fee on top). When it is the specified currency this
+    ///      only checks that the pool traded the whole amount the fee was taken on.
     function _afterSwap(address, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata)
         internal
         override
@@ -215,9 +211,17 @@ contract StokerHook is BaseHook, IUnlockCallback {
         Terms memory t = _termsOf(id);
         bool exactIn = params.amountSpecified < 0;
         bool specifiedIsCurrency0 = exactIn == params.zeroForOne;
-        if (specifiedIsCurrency0 == t.quoteIsCurrency0) return (this.afterSwap.selector, 0);
-
         int128 quoteDelta = t.quoteIsCurrency0 ? delta.amount0() : delta.amount1();
+        if (specifiedIsCurrency0 == t.quoteIsCurrency0) {
+            // The fee was taken in `_beforeSwap`, on the whole specified amount, so the pool must have
+            // traded all of it. A swap its own price limit stopped early would have paid the fee on
+            // Quote Asset it never traded, so it is refused; the same trade with the coin as the specified
+            // side goes through, since its fee is taken below on what really moved.
+            int256 feeTaken = OZSafeCast.toInt256(_feeOnSpecified(params.amountSpecified, t.platformFeeBps));
+            if (int256(quoteDelta) != params.amountSpecified + feeTaken) revert SwapStoppedEarly();
+            return (this.afterSwap.selector, 0);
+        }
+
         uint256 fee;
         if (exactIn) {
             // A sell: the pool owes the trader `quoteDelta` (positive), the gross, before the fee.
@@ -245,6 +249,14 @@ contract StokerHook is BaseHook, IUnlockCallback {
         // The only call before it is the PoolManager's own `mint`.
         // forge-lint: disable-next-line(reentrancy-events)
         emit FeeCredited(id, currency, t.creatorDestination, fee, creatorCredit, platformCredit);
+    }
+
+    /// @dev The fee when the Quote Asset is the swap's specified currency: on the gross for an exact-in buy
+    ///      (a negative amount), on the net for an exact-out sell (a positive one).
+    function _feeOnSpecified(int256 amountSpecified, uint16 feeBps) internal pure returns (uint256) {
+        return amountSpecified < 0
+            ? _feeOnGross(OZSafeCast.toUint256(-amountSpecified), feeBps)
+            : _feeOnNet(OZSafeCast.toUint256(amountSpecified), feeBps);
     }
 
     /// @dev 1.00% (or the Launch's rate) of a known gross amount, rounded up in the platform's favour.

@@ -84,3 +84,10 @@ interface IStateView {
         view
         returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee);
 }
+
+/// Uniswap's protocol fee controller on Robinhood Chain, a `V4FeeAdapter`: `getFee` is its policy's figure
+/// for a pool, and anyone may push that figure into the PoolManager (#249).
+interface IV4FeeAdapter {
+    function getFee(PoolKey calldata key) external view returns (uint24);
+    function triggerFeeUpdate(PoolKey calldata key) external;
+}

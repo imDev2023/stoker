@@ -4,7 +4,10 @@ pragma solidity 0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 import {PoolModifyLiquidityTest} from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
 import {PoolDonateTest} from "@uniswap/v4-core/src/test/PoolDonateTest.sol";
 
@@ -25,6 +28,7 @@ contract BooksHandler is Test {
     uint256 public feeFormulaMismatches; // swaps whose fee was not 1.00% of the Quote Asset's side
     uint256 public paidOut; // what Payout Calls delivered
     uint256 public swaps;
+    uint256 public limitedSwaps; // swaps that went through with a price limit of their own
     uint256 public lockBreaches; // a removal, a foreign add or a donation that went through
 
     constructor(BooksInvariantTest t_, PoolKey memory key_) {
@@ -36,6 +40,16 @@ contract BooksHandler is Test {
     }
 
     function trade(uint256 actorSeed, bool buy, bool exactIn, uint256 amount) external {
+        _trade(actorSeed, buy, exactIn, amount, 0);
+    }
+
+    /// The same trade with a price limit of its own a few tick spacings away, which stops many of them
+    /// early: those with the Quote Asset as the specified side are refused, the others pay on what moved.
+    function tradeWithLimit(uint256 actorSeed, bool buy, bool exactIn, uint256 amount, uint256 spacings) external {
+        _trade(actorSeed, buy, exactIn, amount, int24(int256(bound(spacings, 1, 20))) * 200);
+    }
+
+    function _trade(uint256 actorSeed, bool buy, bool exactIn, uint256 amount, int24 limitTicks) internal {
         address who = actors[actorSeed % actors.length];
         uint256 coins = t.coinBalance(who);
         if (!buy && coins < 1e9) buy = true;
@@ -46,15 +60,18 @@ contract BooksHandler is Test {
         uint256 q0 = t.quoteBalance(who);
         uint256 claims0 = t.hookClaims();
         uint256 credits0 = t.allCredits();
-        try t.swapAs(who, buy, exactIn, amount) {}
+        try t.swapAs(who, buy, exactIn, amount, limitTicks) {}
         catch {
-            return; // a sell asking for more than the pool can give, or more than the actor holds
+            // A sell asking for more than the pool can give or the actor holds, or a swap with the Quote
+            // Asset specified that its limit stopped early.
+            return;
         }
         uint256 q1 = t.quoteBalance(who);
         uint256 fee = t.hookClaims() - claims0;
         feesTaken += fee;
         creditsRecorded += t.allCredits() - credits0;
         swaps++;
+        if (limitTicks != 0) limitedSwaps++;
 
         uint256 expected;
         if (buy && exactIn) expected = t.feeOnGross(q0 - q1);
@@ -109,6 +126,8 @@ contract BooksHandler is Test {
 /// Invariants of the books (#241): the Seed Position never falls, and the Credits of every swap sum to
 /// the fee the hook took, which is always 1.00% of the Quote Asset's side.
 contract BooksInvariantTest is LocalBase {
+    using StateLibrary for IPoolManager;
+
     PoolKey internal key;
     address internal coin;
     uint128 internal seed;
@@ -205,8 +224,27 @@ contract BooksInvariantTest is LocalBase {
         vm.stopPrank();
     }
 
-    function swapAs(address who, bool buy, bool exactIn, uint256 amount) external {
-        _swap(key, who, buy, exactIn, amount);
+    /// `limitTicks` zero trades to the end of the range; otherwise the price limit sits that many ticks
+    /// from the pool's price, in the trade's direction.
+    function swapAs(address who, bool buy, bool exactIn, uint256 amount, int24 limitTicks) external {
+        if (limitTicks == 0) {
+            _swap(key, who, buy, exactIn, amount);
+            return;
+        }
+        _approveRouter(key, who);
+        (, int24 tick,,) = pm.getSlot0(key.toId());
+        bool zeroForOne = buy == _isQuote0(key);
+        vm.prank(who);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: zeroForOne,
+                amountSpecified: exactIn ? -int256(amount) : int256(amount),
+                sqrtPriceLimitX96: TickMath.getSqrtPriceAtTick(zeroForOne ? tick - limitTicks : tick + limitTicks)
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
     }
 
     function payoutAs(address who, address[] memory owners) external {

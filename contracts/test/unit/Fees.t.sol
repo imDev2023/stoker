@@ -2,7 +2,14 @@
 pragma solidity 0.8.26;
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 
 import {LocalBase} from "../utils/LocalBase.sol";
 import {StokerHook} from "../../src/StokerHook.sol";
@@ -10,6 +17,8 @@ import {StokerHook} from "../../src/StokerHook.sol";
 /// The hook only keeps the books (ADR 0025): every swap takes the 1.00% Platform Fee on the Quote
 /// Asset's side and records it as two Credits, the Creator's and the platform's, with no transfer.
 contract FeesTest is LocalBase {
+    using StateLibrary for IPoolManager;
+
     /// What a trader and the books saw on one swap, measured from outside.
     struct Seen {
         uint256 quoteIn; // Quote Asset the trader paid (buys)
@@ -128,5 +137,99 @@ contract FeesTest is LocalBase {
         _approveRouter(key, trader);
         vm.expectRevert();
         _swapApproved(key, trader, true, true, 1);
+    }
+
+    // ------------------------------------------------ a swap its own price limit stops early
+
+    /// A price limit `ticks` away from the pool's price, in the direction a buy or a sell moves it.
+    function _limit(PoolKey memory key, bool buy, int24 ticks) internal view returns (uint160) {
+        (, int24 tick,,) = pm.getSlot0(key.toId());
+        bool zeroForOne = buy == _isQuote0(key);
+        return TickMath.getSqrtPriceAtTick(zeroForOne ? tick - ticks : tick + ticks);
+    }
+
+    function _swapWithLimit(PoolKey memory key, bool buy, bool exactIn, uint256 amount, uint160 limit) internal {
+        vm.prank(trader);
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: buy == _isQuote0(key),
+                amountSpecified: exactIn ? -int256(amount) : int256(amount),
+                sqrtPriceLimitX96: limit
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+
+    /// The hook's `SwapStoppedEarly`, as the PoolManager wraps a hook's revert from `afterSwap`.
+    function _stoppedEarly() internal view returns (bytes memory) {
+        return abi.encodeWithSelector(
+            CustomRevert.WrappedError.selector,
+            address(hook),
+            IHooks.afterSwap.selector,
+            abi.encodeWithSelector(StokerHook.SwapStoppedEarly.selector),
+            abi.encodeWithSelector(Hooks.HookCallFailed.selector)
+        );
+    }
+
+    /// When the Quote Asset is the specified side the fee is taken before the pool runs, on the whole
+    /// specified amount. A price limit that stops such a swap early would leave the trader paying 1.00%
+    /// of what they asked for, not of what they traded (measured in review: a fee of 1 on a buy of 1.5),
+    /// so the hook refuses it.
+    function test_fee_quoteSpecifiedSwapStoppedByItsLimit_reverts() public {
+        for (uint256 i; i < 2; i++) {
+            (, PoolKey memory key) = _launch(i == 0, 0);
+            _swap(key, trader, true, true, 50 ether);
+            _approveRouter(key, trader);
+
+            // An exact-in buy of 100 that its limit stops after a fraction.
+            uint160 buyLimit = _limit(key, true, 400);
+            vm.expectRevert(_stoppedEarly());
+            _swapWithLimit(key, true, true, 100 ether, buyLimit);
+
+            // An exact-out sell of 40 that its limit stops after a fraction.
+            uint160 sellLimit = _limit(key, false, 400);
+            vm.expectRevert(_stoppedEarly());
+            _swapWithLimit(key, false, false, 40 ether, sellLimit);
+
+            // The same limits leave a swap they do not stop alone.
+            uint256 claims0 = _hookClaims();
+            _swapWithLimit(key, true, true, 0.01 ether, buyLimit);
+            assertEq(_hookClaims() - claims0, _feeOnGross(0.01 ether), "a limit that does not bind changes nothing");
+            claims0 = _hookClaims();
+            _swapWithLimit(key, false, false, 0.01 ether, _limit(key, false, 400));
+            assertEq(_hookClaims() - claims0, _feeOnNet(0.01 ether));
+        }
+    }
+
+    /// When the coin is the specified side the fee is taken after the pool runs, on the Quote Asset that
+    /// really moved, so a swap its limit stops early still pays exactly 1.00% of the Quote Asset's side.
+    function test_fee_coinSpecifiedSwapStoppedByItsLimit_paysOnWhatItTraded() public {
+        for (uint256 i; i < 2; i++) {
+            (, PoolKey memory key) = _launch(i == 0, 0);
+            _swap(key, trader, true, true, 50 ether);
+            _approveRouter(key, trader);
+
+            // An exact-out buy of far more coins than the limit lets through.
+            uint256 q0 = quote.balanceOf(trader);
+            uint256 c0 = _coin(key).balanceOf(trader);
+            uint256 claims0 = _hookClaims();
+            _swapWithLimit(key, true, false, 1e11 ether, _limit(key, true, 400));
+            uint256 fee = _hookClaims() - claims0;
+            assertLt(_coin(key).balanceOf(trader) - c0, 1e11 ether, "stopped early");
+            assertGt(fee, 0);
+            assertEq(fee, _feeOnNet(q0 - quote.balanceOf(trader) - fee), "1.00% of what the buy really paid");
+
+            // An exact-in sell of far more coins than the limit lets through.
+            q0 = quote.balanceOf(trader);
+            c0 = _coin(key).balanceOf(trader);
+            claims0 = _hookClaims();
+            _swapWithLimit(key, false, true, c0, _limit(key, false, 400));
+            fee = _hookClaims() - claims0;
+            assertLt(c0 - _coin(key).balanceOf(trader), c0, "stopped early");
+            assertGt(fee, 0);
+            assertEq(fee, _feeOnGross(quote.balanceOf(trader) - q0 + fee), "1.00% of what the pool really paid");
+        }
     }
 }

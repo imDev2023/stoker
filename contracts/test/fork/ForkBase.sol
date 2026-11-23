@@ -19,6 +19,9 @@ abstract contract ForkBase is StokerTestBase {
     /// sampled over the 24 hours to block 121,654,185 (2026-11-23); 28 went to the feed's v2.1.2 router
     /// (0x204F...0498) and 1 to 0x06Af...bf99.
     address internal constant UNIVERSAL_ROUTER = 0x8876789976dEcBfCbBbe364623C63652db8C0904;
+    /// Universal Router v2.1.2, the one Uniswap's feed lists: 5.8% of router swaps over the same 24 hours
+    /// and growing (docs/evm/research/quote-assets-and-rehearsal.md, #249). The same six-field structs.
+    address internal constant UNIVERSAL_ROUTER_V2_1_2 = 0x204FAca1764B154221e35c0d20aBb3c525710498;
     address internal constant V4_QUOTER = 0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94;
     address internal constant STATE_VIEW = 0xF3334192D15450CdD385c8B70e03f9A6bD9E673b;
     address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;

@@ -8,7 +8,7 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {ForkBase} from "./ForkBase.sol";
-import {RouterLib, IUniversalRouter, IV4Quoter, IPermit2Allowance, IStateView} from "./RouterLib.sol";
+import {RouterLib, IUniversalRouter, IV4Quoter, IPermit2Allowance, IStateView, IV4FeeAdapter} from "./RouterLib.sol";
 
 /// Trading through the Universal Router the chain's traffic uses, priced by the chain's V4 Quoter, with
 /// the hook keeping the books (#241's fork criteria on trades, Credits, Payout Calls and the protocol fee).
@@ -16,6 +16,10 @@ contract ForkTradeTest is ForkBase {
     error V4TooLittleReceived(uint256 minAmountOutReceived, uint256 amountReceived);
     error V4TooMuchRequested(uint256 maxAmountInRequested, uint256 amountRequested);
     error V4TooLittleReceivedPerHopSingle(uint256 minPrice, uint256 price);
+
+    /// The Universal Router a test trades through: the one carrying the chain's traffic unless a test
+    /// names the other.
+    address internal router = UNIVERSAL_ROUTER;
 
     struct Trade {
         bool buy;
@@ -33,8 +37,8 @@ contract ForkTradeTest is ForkBase {
         vm.startPrank(who);
         quote.approve(PERMIT2, type(uint256).max);
         _coin(key).approve(PERMIT2, type(uint256).max);
-        IPermit2Allowance(PERMIT2).approve(address(quote), UNIVERSAL_ROUTER, type(uint160).max, type(uint48).max);
-        IPermit2Allowance(PERMIT2).approve(address(_coin(key)), UNIVERSAL_ROUTER, type(uint160).max, type(uint48).max);
+        IPermit2Allowance(PERMIT2).approve(address(quote), router, type(uint160).max, type(uint48).max);
+        IPermit2Allowance(PERMIT2).approve(address(_coin(key)), router, type(uint160).max, type(uint48).max);
         vm.stopPrank();
     }
 
@@ -73,7 +77,7 @@ contract ForkTradeTest is ForkBase {
         bytes[] memory inputs = new bytes[](1);
         inputs[0] = abi.encode(actions, params);
         vm.prank(who);
-        IUniversalRouter(UNIVERSAL_ROUTER).execute(abi.encodePacked(RouterLib.V4_SWAP), inputs, block.timestamp + 60);
+        IUniversalRouter(router).execute(abi.encodePacked(RouterLib.V4_SWAP), inputs, block.timestamp + 60);
     }
 
     function _balances(address who, PoolKey memory key) internal view returns (uint256 q, uint256 c) {
@@ -83,6 +87,18 @@ contract ForkTradeTest is ForkBase {
     /// Buys and sells, exact in and exact out, deliver the Quoter's figure to the wei, and a bound one wei
     /// tighter than it reverts.
     function test_fork_router_fourTradesDeliverTheQuote_bothOrders() public {
+        _fourTradesDeliverTheQuote();
+    }
+
+    /// The same four trades through Universal Router v2.1.2, which a growing minority of the chain's
+    /// traffic uses.
+    function test_fork_router_v212_fourTradesDeliverTheQuote_bothOrders() public {
+        assertGt(UNIVERSAL_ROUTER_V2_1_2.code.length, 0, "v2.1.2 is deployed at the pinned block");
+        router = UNIVERSAL_ROUTER_V2_1_2;
+        _fourTradesDeliverTheQuote();
+    }
+
+    function _fourTradesDeliverTheQuote() internal {
         for (uint256 o; o < 2; o++) {
             (, PoolKey memory key) = _launch(o == 0, 1 ether);
             _approveRouter(trader, key);
@@ -260,6 +276,20 @@ contract ForkTradeTest is ForkBase {
         assertEq(_hookClaims() - claims0, _feeOnGross(10 ether), "our fee is unchanged by Uniswap's");
     }
 
+    /// Anyone may push the controller's policy figure into the PoolManager (`triggerFeeUpdate`). Under
+    /// the policy in force a pool whose hook returns deltas, as ours does, resolves to its default, 0, so
+    /// a stranger's trigger leaves a Stoker pool paying no protocol fee (#249's finding, on our own hook).
+    function test_fork_protocolFee_strangerTriggersThePolicy_ourPoolPaysNothing() public {
+        for (uint256 o; o < 2; o++) {
+            (, PoolKey memory key) = _launch(o == 0, 1 ether);
+            assertEq(IV4FeeAdapter(PROTOCOL_FEE_CONTROLLER).getFee(key), 0, "the policy's figure for our pool");
+            vm.prank(stranger);
+            IV4FeeAdapter(PROTOCOL_FEE_CONTROLLER).triggerFeeUpdate(key);
+            (,, uint24 inForce,) = IStateView(STATE_VIEW).getSlot0(PoolId.unwrap(key.toId()));
+            assertEq(inForce, 0, "no protocol fee in force after the trigger");
+        }
+    }
+
     /// Multi-hop: one router call sells coin A for NVDA and buys coin B with it, so the hook runs twice in
     /// one transaction, once per pool, and books each swap's fee to that Launch's own Creator.
     function test_fork_router_multiHopThroughTwoLaunches() public {
@@ -294,7 +324,7 @@ contract ForkTradeTest is ForkBase {
         inputs[0] =
             abi.encode(abi.encodePacked(RouterLib.SWAP_EXACT_IN, RouterLib.SETTLE_ALL, RouterLib.TAKE_ALL), params);
         vm.prank(trader);
-        IUniversalRouter(UNIVERSAL_ROUTER).execute(abi.encodePacked(RouterLib.V4_SWAP), inputs, block.timestamp + 60);
+        IUniversalRouter(router).execute(abi.encodePacked(RouterLib.V4_SWAP), inputs, block.timestamp + 60);
 
         assertGt(IERC20(coinB).balanceOf(trader), 0, "coin B delivered");
         assertEq(quote.balanceOf(trader), nvda0, "no NVDA left with the trader");

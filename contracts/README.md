@@ -28,7 +28,9 @@ The fee is 1.00% of the Quote Asset's side of every swap, rounded up:
 | Sell, exact out | what reaches the trader | so that it is 1.00% of trader plus fee | `beforeSwap` |
 
 The Creator's Credit is the fee times the Launch's share, rounded down, and the platform's is the rest, so the two always sum to the fee.
-A swap that its own price limit stops early pays the fee on the amount it specified when the Quote Asset is the specified side (an exact-in buy, an exact-out sell), since that fee is taken before the pool runs; the Universal Router sets no such limit on a single-pool swap.
+When the Quote Asset is the specified side (an exact-in buy, an exact-out sell) the fee is taken before the pool runs, on the whole specified amount, so the hook refuses such a swap if its own price limit stopped it early (`SwapStoppedEarly`).
+Without that it would pay 1.00% of what it asked for, not of what it traded: the review of 2026-11-23 measured a fee of 1 on a buy of 1.5 (66%).
+The same trade with the coin as the specified side goes through and pays on the Quote Asset that really moved; the Universal Router sets no price limit of its own on a single-pool swap, so its trades are untouched.
 Nothing is transferred inside a swap, so the hook works the same for a Quote Asset the PoolManager holds none of: the local tests run on a mock Stock Token the PoolManager has never seen, which the spike's paying hook could not do (its gotcha 2).
 
 Not in this slice, by the ticket: the native asset (#242), the registry's bounds, the Admin and the Referrer Fee (#243), Graduation and the Creator Lock (#244), the tax and the Tax Vault (#245), the Opening Fee (#246), the Distributor (#247), the Creator Ladder's key and the Destination contracts (#248), and the deployment and the gate (#251).
@@ -49,12 +51,12 @@ forge test --match-path 'test/fork/**'              # fork tests: needs ROBINHOO
   The first run reads the chain; later runs read Foundry's cache under `~/.foundry/cache/rpc/4663/`.
 - CI (`.github/workflows/ci.yml`, job `contracts`) checks the format, builds with sizes, lints `src`, and runs every test that needs no RPC on every push, with deeper fuzz and invariant campaigns (`FOUNDRY_PROFILE=ci`); it runs the fork tests only where the repository has the `ROBINHOOD_RPC_URL` secret.
 
-Results on 2026-11-23: 38 local tests (unit, fuzz and four invariants) and 9 fork tests pass.
+Results on 2026-11-23, after the main session's review: 40 local tests (unit, fuzz and four invariants) and 11 fork tests pass.
 
 | Contract | Runtime | Initcode |
 | --- | ---: | ---: |
-| `StokerFactory` | 10,228 | 17,931 |
-| `StokerHook` | 6,302 | 7,162 |
+| `StokerFactory` | 10,228 | 18,059 |
+| `StokerHook` | 6,430 | 7,290 |
 | `StokerCoin` | 1,705 | 2,774 |
 
 Launch gas on the fork, permit First Buy included: about 1.18M.
@@ -66,20 +68,23 @@ Every test proves behaviour from outside: what a wallet receives, what an event 
 | File | What it proves |
 | --- | --- |
 | `test/unit/Launch.t.sol` | The launch in both currency orders; the plain coin; a holder's burn; a permit First Buy, and a permit someone else submitted first; an unlisted asset and the native asset refused; the Creator cannot choose the share; a copied salt gives another address; the factory's bounds. |
-| `test/unit/Fees.t.sol` | Each of the four swap types credits exactly the fee above, in both orders, with no transfer to either recipient and no ERC-20 held by the hook; the `FeeCredited` event; a fuzz over all four; no fee on the coin's side; a swap the fee would swallow reverts. |
+| `test/unit/Fees.t.sol` | Each of the four swap types credits exactly the fee above, in both orders, with no transfer to either recipient and no ERC-20 held by the hook; the `FeeCredited` event; a fuzz over all four; no fee on the coin's side; a swap the fee would swallow reverts; a swap with the Quote Asset specified that its price limit stops early is refused, and one with the coin specified pays 1.00% of what it really traded. |
 | `test/unit/Payout.t.sol` | A stranger's Payout Call pays each owner alone; an owner pulls their own; a blocked owner stays owed while swaps go on and the others are paid, and is paid once unblocked; nothing moves a Credit but its owner's payment. |
 | `test/unit/Lock.t.sol` | No removal through a router by anyone, and none from the factory's own address given code that tries (a zero-liquidity poke included); no one else adds liquidity; donations refused; no pool opens on the hook but the factory's. |
 | `test/unit/SharedHook.t.sol` | Two Launches on one hook each book to their own Creator. |
 | `test/unit/Clock.t.sol` | No `NUMBER` opcode in the runtime of the hook, the factory, the coin or the stand-in (a walk that skips PUSH data and the metadata), and the walk finds it where it is. |
-| `test/invariant/Books.invariant.t.sol` | Under random buys, sells, Payout Calls, removals, foreign adds and donations: the Seed Position's liquidity never falls and no lock breach goes through; the Credits of every swap sum to the fee taken, which is always 1.00% of the Quote Asset's side; the claims back every Credit; every payment was a Credit. |
+| `test/invariant/Books.invariant.t.sol` | Under random buys and sells, with and without a price limit of their own, Payout Calls, removals, foreign adds and donations: the Seed Position's liquidity never falls and no lock breach goes through; the Credits of every swap sum to the fee taken, which is always 1.00% of the Quote Asset's side; the claims back every Credit; every payment was a Credit. |
 | `test/fork/ForkLaunch.t.sol` | Against NVDA on the real PoolManager: one call launches with a permit First Buy in both orders, the coin has no owner and no mint, every coin is in the pool or with the Creator; no call by anyone removes the Seed Position, nobody else adds liquidity, a donation is refused, and the next swap succeeds. |
-| `test/fork/ForkTrade.t.sol` | Through the Universal Router the chain's traffic uses: buys and sells, exact in and exact out, deliver the V4 Quoter's figure to the wei in both orders, and a bound one wei tighter reverts; the router reads the six-field struct; a multi-hop through two Launches books each pool's fee to its own Creator; each swap credits exactly 1.00%; a stranger's Payout Call pays each owner, and with the Creator blocked by the Stock Token's registry the swaps go on, the platform is paid and the Creator stays owed; the protocol fee set by Uniswap's controller is read from the chain and appears in the quote. |
+| `test/fork/ForkTrade.t.sol` | Through the Universal Router the chain's traffic uses: buys and sells, exact in and exact out, deliver the V4 Quoter's figure to the wei in both orders, and a bound one wei tighter reverts; the router reads the six-field struct; a multi-hop through two Launches books each pool's fee to its own Creator; each swap credits exactly 1.00%; a stranger's Payout Call pays each owner, and with the Creator blocked by the Stock Token's registry the swaps go on, the platform is paid and the Creator stays owed; the protocol fee set by Uniswap's controller is read from the chain and appears in the quote; a stranger's `triggerFeeUpdate` leaves our pool at the policy's figure, 0; the four trades again through Universal Router v2.1.2. |
 
 ## Chain facts the tests stand on
 
 - The Universal Router is `0x8876789976dEcBfCbBbe364623C63652db8C0904`, the one the chain's traffic uses: in 2,400 blocks sampled across the 24 hours to L2 block 121,654,185 (2026-11-23), it took 478 of the 507 direct calls to a Universal Router, the feed's v2.1.2 router `0x204FAca1764B154221e35c0d20aBb3c525710498` took 28 and `0x06AfBA43Fd06227fA663b0DAecF536f6EaA6bf99` took 1.
 - Its verified source has six-field `ExactInputSingleParams` and `ExactOutputSingleParams` (with `minHopPriceX36`); the periphery that uniswap-hooks v1.2.1 pins has five, so the tests write the structs out by hand (`test/fork/RouterLib.sol`).
-- A new pool starts with no protocol fee; Uniswap's controller (`0x6d0009504D129CF5002Dba61D9Ae8575AA79314c`) can set one at any time, `StateView.getSlot0` returns it, and the V4 Quoter includes it.
+- A new pool starts with no protocol fee; Uniswap's controller (`0x6d0009504D129CF5002Dba61D9Ae8575AA79314c`) can set one, `StateView.getSlot0` returns it, and the V4 Quoter includes it.
+  The controller is a `V4FeeAdapter` whose policy anyone may push into the PoolManager (`triggerFeeUpdate`); under the policy in force a pool whose hook returns deltas, as ours does, resolves to 0, and only a Uniswap governance vote changes that (`docs/evm/research/quote-assets-and-rehearsal.md`, #249).
+  The hook must never implement `protocolFeeFlags()`: reporting flag 2048 would opt its pools into 40 pips each way.
+- Universal Router v2.1.2 (`0x204FAca1764B154221e35c0d20aBb3c525710498`) is deployed at the pinned block and reads the same six-field structs; the four trades run through it as well.
 - NVDA has ERC-2612 `permit`, and the Stock Tokens' registry (`0xe10b6f6B275de231345c20D14Ab812db62151b00`) is asked about both parties of every transfer.
 
 ## What the next slices plug into
@@ -154,6 +159,7 @@ Fees:
 
 - [x] No LP fee override: the pool's static LP fee is zero and the hook returns no override.
 - [x] The protocol fee composes on the pool's swap and is read from the chain and quoted (`test_fork_protocolFee_readFromTheChain_inTheQuote`); the hook's own fee is unchanged by it.
+- [x] A fee taken before the pool runs is never kept for an amount the pool did not trade: a swap with the Quote Asset specified that stops early reverts (`test_fee_quoteSpecifiedSwapStoppedByItsLimit_reverts`), which #246's Opening Fee, taken the same way, relies on.
 
 Token review: the Listing is the allowlist (ADR 0028), and an issuer's powers are Quote Risk Labels, never a bar, by the owner's decision.
 
