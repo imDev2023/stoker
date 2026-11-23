@@ -197,3 +197,5 @@ Running Slither and the security standards' gate in CI is #251's.
 3. A test that `vm.etch`es code over the factory loses the factory's views; read the seed's range before.
 4. `forge-lint: disable-next-line` covers one line; a multi-line call needs `disable-start` and `disable-end`.
 5. With the Quote Asset as currency0 (the coin as currency1), the pool opens on the seed's upper edge, which v4 counts as out of range: the pool reports no active liquidity until the first buy (the spike's gotcha 6, `test_launch_withoutFirstBuy`).
+6. A cached local build lints only what changed, while CI's clean build lints every file, the tests included, and with warnings denied that aborted CI once; so `lint_on_build` is off and `forge lint src` is a step of its own.
+   Prove a CI change from `forge clean` first.
