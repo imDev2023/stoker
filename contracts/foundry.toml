@@ -43,3 +43,8 @@ robinhood = "${ROBINHOOD_RPC_URL}"
 
 [fmt]
 line_length = 120
+
+[lint]
+# CI lints `src` alone as its own step (`forge lint src`), where any warning fails; the tests' helpers
+# are not held to it, so the build does not lint.
+lint_on_build = false
