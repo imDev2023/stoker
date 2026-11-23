@@ -299,8 +299,9 @@ contract ForkNativeTest is ForkBase {
         vm.expectEmit(true, true, false, true, address(hook));
         emit StokerHook.CreditPaid(safe, NATIVE, safeOwed);
         uint256 gasBefore = gasleft();
+        // A Keeper's budget, not Foundry's near-unlimited default, so a gas burner would show.
         vm.prank(stranger);
-        hook.payout(NATIVE, owners);
+        hook.payout{gas: 1_000_000}(NATIVE, owners);
         emit log_named_uint("Payout Call gas, 8 owners, 5 refusing", gasBefore - gasleft());
 
         assertEq(creator.balance - creatorBefore, creatorOwed, "the ordinary wallet paid");

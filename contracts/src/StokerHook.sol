@@ -333,7 +333,7 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///      that reverts everyone's payment. Neither is possible here.
     function _payoutNative(address[] calldata owners) internal {
         uint256[] memory amounts = new uint256[](owners.length);
-        uint256 total;
+        uint256 total = 0;
         for (uint256 i; i < owners.length; i++) {
             uint256 amount = _credits[owners[i]][NATIVE];
             if (amount == 0) continue;
@@ -343,10 +343,12 @@ contract StokerHook is BaseHook, IUnlockCallback {
         }
         if (total == 0) return;
         totalCredits[NATIVE] -= total;
-        // forge-lint: disable-next-line(unused-return)
+        // The call is the PoolManager's, which calls back only this hook's own `unlockCallback`; a Credit
+        // is written after it only to add back a refused payment, never to overwrite one.
+        // forge-lint: disable-next-line(unused-return, reentrancy-no-eth)
         poolManager.unlock(abi.encode(Action.TakeNative, abi.encode(total)));
 
-        uint256 refused;
+        uint256 refused = 0;
         for (uint256 i; i < owners.length; i++) {
             uint256 amount = amounts[i];
             if (amount == 0) continue;
@@ -359,7 +361,8 @@ contract StokerHook is BaseHook, IUnlockCallback {
                 }
             } else {
                 // Never let a caller starve a recipient into a refusal: without the full allowance in hand
-                // the whole call reverts and every Credit stays as it was.
+                // the whole call reverts and every Credit stays as it was, which is why it reverts in the loop.
+                // forge-lint: disable-next-line(require-revert-in-loop)
                 if (gasleft() < NATIVE_PAYOUT_GAS * 64 / 63 + NATIVE_CALL_OVERHEAD) revert PayoutGasTooLow();
                 // No return data is copied, so a recipient's revert reason costs the caller nothing.
                 assembly ("memory-safe") {

@@ -22,6 +22,9 @@ import {StokerHook} from "../../src/StokerHook.sol";
 /// someone's swap or inside the PoolManager's unlock, and a recipient that refuses, re-enters or burns its
 /// gas keeps its Credit owed, to itself, while the others in the same call are paid (#242, ADR 0025).
 contract NativePayoutTest is LocalBase {
+    /// The gas a Keeper sends with one Payout Call in these tests.
+    uint256 internal constant KEEPER_GAS = 1_000_000;
+
     PoolKey internal key; // the EOA Creator's coin
     address[] internal hostile;
 
@@ -79,8 +82,10 @@ contract NativePayoutTest is LocalBase {
             vm.expectEmit(true, true, false, true, address(hook));
             emit StokerHook.CreditRefused(hostile[i], NATIVE, owed[i]);
         }
+        // A Keeper's budget, not Foundry's near-unlimited default: a gas burner paid with all the gas left
+        // would take 63/64 of it and starve every owner after it.
         vm.prank(stranger);
-        hook.payout(NATIVE, _owners());
+        hook.payout{gas: KEEPER_GAS}(NATIVE, _owners());
 
         assertEq(creator.balance - creatorBefore, creatorCredit, "the ordinary wallet paid in full");
         assertEq(platform.balance, platformCredit, "the platform paid in full");
