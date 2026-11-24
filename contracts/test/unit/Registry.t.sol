@@ -122,11 +122,13 @@ contract RegistryTest is LocalBase {
 
     function test_registry_constructor_refusesAMisconfiguration() public {
         vm.expectRevert(QuoteRegistry.InvalidSettings.selector);
-        new QuoteRegistry(StokerKeys(address(0)), TICK_SPACING);
+        this.create(
+            abi.encodePacked(type(QuoteRegistry).creationCode, abi.encode(StokerKeys(address(0)), TICK_SPACING))
+        );
         vm.expectRevert(QuoteRegistry.InvalidSettings.selector);
-        new QuoteRegistry(keys, 0);
+        this.create(abi.encodePacked(type(QuoteRegistry).creationCode, abi.encode(keys, 0)));
         vm.expectRevert(QuoteRegistry.InvalidSettings.selector);
-        new QuoteRegistry(keys, TickMath.MAX_TICK_SPACING + 1);
+        this.create(abi.encodePacked(type(QuoteRegistry).creationCode, abi.encode(keys, TickMath.MAX_TICK_SPACING + 1)));
     }
 
     // ------------------------------------------------ one write a day

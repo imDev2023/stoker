@@ -48,6 +48,16 @@ abstract contract StokerTestBase is Test {
     uint16 internal constant PIECE_BPS = 50;
     uint32 internal constant PIECE_INTERVAL = 60;
     int24 internal constant SUPPORT_WIDTH_SPACINGS = 10;
+    /// The Opening Fee's settings (#246, ADR 0026): a buy's fees take 99% together at the launch's own
+    /// second, the Opening Fee falling to nothing over 20 seconds.
+    uint16 internal constant OPENING_FEE_START_BPS = 9_900;
+    uint32 internal constant OPENING_FEE_DURATION = 20;
+
+    /// The launch helpers move the clock past the Opening Fee after launching, so a test about anything else
+    /// trades as it did before #246; the Opening Fee's own tests set this to trade inside it.
+    bool internal _tradeInOpening;
+    /// The start figure the fixture deploys with; a test of a lower figure sets it before `setUp`.
+    uint16 internal openingFeeStartBps = OPENING_FEE_START_BPS;
     /// The Reference Price's settings (#271): it follows a dearer coin by 2 ticks a minute (about 1.2% an
     /// hour), a cheaper one by 60,000 ticks a minute (any fall within seconds), and a buy goes through only
     /// while the coin's price stands at or below it (a band of 0), so the vault's own buys raise the price by
@@ -115,7 +125,9 @@ abstract contract StokerTestBase is Test {
                 break;
             }
         }
-        factory = new StokerFactory(pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, salt, taxVault);
+        factory = new StokerFactory(
+            pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, salt, taxVault, openingFeeStartBps, OPENING_FEE_DURATION
+        );
         assertEq(address(factory), factoryAddr, "factory address");
         hook = factory.hook();
         assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS, "hook permission bits");
@@ -124,6 +136,20 @@ abstract contract StokerTestBase is Test {
         registry.list(address(quote), START_TICK, GRADUATION_MULTIPLE, REFERRER_FEE_CAP_BPS);
 
         swapRouter = new PoolSwapTest(pm);
+    }
+
+    /// Deploys `initCode` from this contract through an external call, so `vm.expectRevert` sees the
+    /// creation revert one call deep. A `new` in the test's own frame is a cheatcode deployment at the test's
+    /// depth: an expected revert there ends the whole test as a pass, and every case after the first is never
+    /// run (gotcha 31).
+    function create(bytes memory initCode) external returns (address a) {
+        assembly ("memory-safe") {
+            a := create(0, add(initCode, 0x20), mload(initCode))
+            if iszero(a) {
+                returndatacopy(0, 0, returndatasize())
+                revert(0, returndatasize())
+            }
+        }
     }
 
     /// Deploys what the Tax Vault hands the holders' part to, in exactly one deployment, for the vault at
@@ -169,9 +195,15 @@ abstract contract StokerTestBase is Test {
         PoolId id;
         (coin, id) = factory.launch(p);
         vm.stopPrank();
+        _pastOpening();
         key = _keyFor(coin);
         assertEq(PoolId.unwrap(key.toId()), PoolId.unwrap(id), "pool id");
         assertEq(address(quote) < coin, quoteIsCurrency0, "currency order");
+    }
+
+    /// Moves the clock to the end of the Opening Fee just launched, unless the test trades inside it.
+    function _pastOpening() internal {
+        if (!_tradeInOpening) vm.warp(vm.getBlockTimestamp() + OPENING_FEE_DURATION);
     }
 
     function _keyFor(address coin) internal view returns (PoolKey memory) {
@@ -342,6 +374,7 @@ abstract contract StokerTestBase is Test {
         PoolId id;
         vm.prank(creator);
         (coin, id) = factory.launch{value: firstBuy}(p);
+        _pastOpening();
         key = _nativeKey(coin);
         assertEq(PoolId.unwrap(key.toId()), PoolId.unwrap(id), "pool id");
     }
