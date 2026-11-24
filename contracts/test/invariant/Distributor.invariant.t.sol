@@ -9,7 +9,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Distributor} from "../../src/Distributor.sol";
 import {StokerKeys} from "../../src/StokerKeys.sol";
 import {MockQuote} from "../utils/MockQuote.sol";
-import {TaxVaultStandIn} from "../utils/TaxVaultStandIn.sol";
 import {GasBurningRecipient} from "../utils/Recipients.sol";
 import {Merkle} from "../utils/Merkle.sol";
 
@@ -35,7 +34,9 @@ contract ToggleHolder {
 /// balance.
 contract DistributorHandler is Test {
     Distributor public immutable d;
-    TaxVaultStandIn internal immutable vault;
+    /// The depositor the Distributor was deployed with, in the Tax Vault's place: this campaign runs
+    /// without a PoolManager, so it hands each deposit over as `TaxVault._deposit` does, from that address.
+    address internal immutable vault;
     StokerKeys internal immutable keys;
     MockQuote public immutable mock;
     address internal immutable roundKey;
@@ -71,16 +72,17 @@ contract DistributorHandler is Test {
     bool public postedByOther;
     bool public cancelledAfterDelay;
     bool public balanceMismatch;
+    bool public rangeMiscount;
     uint256 public claimsPaid;
+    /// What the campaign reached beside payments (from the review of PR #270): refusals, cancels by either
+    /// call, false roots posted and false roots that stopped a claim at their total.
+    uint256 public refusals;
+    uint256 public cancels;
+    uint256 public falseRounds;
+    uint256 public falseRoundsCapped;
+    mapping(uint256 round => bool) public isFalseRound;
 
-    constructor(
-        Distributor d_,
-        TaxVaultStandIn vault_,
-        StokerKeys keys_,
-        MockQuote mock_,
-        address roundKey_,
-        address guard_
-    ) {
+    constructor(Distributor d_, address vault_, StokerKeys keys_, MockQuote mock_, address roundKey_, address guard_) {
         d = d_;
         vault = vault_;
         keys = keys_;
@@ -104,13 +106,32 @@ contract DistributorHandler is Test {
         address coin = coins[coinSeed % 2];
         Currency asset = assets[assetSeed % 2];
         amount = bound(amount, 1, 1e21);
-        if (asset.isAddressZero()) vm.deal(address(vault), address(vault).balance + amount);
-        else mock.mint(address(vault), amount);
-        vault.pass(coin, asset, amount);
+        vm.startPrank(vault);
+        if (asset.isAddressZero()) {
+            vm.deal(vault, vault.balance + amount);
+            d.deposit{value: amount}(coin, asset, amount);
+        } else {
+            mock.mint(vault, amount);
+            mock.approve(address(d), amount);
+            d.deposit(coin, asset, amount);
+        }
+        vm.stopPrank();
         deposited[coin][asset] += amount;
     }
 
     function postRound(uint256 coinSeed, uint256 assetSeed, uint256 mask, uint256 amountSeed) external {
+        _postRound(coinSeed, assetSeed, mask, amountSeed, false);
+    }
+
+    /// The round key posts a false root: its tree owes twice the total it is posted with. Claims must stop
+    /// at the total, and the coin's other rounds keep their reservations.
+    function postFalseRound(uint256 coinSeed, uint256 assetSeed, uint256 mask, uint256 amountSeed) external {
+        _postRound(coinSeed, assetSeed, mask, amountSeed, true);
+    }
+
+    function _postRound(uint256 coinSeed, uint256 assetSeed, uint256 mask, uint256 amountSeed, bool falseRoot)
+        internal
+    {
         address coin = coins[coinSeed % 2];
         Currency asset = assets[assetSeed % 2];
         uint256 available = d.availableOf(coin, asset);
@@ -136,16 +157,38 @@ contract DistributorHandler is Test {
                 bytes.concat(keccak256(abi.encode(block.chainid, address(d), coin, g.id, holders[i], amount)))
             );
         }
-        if (g.leafSum == 0) {
+        uint256 total = falseRoot ? g.leafSum / 2 : g.leafSum;
+        if (total == 0) {
             _rounds.pop();
             return;
         }
-        bytes32[][] memory tree = Merkle.levels(leaves);
+        Merkle.Tree memory tree = Merkle.build(leaves);
         for (uint256 i; i < n; i++) {
             g.proofs.push(Merkle.proof(tree, i));
         }
         vm.prank(roundKey);
-        d.postRoot(g.id, coin, asset, Merkle.root(tree), g.leafSum);
+        d.postRoot(g.id, coin, asset, Merkle.root(tree), total);
+        if (falseRoot) {
+            isFalseRound[g.id] = true;
+            falseRounds++;
+        }
+    }
+
+    /// Claims one holder of a false round at a time, so a claim past its total reverts alone and the round
+    /// fills up to its total.
+    function claimFalseOne(uint256 seed) external {
+        uint256[] memory pick = _pickable(false);
+        for (uint256 p; p < pick.length; p++) {
+            GhostRound storage g = _rounds[pick[(p + seed % pick.length) % pick.length]];
+            if (!isFalseRound[g.id]) continue;
+            uint256 j = seed % g.holders.length;
+            Distributor.Claim[] memory c = new Distributor.Claim[](1);
+            c[0] = Distributor.Claim({round: g.id, holder: g.holders[j], amount: g.amounts[j], proof: g.proofs[j]});
+            _claim(stranger, c);
+            Distributor.Round memory r = d.roundOf(g.id);
+            if (r.paid + g.amounts[j] > r.total && !d.isClaimed(g.id, g.holders[j])) falseRoundsCapped++;
+            return;
+        }
     }
 
     /// The Guard cancels a random round, inside its delay or not; only inside may it succeed.
@@ -156,12 +199,41 @@ contract DistributorHandler is Test {
         vm.prank(guard);
         try d.cancelRoot(id) {
             if (!inside) cancelledAfterDelay = true;
+            cancels++;
         } catch {}
+    }
+
+    /// The Guard cancels a random range of rounds in one call: every round in it still inside its delay is
+    /// cancelled, and every other is passed over untouched.
+    function cancelRange(uint256 firstSeed, uint256 lenSeed) external {
+        uint256 count = d.roundCount();
+        if (count == 0) return;
+        uint256 first = bound(firstSeed, 1, count);
+        uint256 last = first + bound(lenSeed, 0, count + 2);
+        uint256 top = last < count ? last : count;
+        bool[] memory wasCancelled = new bool[](top + 1);
+        bool[] memory inside = new bool[](top + 1);
+        uint256 expected;
+        for (uint256 r = first; r <= top; r++) {
+            Distributor.Round memory dr = d.roundOf(r);
+            wasCancelled[r] = dr.cancelled;
+            inside[r] = block.timestamp < dr.postedAt + d.ROUND_DELAY();
+            if (!dr.cancelled && inside[r]) expected++;
+        }
+        vm.prank(guard);
+        uint256 done = d.cancelRoots(first, last);
+        if (done != expected) rangeMiscount = true;
+        for (uint256 r = first; r <= top; r++) {
+            bool now_ = d.roundOf(r).cancelled;
+            if (!wasCancelled[r] && !inside[r] && now_) cancelledAfterDelay = true;
+            if (!wasCancelled[r] && inside[r] && !now_) rangeMiscount = true;
+        }
+        cancels += done;
     }
 
     /// The Guard, a stranger or the vault tries to post a root against an open pot; it must never succeed.
     function postAsOther(uint256 whoSeed, uint256 coinSeed) external {
-        address[3] memory others = [guard, stranger, address(vault)];
+        address[3] memory others = [guard, stranger, vault];
         address coin = coins[coinSeed % 2];
         uint256 next = d.roundCount() + 1;
         vm.prank(others[whoSeed % 3]);
@@ -247,7 +319,14 @@ contract DistributorHandler is Test {
             ok = true;
         } catch {}
         Vm.Log[] memory logs = vm.getRecordedLogs();
-        if (ok) _readClaims(logs);
+        if (ok) {
+            _readClaims(logs);
+            for (uint256 i; i < logs.length; i++) {
+                if (logs[i].emitter == address(d) && logs[i].topics[0] == Distributor.ClaimRefused.selector) {
+                    refusals++;
+                }
+            }
+        }
         for (uint256 i; i < holders.length; i++) {
             address h = holders[i];
             if (mock.balanceOf(h) - before[2 * i] != _takeSeen(h, assets[0])) balanceMismatch = true;
@@ -324,9 +403,8 @@ contract DistributorInvariantTest is Test {
         vm.prank(roundKey);
         keys.acceptKey(StokerKeys.Role.RoundKey);
         mock = new MockQuote();
-        TaxVaultStandIn vault = new TaxVaultStandIn();
-        d = new Distributor(keys, address(vault));
-        vault.setDistributor(d);
+        address vault = makeAddr("taxVault");
+        d = new Distributor(keys, vault);
         handler = new DistributorHandler(d, vault, keys, mock, roundKey, admin);
         // Every run starts with a round in each asset already past its delay, so each run pays claims, and
         // one more still inside it.
@@ -414,10 +492,36 @@ contract DistributorInvariantTest is Test {
     function invariant_onlyTheRoundKeyPosts_theGuardOnlyCancelsInTime() public view {
         assertFalse(handler.postedByOther());
         assertFalse(handler.cancelledAfterDelay());
+        assertFalse(handler.rangeMiscount(), "a range cancel missed a round in its delay or miscounted");
     }
 
-    function afterInvariant() external view {
-        // The campaign must have paid claims, or it proved nothing about payments.
+    /// A false root never pays past the total it was posted with, whatever its tree says (from the review).
+    function invariant_aFalseRoundStopsAtItsTotal() public view {
+        for (uint256 i; i < handler.roundCountGhost(); i++) {
+            (uint256 id,) = handler.roundAt(i);
+            assertLe(handler.paidByRound(id), d.roundOf(id).total, "paid past the posted total");
+        }
+    }
+
+    /// Every run must pay claims, or it proved nothing about payments. Refusals, cancels and false roots
+    /// stopped at their total are rarer, so they are summed over the runs in the process's environment,
+    /// which no run's revert of the chain touches, and required once 32 runs have ended (the review
+    /// measured 1,631 claims paid, 453 refusals and 211 cancels over 128 runs).
+    function afterInvariant() external {
         assertGt(handler.claimsPaid(), 0, "no claim was paid");
+        uint256 runs = _add("STOKER_247_RUNS", 1);
+        uint256 refused = _add("STOKER_247_REFUSALS", handler.refusals());
+        uint256 cancelled = _add("STOKER_247_CANCELS", handler.cancels());
+        uint256 capped = _add("STOKER_247_CAPPED", handler.falseRoundsCapped());
+        if (runs >= 32) {
+            assertGt(refused, 0, "no refusal reached");
+            assertGt(cancelled, 0, "no cancel reached");
+            assertGt(capped, 0, "no false root stopped at its total");
+        }
+    }
+
+    function _add(string memory key, uint256 x) internal returns (uint256 sum) {
+        sum = vm.envOr(key, uint256(0)) + x;
+        vm.setEnv(key, vm.toString(sum));
     }
 }

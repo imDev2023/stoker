@@ -5,12 +5,24 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 
 import {ForkBase} from "./ForkBase.sol";
 import {DistributorHelpers} from "../utils/DistributorHelpers.sol";
+import {IHoldersPart} from "../../src/interfaces/IHoldersPart.sol";
+import {StokerTestBase} from "../utils/StokerTestBase.sol";
 
 /// @notice The Distributor's fork fixture (#247): Robinhood Chain at the pinned block, our contracts on the
 ///         real PoolManager, three coins launched (paired with NVDA as currency0 and as currency1, and with
-///         native ETH, always currency0), and the Distributor beside a stand-in Tax Vault until #245 lands.
+///         native ETH, always currency0), and the Distributor beside the real Tax Vault.
 ///         Kept small so the contracts over it stay clear of the compiler's stack limit (gotcha 9).
 abstract contract ForkDistributorBase is ForkBase, DistributorHelpers {
+    /// The real Distributor in the stand-in's place (`DistributorHelpers`).
+    function _deployHoldersPart(address taxVault_)
+        internal
+        virtual
+        override(StokerTestBase, DistributorHelpers)
+        returns (IHoldersPart)
+    {
+        return DistributorHelpers._deployHoldersPart(taxVault_);
+    }
+
     Currency internal constant NVDA_ASSET = Currency.wrap(NVDA);
     Currency internal constant ETH = Currency.wrap(address(0));
     uint256 internal constant KEEPER_GAS = 1_000_000;

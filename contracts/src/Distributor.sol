@@ -8,6 +8,7 @@ import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProo
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {StokerKeys} from "./StokerKeys.sol";
+import {IHoldersPart} from "./interfaces/IHoldersPart.sol";
 
 /// @title Distributor
 /// @notice Pays Holder Rewards on an EVM chain (ADR 0029, #247).
@@ -29,7 +30,7 @@ import {StokerKeys} from "./StokerKeys.sol";
 /// @dev No owner, no setter, no proxy, no pause. The round key and the Guard are read from `StokerKeys`
 ///      at the moment of each call, so a replacement or a revoke takes effect at once. The clocks read
 ///      `block.timestamp` alone.
-contract Distributor {
+contract Distributor is IHoldersPart {
     using SafeERC20 for IERC20;
 
     /// @notice How long a Round Root waits before it pays, and how long the Guard has to cancel it.
@@ -117,6 +118,7 @@ contract Distributor {
     /// @notice The round's Round Delay has not passed; it pays from `payableAt`.
     error RoundDelay(uint256 round, uint256 payableAt);
     error DelayOver(uint256 round);
+    error InvalidRange(uint256 firstRound, uint256 lastRound);
     error InvalidProof(uint256 round, address holder);
     /// @notice The claim would take the round past the total it was posted with.
     error RoundTotalExceeded(uint256 round);
@@ -139,7 +141,8 @@ contract Distributor {
     ///         (`IHoldersPart`, #245): the native asset as the call's value, exactly `amount`; an ERC-20
     ///         pulled from the Tax Vault, which approved exactly `amount`, with no value.
     /// @dev A round of source `earnings` (a Creator Earnings Destination of the holders, #248) will raise
-    ///      the same pot through an entry point of its own, admitted for that coin's Destination alone.
+    ///      the same pot through an entry point of its own, admitted for that coin's Destination alone, by
+    ///      `_addToPot`, which raises what a root may reserve with it.
     function deposit(address coin, Currency asset, uint256 amount) external payable {
         if (msg.sender != taxVault) revert NotTaxVault();
         if (asset.isAddressZero()) {
@@ -153,8 +156,7 @@ contract Distributor {
             // forge-lint: disable-next-line(incorrect-strict-equality)
             if (token.balanceOf(address(this)) - before != amount) revert DepositShort();
         }
-        potOf[coin][asset] += amount;
-        _available[coin][asset] += amount;
+        _addToPot(coin, asset, amount);
         // The only call before it is to the asset the Tax Vault named, and our own Tax Vault is the caller.
         // forge-lint: disable-next-line(reentrancy-events)
         emit Deposited(coin, asset, amount);
@@ -205,8 +207,33 @@ contract Distributor {
         // The Round Delay is a day; a sequencer's few seconds move its end by as much and no more.
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp >= uint256(r.postedAt) + ROUND_DELAY) revert DelayOver(round);
+        _cancel(round, r);
+    }
+
+    /// @notice Cancels every round from `firstRound` to `lastRound` still inside its Round Delay, by the
+    ///         Guard alone, and passes over any already cancelled or past its delay, so one stale round
+    ///         never blocks the rest. A stolen round key may post a false root for every Reward Launch's
+    ///         pot; with `StokerKeys.revokeKey` this stops them all in one or a few signatures, whatever
+    ///         the number of Launches. The caller bounds the gas by the range; a range past the last round
+    ///         stops at it. It only cancels: it never posts and never pays.
+    /// @return cancelled How many rounds it cancelled.
+    function cancelRoots(uint256 firstRound, uint256 lastRound) external returns (uint256 cancelled) {
+        if (msg.sender != keys.admin()) revert NotGuard();
+        if (firstRound == 0 || firstRound > lastRound) revert InvalidRange(firstRound, lastRound);
+        uint256 last = lastRound < roundCount ? lastRound : roundCount;
+        for (uint256 round = firstRound; round <= last; round++) {
+            Round storage r = _rounds[round];
+            // forge-lint: disable-next-line(block-timestamp)
+            if (r.cancelled || block.timestamp >= uint256(r.postedAt) + ROUND_DELAY) continue;
+            _cancel(round, r);
+            cancelled++;
+        }
+    }
+
+    /// @dev Cancels a round inside its delay: nothing pays inside the delay, so the whole total was still
+    ///      reserved, and it is free again in the coin's pot.
+    function _cancel(uint256 round, Round storage r) internal {
         r.cancelled = true;
-        // Nothing pays inside the delay, so the whole total was still reserved.
         uint256 released = r.total - r.paid;
         _available[r.coin][r.asset] += released;
         // The call before it is our own keys' view.
@@ -275,6 +302,13 @@ contract Distributor {
             i = end;
         }
         _setClaimLock(false);
+    }
+
+    /// @dev Raises a coin's pot and what a new root may owe from it, together, so every unit deposited can
+    ///      be reserved by a root. A round of source `earnings` (#248) raises the pot through here too.
+    function _addToPot(address coin, Currency asset, uint256 amount) internal {
+        potOf[coin][asset] += amount;
+        _available[coin][asset] += amount;
     }
 
     /// @dev Puts a refused claim back as it was: owed to the same holder, by the same round, from the same

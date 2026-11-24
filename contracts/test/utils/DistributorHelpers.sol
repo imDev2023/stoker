@@ -7,15 +7,14 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Distributor} from "../../src/Distributor.sol";
 import {StokerKeys} from "../../src/StokerKeys.sol";
 import {StokerTestBase} from "./StokerTestBase.sol";
-import {TaxVaultStandIn} from "./TaxVaultStandIn.sol";
+import {IHoldersPart} from "../../src/interfaces/IHoldersPart.sol";
 import {Merkle} from "./Merkle.sol";
 
-/// @notice What the Distributor's local and fork tests share (#247): deploying it beside a stand-in Tax
-///         Vault, naming the round key, filling a coin's pot, and posting and claiming Reward Rounds the
-///         way the Reward Engine and the Keeper will.
+/// @notice What the Distributor's local and fork tests share (#247): deploying it beside the real Tax Vault,
+///         each knowing the other's address, naming the round key, filling a coin's pot, and posting and
+///         claiming Reward Rounds the way the Reward Engine and the Keeper will.
 abstract contract DistributorHelpers is StokerTestBase {
     Distributor internal distributor;
-    TaxVaultStandIn internal vault;
     address internal roundKey = makeAddr("roundKey");
 
     /// A round built off-chain: its holders, what each is owed, and each one's proof.
@@ -30,12 +29,18 @@ abstract contract DistributorHelpers is StokerTestBase {
         uint256 total;
     }
 
-    /// Deploys the Distributor against the base's `StokerKeys` and a stand-in Tax Vault, and names the
-    /// round key through the Admin's two steps.
+    /// The base deploys the Distributor in the stand-in's place, against its `StokerKeys`, for the Tax
+    /// Vault's address it computed: the vault deployed next fixes this Distributor's address in turn.
+    function _deployHoldersPart(address taxVault_) internal virtual override returns (IHoldersPart) {
+        distributor = new Distributor(keys, taxVault_);
+        return distributor;
+    }
+
+    /// Checks that the Distributor and the Tax Vault each know the other, and names the round key through
+    /// the Admin's two steps.
     function _deployDistributor() internal {
-        vault = new TaxVaultStandIn();
-        distributor = new Distributor(keys, address(vault));
-        vault.setDistributor(distributor);
+        assertEq(distributor.taxVault(), address(taxVault), "the Distributor knows the Tax Vault");
+        assertEq(address(taxVault.distributor()), address(distributor), "the Tax Vault knows the Distributor");
         _setRoundKey(roundKey);
     }
 
@@ -46,15 +51,27 @@ abstract contract DistributorHelpers is StokerTestBase {
         keys.acceptKey(StokerKeys.Role.RoundKey);
     }
 
-    /// Gives the stand-in vault `amount` of `asset` and passes it to the Distributor for `coin`.
+    /// Hands `amount` of `asset` to the Distributor for `coin` from the Tax Vault's address, exactly as
+    /// `TaxVault._deposit` does: the native asset as value; an ERC-20 approved for exactly the amount and
+    /// pulled by the Distributor inside the call, the allowance cleared after. The fork's
+    /// `ForkDistributorTax.t.sol` fills pots through the vault's own calls from real trades instead.
     function _fund(address coin, Currency asset, uint256 amount) internal {
+        _fundAs(distributor, address(taxVault), coin, asset, amount);
+    }
+
+    function _fundAs(Distributor d, address depositor, address coin, Currency asset, uint256 amount) internal {
+        vm.startPrank(depositor);
         if (asset.isAddressZero()) {
-            vm.deal(address(vault), address(vault).balance + amount);
+            vm.deal(depositor, depositor.balance + amount);
+            d.deposit{value: amount}(coin, asset, amount);
         } else {
-            address token = Currency.unwrap(asset);
-            deal(token, address(vault), IERC20(token).balanceOf(address(vault)) + amount);
+            IERC20 token = IERC20(Currency.unwrap(asset));
+            deal(address(token), depositor, token.balanceOf(depositor) + amount);
+            token.approve(address(d), amount);
+            d.deposit(coin, asset, amount);
+            token.approve(address(d), 0);
         }
-        vault.pass(coin, asset, amount);
+        vm.stopPrank();
     }
 
     /// The leaf as the Reward Engine computes it, written here apart from the contract: the chain, the
@@ -95,7 +112,7 @@ abstract contract DistributorHelpers is StokerTestBase {
             leaves[i] = _leaf(d, coin, round, holders[i], amounts[i]);
             b.total += amounts[i];
         }
-        bytes32[][] memory tree = Merkle.levels(leaves);
+        Merkle.Tree memory tree = Merkle.build(leaves);
         b.root = Merkle.root(tree);
         b.proofs = new bytes32[][](holders.length);
         for (uint256 i; i < holders.length; i++) {

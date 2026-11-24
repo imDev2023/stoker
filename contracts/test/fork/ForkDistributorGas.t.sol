@@ -23,7 +23,7 @@ contract ForkDistributorGasTest is ForkDistributorBase {
     struct Tree {
         address[] holders;
         uint256[] amounts;
-        bytes32[][] levels;
+        Merkle.Tree levels;
         uint256 round;
     }
 
@@ -90,7 +90,7 @@ contract ForkDistributorGasTest is ForkDistributorBase {
             t.amounts[i] = 1e12 + i;
             leaves[i] = _leaf(distributor, coin, t.round, t.holders[i], t.amounts[i]);
         }
-        t.levels = Merkle.levels(leaves);
+        t.levels = Merkle.build(leaves);
     }
 
     /// Marks every account and slot the claim touches cold, as in a fresh transaction.

@@ -94,7 +94,7 @@ contract DistributorTest is DistributorLocalBase {
         vm.prank(keeper);
         keys.acceptKey(StokerKeys.Role.Keeper);
 
-        address[5] memory others = [stranger, platform, ladder, keeper, address(vault)];
+        address[5] memory others = [stranger, platform, ladder, keeper, address(taxVault)];
         for (uint256 i; i < others.length; i++) {
             vm.prank(others[i]);
             vm.expectRevert(Distributor.NotRoundKey.selector);
@@ -306,7 +306,7 @@ contract DistributorTest is DistributorLocalBase {
         (address[] memory h, uint256[] memory a) = _single(alice, 100);
         Built memory b = _post(coinA, stock, h, a);
 
-        address[3] memory others = [roundKey, stranger, address(vault)];
+        address[3] memory others = [roundKey, stranger, address(taxVault)];
         for (uint256 i; i < others.length; i++) {
             vm.prank(others[i]);
             vm.expectRevert(Distributor.NotGuard.selector);
@@ -435,9 +435,8 @@ contract DistributorTest is DistributorLocalBase {
         vm.chainId(chainId);
 
         // Another Distributor with the same round posted: the leaf carries the contract.
-        Distributor other = new Distributor(keys, address(vault));
-        vault.setDistributor(other);
-        _fund(coinA, stock, 300);
+        Distributor other = new Distributor(keys, address(taxVault));
+        _fundAs(other, address(taxVault), coinA, stock, 300);
         vm.prank(roundKey);
         other.postRoot(1, coinA, stock, b.root, b.total);
         vm.warp(vm.getBlockTimestamp() + 1 days);
@@ -580,8 +579,7 @@ contract DistributorTest is DistributorLocalBase {
     function test_claim_anAssetReturningFalseLeavesTheHolderOwed() public {
         FalseStock f = new FalseStock();
         Currency asset = Currency.wrap(address(f));
-        f.mint(address(vault), 100);
-        vault.pass(coinA, asset, 100);
+        _fund(coinA, asset, 100);
         (address[] memory h, uint256[] memory a) = _pair(alice, 40, bob, 60);
         Built memory b = _post(coinA, asset, h, a);
         _warpPastDelay(b.round);
@@ -624,19 +622,23 @@ contract DistributorTest is DistributorLocalBase {
     }
 
     function test_deposit_raisesThatCoinsPotAlone() public {
+        deal(address(mockQuote), address(taxVault), 70);
+        vm.startPrank(address(taxVault));
+        IERC20(address(mockQuote)).approve(address(distributor), 70);
         vm.expectEmit(address(distributor));
         emit Distributor.Deposited(coinA, stock, 70);
-        _fund(coinA, stock, 70);
+        distributor.deposit(coinA, stock, 70);
+        vm.stopPrank();
         assertEq(distributor.potOf(coinA, stock), 70);
         assertEq(distributor.potOf(coinB, stock), 0);
         assertEq(IERC20(address(mockQuote)).balanceOf(address(distributor)), 70);
-        assertEq(IERC20(address(mockQuote)).allowance(address(vault), address(distributor)), 0);
+        assertEq(IERC20(address(mockQuote)).allowance(address(taxVault), address(distributor)), 0);
     }
 
     function test_deposit_theValueMustBeTheNativeAmountExactly() public {
         Currency native = Currency.wrap(address(0));
-        vm.deal(address(vault), 10 ether);
-        vm.startPrank(address(vault));
+        vm.deal(address(taxVault), 10 ether);
+        vm.startPrank(address(taxVault));
         vm.expectRevert(abi.encodeWithSelector(Distributor.ValueMismatch.selector, 2 ether, 1 ether));
         distributor.deposit{value: 1 ether}(coinA, native, 2 ether);
         vm.expectRevert(abi.encodeWithSelector(Distributor.ValueMismatch.selector, 0, 1 ether));
@@ -650,9 +652,12 @@ contract DistributorTest is DistributorLocalBase {
     /// An asset that delivers less than the amount is refused, so a pot never counts more than it holds.
     function test_deposit_aShortTransferIsRefused() public {
         ShortStock s = new ShortStock();
-        s.mint(address(vault), 100);
+        s.mint(address(taxVault), 100);
+        vm.startPrank(address(taxVault));
+        s.approve(address(distributor), 100);
         vm.expectRevert(Distributor.DepositShort.selector);
-        vault.pass(coinA, Currency.wrap(address(s)), 100);
+        distributor.deposit(coinA, Currency.wrap(address(s)), 100);
+        vm.stopPrank();
     }
 
     function test_deposit_plainValueIsRefused() public {
