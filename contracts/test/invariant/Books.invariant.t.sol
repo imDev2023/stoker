@@ -281,7 +281,7 @@ abstract contract BooksInvariantBase is LocalBase {
     BooksHandler internal handler;
     uint256 internal firstBuy;
 
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
         (coin, key) = _launchForBooks();
         seed = _seedLiquidity(key);

@@ -4,6 +4,9 @@ pragma solidity 0.8.26;
 import {LocalBase} from "../utils/LocalBase.sol";
 import {OpcodeScan} from "../utils/OpcodeScan.sol";
 import {Distributor} from "../../src/Distributor.sol";
+import {BurnDestination} from "../../src/destinations/BurnDestination.sol";
+import {LiquidityDestination} from "../../src/destinations/LiquidityDestination.sol";
+import {HoldersDestination} from "../../src/destinations/HoldersDestination.sol";
 
 /// The contracts read time only, never `block.number`, which on Robinhood Chain and Arbitrum is an
 /// estimate of the L1 block (the security standards' robinhood-4663 profile, question 1).
@@ -25,6 +28,19 @@ contract ClockTest is LocalBase {
         Distributor d = new Distributor(keys, makeAddr("taxVault"));
         assertFalse(OpcodeScan.contains(address(d).code, OpcodeScan.NUMBER), "distributor");
         assertTrue(OpcodeScan.contains(address(d).code, OpcodeScan.TIMESTAMP), "the Round Delay reads the time");
+    }
+
+    /// The three Creator Earnings Destinations read no clock at all (#248).
+    function test_clock_theDestinationsReadNoClock() public {
+        address[3] memory d = [
+            address(new BurnDestination(hook)),
+            address(new LiquidityDestination(hook)),
+            address(new HoldersDestination(hook))
+        ];
+        for (uint256 i; i < d.length; i++) {
+            assertFalse(OpcodeScan.contains(d[i].code, OpcodeScan.NUMBER), "no block number");
+            assertFalse(OpcodeScan.contains(d[i].code, OpcodeScan.TIMESTAMP), "no time either");
+        }
     }
 
     function test_clock_theScanFindsNumberWhereItIs() public {
