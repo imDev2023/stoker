@@ -62,7 +62,8 @@ contract ForkDistributorTaxTest is ForkDistributorBase, TaxHelpers {
                 bought += got;
                 pieces++;
                 assertLt(pieces, 400, "the holders' part runs out");
-                vm.warp(vm.getBlockTimestamp() + PIECE_INTERVAL);
+                // Each buy moves the price, which the next waits for the Reference Price to follow (#271).
+                _letThePriceStand();
             }
             assertGt(pieces, 1, "bought in more than one capped piece");
             assertEq(IERC20(coin).balanceOf(address(distributor)), 0, "nothing reaches it before the hand-off");
@@ -111,6 +112,8 @@ contract ForkDistributorTaxTest is ForkDistributorBase, TaxHelpers {
     function _taxThrough(PoolKey memory key) internal {
         _trade(key, trader, true, true, _native(key) ? 1 ether : 50 ether);
         _trade(key, trader, false, true, _coinOfKey(key).balanceOf(trader) / 2);
+        // The vault buys at a price that has stood (#271).
+        _letThePriceStand();
     }
 
     /// Posts a round of two holders for the coin's whole pot in `asset`, and a stranger pays it after the

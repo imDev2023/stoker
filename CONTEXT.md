@@ -327,9 +327,13 @@ The contract that receives a coin's Reward Tax, Stoke Tax and Opening Fee on an 
 _Avoid_: Treasury, pot (that is a coin's own figure), fee vault
 
 **Support Liquidity**:
-Quote Asset alone, added to a coin's own pool in a locked position just below the current price, with no coin bought (ADR 0025).
+Quote Asset alone, added to a coin's own pool in a locked position just below the lower of the current price and the coin's Reference Price, with no coin bought (ADR 0025, #271).
 On an EVM chain it is what the Reward Liquidity, the Stoke Tax and the Opening Fee become, from a coin's first trade.
 _Avoid_: Floor, price floor, buy wall, Protocol-Owned Liquidity (that is the Burn's and the Flywheel's)
+
+**Reference Price**:
+A taxed coin's price as the Tax Vault trusts it on an EVM chain: it follows the pool's price by how long each price has stood, slowly up and fast down, so the vault never places Support Liquidity or buys at a price only just reached (#271).
+_Avoid_: Oracle, TWAP (it is neither an average nor an outside feed), floor, fair price
 
 **Opening Fee**:
 The extra fee on buys in a Launch's first seconds on an EVM chain, falling to nothing, all of it becoming the coin's Support Liquidity; the Creator's First Buy never pays it (ADR 0026).
