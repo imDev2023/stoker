@@ -325,7 +325,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         `NATIVE_PAYOUT_GAS` (all the gas there is when the owner is the caller, pulling their own).
     ///         A recipient that reverts, re-enters or burns its gas fails its own call alone: its Credit is
     ///         added back to it. A re-entering recipient meets a locked PoolManager, so it cannot swap or
-    ///         take as a recipient paid inside an unlock could, and this function's own guard.
+    ///         take inside the hook's unlock as a recipient paid there could, and this function's own guard.
+    ///         It can open an unlock of its own and trade as anyone can (an owner pulling their own has the
+    ///         gas for it); that trade books its Credits beside this call's, which only ever adds.
     ///      3. What was refused goes back into the PoolManager as the hook's claims, in a second unlock, so
     ///         the claims again back every Credit one for one and the hook keeps no native asset.
     ///      `take` of the native asset inside the unlock would call the recipient with all the gas left and
@@ -456,6 +458,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
     // ------------------------------------------------------------------ views
 
     /// @notice The Credit `owner` is owed in `currency`.
+    /// @dev Read from inside a native payment of the same Payout Call (a recipient's own code), it answers
+    ///      zero for every owner of that call not yet paid or refused: a contract that acts on a Credit
+    ///      must not do so from inside a payment.
     function creditOf(address owner, Currency currency) external view returns (uint256) {
         return _credits[owner][currency];
     }

@@ -6,6 +6,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 
 import {StokerHook} from "../../src/StokerHook.sol";
 
@@ -127,6 +128,55 @@ contract HeavyRecipient {
         address[] memory me = new address[](1);
         me[0] = address(this);
         hook.payout(Currency.wrap(address(0)), me);
+    }
+}
+
+/// Buys a coin from inside its own payment, through a router: the PoolManager is locked again by then, so
+/// the router opens an unlock of its own and the trade is an ordinary one, booking its fee while the
+/// Payout Call is still under way. It pulls its own Credit, which is the only way to be given the gas a
+/// trade needs.
+contract TradingRecipient {
+    StokerHook internal immutable hook;
+    PoolSwapTest internal immutable router;
+    PoolKey internal key;
+    uint256 public constant SPEND = 0.2 ether;
+    bool public traded;
+
+    constructor(StokerHook hook_, PoolSwapTest router_, PoolKey memory key_) {
+        hook = hook_;
+        router = router_;
+        key = key_;
+    }
+
+    function pull(address[] calldata owners) external {
+        hook.payout(Currency.wrap(address(0)), owners);
+    }
+
+    receive() external payable {
+        // Anything but the hook's payment (the router's refund of unspent value) is only accepted.
+        if (msg.sender != address(hook)) return;
+        router.swap{value: SPEND}(
+            key,
+            SwapParams(true, -int256(SPEND), TickMath.MIN_SQRT_PRICE + 1),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+        traded = true;
+    }
+}
+
+/// Accepts its payment only when it arrives with the whole allowance a payment to someone else carries
+/// (the cap and the stipend a value transfer adds, less its own first opcodes), and refuses otherwise:
+/// it shows whether a caller's gas budget ever starved a payment.
+contract ExactingRecipient {
+    uint256 internal immutable needs;
+
+    constructor(uint256 needs_) {
+        needs = needs_;
+    }
+
+    receive() external payable {
+        if (gasleft() < needs) revert("starved");
     }
 }
 

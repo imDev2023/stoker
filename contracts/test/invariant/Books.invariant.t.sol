@@ -34,6 +34,7 @@ contract BooksHandler is Test {
     uint256 public limitedSwaps; // swaps that went through with a price limit of their own
     uint256 public lockBreaches; // a removal, a foreign add or a donation that went through
     uint256 public refusedPayouts; // Payout Calls made while the Creator's Credit owner refused
+    uint256 public ownPulls; // Payout Calls the Creator's Credit owner made for themselves
 
     constructor(BooksInvariantBase t_, PoolKey memory key_) {
         t = t_;
@@ -95,6 +96,19 @@ contract BooksHandler is Test {
         t.payoutAs(actors[seed % actors.length], owners);
         uint256 after_ = t.quoteBalance(owners[0]) + (owners[1] == owners[0] ? 0 : t.quoteBalance(owners[1]));
         paidOut += after_ - before;
+    }
+
+    /// The Creator's Credit owner pulls their own, the platform's beside it. In the native asset that is
+    /// the payment that forwards all the caller's gas, the other being capped.
+    function pullOwn() external {
+        address[] memory owners = new address[](2);
+        owners[0] = t.creditOwner();
+        owners[1] = t.platformAddr();
+        if (t.refusing()) refusedPayouts++;
+        uint256 before = t.quoteBalance(owners[0]) + t.quoteBalance(owners[1]);
+        t.payoutAs(owners[0], owners);
+        paidOut += t.quoteBalance(owners[0]) + t.quoteBalance(owners[1]) - before;
+        ownPulls++;
     }
 
     /// The Creator's Credit owner starts or stops refusing payment (a blocklist, a reverting contract).

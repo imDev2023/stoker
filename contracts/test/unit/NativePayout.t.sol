@@ -14,7 +14,9 @@ import {
     ReentrantSwapRecipient,
     SyncingRecipient,
     HeavyRecipient,
-    CountingRecipient
+    CountingRecipient,
+    TradingRecipient,
+    ExactingRecipient
 } from "../utils/Recipients.sol";
 import {StokerHook} from "../../src/StokerHook.sol";
 
@@ -199,6 +201,82 @@ contract NativePayoutTest is LocalBase {
         assertEq(_nativeCredit(creator), owed);
         hook.payout(NATIVE, one);
         assertEq(_nativeCredit(creator), 0);
+    }
+
+    function test_native_payout_noGasBudgetStarvesARecipientIntoARefusal() public {
+        // The review of 2026-11-24: a recipient that needs the whole allowance (the cap, and the stipend a
+        // value transfer adds), under every gas budget a caller might choose around the floor. Either the
+        // whole call reverts and the Credit is untouched, or the recipient is paid in full: no budget ends
+        // in a refusal the recipient did not cause.
+        ExactingRecipient exacting = new ExactingRecipient(hook.NATIVE_PAYOUT_GAS() + 2_300 - 100);
+        _creditThrough(address(exacting));
+        uint256 owed = _nativeCredit(address(exacting));
+        address[] memory one = new address[](1);
+        one[0] = address(exacting);
+        uint256 paidRuns;
+        uint256 revertedRuns;
+        for (uint256 budget = 40_000; budget <= 400_000; budget += 250) {
+            uint256 snap = vm.snapshotState();
+            vm.prank(stranger);
+            try hook.payout{gas: budget}(NATIVE, one) {
+                assertEq(address(exacting).balance, owed, "a call that went through paid in full");
+                assertEq(_nativeCredit(address(exacting)), 0);
+                paidRuns++;
+            } catch {
+                assertEq(_nativeCredit(address(exacting)), owed, "a call that reverted left the Credit");
+                assertEq(address(exacting).balance, 0);
+                revertedRuns++;
+            }
+            vm.revertToState(snap);
+        }
+        assertGt(paidRuns, 0, "some budget paid");
+        assertGt(revertedRuns, 0, "some budget was too low");
+    }
+
+    function test_native_payout_recipientTradingInsideItsPaymentKeepsTheBooks() public {
+        // The review of 2026-11-24: the PoolManager is locked while a native payment is made, so a
+        // recipient cannot act inside the hook's unlock, but it can open one of its own. A recipient that
+        // pulls its own Credit has the gas to trade a coin from inside its payment, and that trade books
+        // Credits to owners later in the same Payout Call. The books must come out whole: the refused
+        // owner keeps both its old Credit and the new one, the platform is paid what it was owed when the
+        // call began and keeps the new Credit, and the claims back exactly what is still owed.
+        RevertingRecipient refuser = new RevertingRecipient();
+        PoolKey memory refusersCoin = _creditThrough(address(refuser));
+        TradingRecipient tradingOwner = new TradingRecipient(hook, swapRouter, refusersCoin);
+        _creditThrough(address(tradingOwner));
+        vm.deal(address(tradingOwner), 1 ether);
+
+        uint256 owedTrading = _nativeCredit(address(tradingOwner));
+        uint256 owedRefuser = _nativeCredit(address(refuser));
+        uint256 owedPlatform = _nativeCredit(platform);
+        uint256 otherCredits = hook.totalCredits(NATIVE) - owedTrading - owedRefuser - owedPlatform;
+        uint256 fee = _feeOnGross(tradingOwner.SPEND());
+        uint256 creatorShare = fee * CREATOR_SHARE_BPS / 10_000;
+
+        address[] memory owners = new address[](3);
+        owners[0] = address(tradingOwner);
+        owners[1] = address(refuser);
+        owners[2] = platform;
+        tradingOwner.pull(owners);
+
+        assertTrue(tradingOwner.traded(), "the recipient traded inside its own payment");
+        assertEq(
+            address(tradingOwner).balance,
+            1 ether + owedTrading - tradingOwner.SPEND(),
+            "paid once, and it paid its buy"
+        );
+        assertEq(_nativeCredit(address(tradingOwner)), 0);
+        assertEq(
+            _nativeCredit(address(refuser)),
+            owedRefuser + creatorShare,
+            "the refused Credit is added back beside the one booked meanwhile"
+        );
+        assertEq(address(refuser).balance, 0);
+        assertEq(platform.balance, owedPlatform, "the platform paid what it was owed when the call began");
+        assertEq(_nativeCredit(platform), fee - creatorShare, "and it keeps the Credit booked meanwhile");
+        assertEq(hook.totalCredits(NATIVE), otherCredits + owedRefuser + fee, "the books sum");
+        assertEq(_nativeClaims(), hook.totalCredits(NATIVE), "the claims back exactly what is still owed");
+        assertEq(address(hook).balance, 0, "the hook keeps no native asset");
     }
 
     function test_native_payout_nothingOwedPaysNothing() public {

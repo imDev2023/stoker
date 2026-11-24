@@ -5,6 +5,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -42,19 +43,9 @@ interface ISafeSetup {
     ) external;
 }
 
-/// The native asset as a Quote Asset on the real PoolManager (#242): a launch in one call with value, the
-/// four trades through both Universal Routers the chain's traffic uses, and the Payout Call against an
-/// ordinary wallet, a Safe and recipients that refuse, re-enter or burn their gas.
-contract ForkNativeTest is ForkBase {
-    using StateLibrary for IPoolManager;
-
-    error V4TooLittleReceived(uint256 minAmountOutReceived, uint256 amountReceived);
-    error V4TooMuchRequested(uint256 maxAmountInRequested, uint256 amountRequested);
-
-    address internal constant SAFE_PROXY_FACTORY = 0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67;
-    address internal constant SAFE_L2_SINGLETON = 0x29fcB43b46531BcA003ddC8FCB67FFE91900C762;
-    address internal constant SAFE_FALLBACK_HANDLER = 0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99;
-
+/// What the native fork tests share: the Listing, the Creator's counting Destination, and one trade
+/// through the Universal Router.
+abstract contract ForkNativeBase is ForkBase {
     address internal router = UNIVERSAL_ROUTER;
     /// The Creator's Destination in the trading tests: it counts every payment that reaches it.
     CountingRecipient internal destination;
@@ -65,49 +56,13 @@ contract ForkNativeTest is ForkBase {
         uint256 amount;
     }
 
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
         _listNative();
         destination = new CountingRecipient();
         vm.deal(creator, 10 ether);
         vm.deal(trader, 100 ether);
     }
-
-    // ---------------------------------------------------------------- the launch
-
-    /// One call with value launches a coin paired with native ETH and makes the First Buy: no approval,
-    /// no permit, and nothing kept by the factory.
-    function test_fork_native_launch_oneCallWithValue_noApprovalNoPermit() public {
-        uint256 before = creator.balance;
-        uint256 gasBefore = gasleft();
-        (address coin, PoolKey memory key) = _launchNative(0.1 ether, address(0));
-        emit log_named_uint("launch gas, native First Buy included", gasBefore - gasleft());
-        StokerCoin c = StokerCoin(coin);
-
-        assertEq(Currency.unwrap(key.currency0), address(0), "native ETH in the pool key, never WETH");
-        assertEq(before - creator.balance, 0.1 ether, "the Creator paid exactly the value sent");
-        assertEq(quote.allowance(creator, address(factory)), 0, "no approval was given");
-        assertGt(c.balanceOf(creator), 0, "the First Buy delivered coins");
-        emit log_named_uint("coins for 0.1 ETH", c.balanceOf(creator));
-        assertEq(address(factory).balance, 0, "the factory keeps nothing");
-        assertEq(address(hook).balance, 0, "the hook holds nothing");
-        assertEq(c.balanceOf(address(pm)) + c.balanceOf(creator), c.totalSupply(), "every coin accounted");
-
-        (,, uint24 protocolFee, uint24 lpFee) = pm.getSlot0(key.toId());
-        assertEq(lpFee, 0);
-        assertEq(protocolFee, 0);
-        assertEq(_poolLiquidity(key), _seedLiquidity(key));
-
-        uint256 fee = _feeOnGross(0.1 ether);
-        assertEq(_nativeCredit(creator), fee * CREATOR_SHARE_BPS / 10_000, "the Creator's Credit");
-        assertEq(_nativeCredit(platform), fee - _nativeCredit(creator));
-        assertEq(_nativeClaims(), fee);
-
-        assertFalse(OpcodeScan.contains(address(hook).code, OpcodeScan.NUMBER));
-        assertFalse(OpcodeScan.contains(address(factory).code, OpcodeScan.NUMBER));
-    }
-
-    // ---------------------------------------------------------------- trading through the router
 
     function _approveRouter(address who, address coin) internal {
         vm.startPrank(who);
@@ -150,6 +105,56 @@ contract ForkNativeTest is ForkBase {
             abi.encodePacked(RouterLib.V4_SWAP), inputs, block.timestamp + 60
         );
     }
+}
+
+/// The native asset as a Quote Asset on the real PoolManager (#242): a launch in one call with value, the
+/// four trades through both Universal Routers the chain's traffic uses, and the Payout Call against an
+/// ordinary wallet, a Safe and recipients that refuse, re-enter or burn their gas.
+contract ForkNativeTest is ForkNativeBase {
+    using StateLibrary for IPoolManager;
+
+    error V4TooLittleReceived(uint256 minAmountOutReceived, uint256 amountReceived);
+    error V4TooMuchRequested(uint256 maxAmountInRequested, uint256 amountRequested);
+
+    address internal constant SAFE_PROXY_FACTORY = 0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67;
+    address internal constant SAFE_L2_SINGLETON = 0x29fcB43b46531BcA003ddC8FCB67FFE91900C762;
+    address internal constant SAFE_FALLBACK_HANDLER = 0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99;
+
+    // ---------------------------------------------------------------- the launch
+
+    /// One call with value launches a coin paired with native ETH and makes the First Buy: no approval,
+    /// no permit, and nothing kept by the factory.
+    function test_fork_native_launch_oneCallWithValue_noApprovalNoPermit() public {
+        uint256 before = creator.balance;
+        uint256 gasBefore = gasleft();
+        (address coin, PoolKey memory key) = _launchNative(0.1 ether, address(0));
+        emit log_named_uint("launch gas, native First Buy included", gasBefore - gasleft());
+        StokerCoin c = StokerCoin(coin);
+
+        assertEq(Currency.unwrap(key.currency0), address(0), "native ETH in the pool key, never WETH");
+        assertEq(before - creator.balance, 0.1 ether, "the Creator paid exactly the value sent");
+        assertEq(quote.allowance(creator, address(factory)), 0, "no approval was given");
+        assertGt(c.balanceOf(creator), 0, "the First Buy delivered coins");
+        emit log_named_uint("coins for 0.1 ETH", c.balanceOf(creator));
+        assertEq(address(factory).balance, 0, "the factory keeps nothing");
+        assertEq(address(hook).balance, 0, "the hook holds nothing");
+        assertEq(c.balanceOf(address(pm)) + c.balanceOf(creator), c.totalSupply(), "every coin accounted");
+
+        (,, uint24 protocolFee, uint24 lpFee) = pm.getSlot0(key.toId());
+        assertEq(lpFee, 0);
+        assertEq(protocolFee, 0);
+        assertEq(_poolLiquidity(key), _seedLiquidity(key));
+
+        uint256 fee = _feeOnGross(0.1 ether);
+        assertEq(_nativeCredit(creator), fee * CREATOR_SHARE_BPS / 10_000, "the Creator's Credit");
+        assertEq(_nativeCredit(platform), fee - _nativeCredit(creator));
+        assertEq(_nativeClaims(), fee);
+
+        assertFalse(OpcodeScan.contains(address(hook).code, OpcodeScan.NUMBER));
+        assertFalse(OpcodeScan.contains(address(factory).code, OpcodeScan.NUMBER));
+    }
+
+    // ---------------------------------------------------------------- trading through the router
 
     /// Buys and sells, exact in and exact out, deliver the Quoter's figure to the wei, a bound one wei
     /// tighter reverts, and each swap's Credits sum to 1.00% of its native side, paid to nobody.
@@ -336,5 +341,71 @@ contract ForkNativeTest is ForkBase {
         assertEq(direct.takeMet(), IPoolManager.ManagerLocked.selector);
         assertEq(address(again).balance, owedAgain);
         assertEq(address(direct).balance, owedDirect);
+    }
+}
+
+/// The route from one coin paired with native ETH to another, through native ETH (the review of
+/// 2026-11-24). A contract of its own: one more test in `ForkNativeTest` runs it past the compiler's stack.
+contract ForkNativeRouteTest is ForkNativeBase {
+    /// The path from a coin paired with native ETH to coin B: through native ETH, both pools on our hook.
+    function _pathThroughNative(address coinB) internal view returns (RouterLib.PathKey[] memory path) {
+        path = new RouterLib.PathKey[](2);
+        path[0] = RouterLib.PathKey(NATIVE, 0, TICK_SPACING, IHooks(address(hook)), "");
+        path[1] = RouterLib.PathKey(Currency.wrap(coinB), 0, TICK_SPACING, IHooks(address(hook)), "");
+    }
+
+    /// Sells `sell` of coin A for native ETH and buys coin B with it, in one transaction through the router.
+    function _routeThroughNative(address coinA, address coinB, uint256 sell) internal {
+        bytes[] memory params = new bytes[](3);
+        params[0] = abi.encode(
+            RouterLib.ExactInputParams(
+                Currency.wrap(coinA), _pathThroughNative(coinB), new uint256[](0), uint128(sell), uint128(1)
+            )
+        );
+        params[1] = abi.encode(Currency.wrap(coinA), sell);
+        params[2] = abi.encode(Currency.wrap(coinB), uint256(1));
+        bytes[] memory inputs = new bytes[](1);
+        inputs[0] =
+            abi.encode(abi.encodePacked(RouterLib.SWAP_EXACT_IN, RouterLib.SETTLE_ALL, RouterLib.TAKE_ALL), params);
+        vm.prank(trader);
+        IUniversalRouter(router).execute(abi.encodePacked(RouterLib.V4_SWAP), inputs, block.timestamp + 60);
+    }
+
+    /// The route between two coins paired with native ETH, in one transaction: coin A is sold for ETH and
+    /// the ETH buys coin B, without a wei of it leaving the PoolManager. Each pool's fee is booked to its
+    /// own Creator, and no ETH reaches the trader, either Destination or the platform (the review of
+    /// 2026-11-24).
+    function test_fork_native_router_multiHopThroughNativeETH() public {
+        CountingRecipient destinationB = new CountingRecipient();
+        (address coinA, PoolKey memory keyA) = _launchNative(0.1 ether, address(destination));
+        (address coinB,) = _launchNative(0.1 ether, address(destinationB));
+        _approveRouter(trader, coinA);
+        _route(trader, keyA, Trade(true, true, 1 ether), 0);
+
+        uint256 a0 = _nativeCredit(address(destination));
+        uint256 b0 = _nativeCredit(address(destinationB));
+        uint256 p0 = _nativeCredit(platform);
+        uint256 claims0 = _nativeClaims();
+        uint256 eth0 = trader.balance;
+        uint256 r0 = router.balance;
+
+        _routeThroughNative(coinA, coinB, IERC20(coinA).balanceOf(trader) / 2);
+
+        assertGt(IERC20(coinB).balanceOf(trader), 0, "coin B delivered");
+        assertEq(trader.balance, eth0, "no ETH reached the trader or left them");
+        assertEq(router.balance, r0, "the router keeps none");
+        uint256 creditA = _nativeCredit(address(destination)) - a0;
+        uint256 creditB = _nativeCredit(address(destinationB)) - b0;
+        assertGt(creditA, 0, "the sell in pool A credited A's Creator");
+        assertGt(creditB, 0, "the buy in pool B credited B's Creator");
+        assertEq(
+            creditA + creditB + _nativeCredit(platform) - p0, _nativeClaims() - claims0, "the Credits sum to the fees"
+        );
+        // The buy in pool B spends what the sell in pool A delivered after its fee, so B's fee is 1.00%
+        // of 99% of A's native side: A's is the larger, by that one percent.
+        assertApproxEqRel(creditB, creditA * 99 / 100, 1e12, "each pool took 1.00% of its own native side");
+        assertEq(destination.payments() + destinationB.payments(), 0, "no swap paid either Destination");
+        assertEq(platform.balance, 0, "no swap paid the platform");
+        assertEq(address(hook).balance, 0, "the hook holds no ETH");
     }
 }
