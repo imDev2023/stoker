@@ -202,6 +202,12 @@ abstract contract TaxHelpers is StokerTestBase {
 
     // ---------------------------------------------------------------- trading and refusals
 
+    /// Lets the price the trading left stand long enough for the Reference Price to follow it (#271), as
+    /// any price that stands is followed: a month covers any move a test makes at 2 ticks a minute.
+    function _letThePriceStand() internal {
+        vm.warp(vm.getBlockTimestamp() + 30 days);
+    }
+
     /// A trade through the test router in a pool paired with the ERC-20 Quote Asset or the native asset.
     function _trade(PoolKey memory key, address who, bool buy, bool exactIn, uint256 amount)
         internal

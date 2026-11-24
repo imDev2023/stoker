@@ -21,6 +21,7 @@ import {SafeCast as OZSafeCast} from "@openzeppelin/contracts/utils/math/SafeCas
 import {StokerHook} from "./StokerHook.sol";
 import {StokerCoin} from "./StokerCoin.sol";
 import {IHoldersPart} from "./interfaces/IHoldersPart.sol";
+import {IReferenceSettings} from "./interfaces/IReferenceSettings.sol";
 
 /// @notice What the Tax Vault reads from the factory it was made for.
 interface IStokerLaunches {
@@ -32,11 +33,17 @@ interface IStokerLaunches {
 /// @notice Receives every Reward Tax and Stoke Tax on an EVM chain and spends each coin's own tax on that
 ///         coin alone (ADR 0025, #245), by calls anyone can make, in capped pieces:
 ///         - `addSupport` adds the Reward Liquidity share, and a Stoke Launch's whole tax, to the coin's pool
-///           as Support Liquidity: Quote Asset alone, in a locked position just below the current price,
-///           with no coin bought and the price unmoved;
+///           as Support Liquidity: Quote Asset alone, in a locked position just below the lower of the
+///           current price and the pool's Reference Price, with no coin bought and the price unmoved;
 ///         - `burn` buys the coin with the Reward Burn share and burns exactly what it bought;
 ///         - `buyForHolders` buys the coin with the holders' part when the Payout Asset is the coin;
 ///         - `passHoldersPart` hands the holders' part to the Distributor.
+///
+///         The vault never spends a coin's tax at a price that was only just reached (#271): the hook keeps a
+///         Reference Price for every taxed pool that follows the pool's price by how long each price has
+///         stood, rising slowly and falling faster. Support Liquidity is placed below the lower of the two,
+///         a piece is capped at the lower of the two, and a buy waits while the coin's price is above the
+///         reference by more than `buyBandTicks`.
 ///
 ///         How a coin's tax reaches these books: the hook mints each swap's tax to this contract as ERC-6909
 ///         claims in the PoolManager and adds it to its own running total for the pool (`taxBooked`). Nothing
@@ -55,7 +62,7 @@ interface IStokerLaunches {
 /// @dev No owner, no setter, no proxy, no pause; the settings are fixed at deployment. It holds every
 ///      Support Liquidity position and has no code that removes liquidity; the hook refuses every removal in
 ///      any case. It reads time only, never `block.number`.
-contract TaxVault is IUnlockCallback {
+contract TaxVault is IUnlockCallback, IReferenceSettings {
     using SafeERC20 for IERC20;
     using StateLibrary for IPoolManager;
 
@@ -76,14 +83,22 @@ contract TaxVault is IUnlockCallback {
     uint32 public immutable pieceInterval;
     /// @notice How deep a Support Liquidity position reaches below the price, in the pool's tick spacings.
     int24 public immutable supportWidthSpacings;
+    /// @notice How fast the Reference Price follows a dearer coin, in ticks per minute the price stood (#271).
+    uint24 public immutable referenceRiseTicksPerMinute;
+    /// @notice How fast the Reference Price follows a cheaper coin, in ticks per minute the price stood.
+    uint24 public immutable referenceFallTicksPerMinute;
+    /// @notice How far above the Reference Price the coin's price may stand, in ticks, for a buy to go through.
+    uint24 public immutable buyBandTicks;
 
     /// @notice What each path has spent of one coin's tax, in its Quote Asset, and what waits to be passed on.
     /// @param burnSpent The Reward Burn's buys.
     /// @param supportSpent The Support Liquidity added.
     /// @param holdersSpent The holders' part passed to the Distributor, or spent buying the coin for them.
     /// @param holdersCoins Coins bought for the holders, not yet passed to the Distributor.
-    /// @param lastBuyAt When this vault last bought in the pool.
+    /// @param lastBuyAt When this vault last bought in the pool for the Reward Burn.
     /// @param lastSupportAt When this vault last added Support Liquidity to the pool.
+    /// @param lastHoldersBuyAt When this vault last bought in the pool for the holders (#271: a clock of its
+    ///        own, so a caller who always chooses the burn cannot hold off the holders' buys).
     struct Books {
         uint256 burnSpent;
         uint256 supportSpent;
@@ -91,6 +106,7 @@ contract TaxVault is IUnlockCallback {
         uint256 holdersCoins;
         uint64 lastBuyAt;
         uint64 lastSupportAt;
+        uint64 lastHoldersBuyAt;
     }
 
     mapping(PoolId => Books) internal _books;
@@ -103,6 +119,17 @@ contract TaxVault is IUnlockCallback {
         Currency coin;
         uint256 booked;
         uint256 openingBooked;
+        StokerHook hook;
+    }
+
+    /// @dev Where a pool's price stands for a public call: the pool's own tick and sqrt price, the Reference
+    ///      Price's tick (#271), and of the two ticks the one where the coin is cheaper, which is where the
+    ///      vault places and caps what it spends.
+    struct Prices {
+        int24 tick;
+        uint160 sqrtPriceX96;
+        int24 referenceTick;
+        int24 spendTick;
     }
 
     enum Action {
@@ -126,17 +153,26 @@ contract TaxVault is IUnlockCallback {
     error NoRoomForSupport();
     /// @notice A Support Liquidity addition did not take Quote Asset alone, or took more than its piece.
     error NotSupportShaped();
+    /// @notice The coin's price stands above the pool's Reference Price by more than `buyBandTicks`, so a buy
+    ///         now would spend the tax at a price only just reached; it waits (#271). Both are pool ticks.
+    error AboveReference(int24 tick, int24 referenceTick);
     /// @notice The Distributor took other than exactly the amount deposited.
     error DepositShort();
 
     /// @param factory_ The factory's address, which it checks against itself at its deployment.
+    /// @param referenceRiseTicksPerMinute_ The Reference Price's rise rate; the hook reads it at deployment.
+    /// @param referenceFallTicksPerMinute_ Its fall rate, at least the rise rate.
+    /// @param buyBandTicks_ How far above the Reference Price a buy may still go through.
     constructor(
         IPoolManager poolManager_,
         address factory_,
         IHoldersPart distributor_,
         uint16 pieceBps_,
         uint32 pieceInterval_,
-        int24 supportWidthSpacings_
+        int24 supportWidthSpacings_,
+        uint24 referenceRiseTicksPerMinute_,
+        uint24 referenceFallTicksPerMinute_,
+        uint24 buyBandTicks_
     ) {
         if (address(poolManager_) == address(0) || factory_ == address(0) || address(distributor_) == address(0)) {
             revert InvalidSettings();
@@ -144,12 +180,21 @@ contract TaxVault is IUnlockCallback {
         // At most 1% of the pool's depth per piece, and at least a second between pieces.
         if (pieceBps_ == 0 || pieceBps_ > 100 || pieceInterval_ == 0) revert InvalidSettings();
         if (supportWidthSpacings_ <= 0 || supportWidthSpacings_ > 1_000) revert InvalidSettings();
+        // The reference must follow a dearer coin, slowly (at most 1,000 ticks, about 10%, a minute), and a
+        // cheaper one at least as fast; a buy may stand at most 2,000 ticks (about 22%) above it.
+        if (referenceRiseTicksPerMinute_ == 0 || referenceRiseTicksPerMinute_ > 1_000) revert InvalidSettings();
+        if (referenceFallTicksPerMinute_ < referenceRiseTicksPerMinute_ || buyBandTicks_ > 2_000) {
+            revert InvalidSettings();
+        }
         poolManager = poolManager_;
         factory = factory_;
         distributor = distributor_;
         pieceBps = pieceBps_;
         pieceInterval = pieceInterval_;
         supportWidthSpacings = supportWidthSpacings_;
+        referenceRiseTicksPerMinute = referenceRiseTicksPerMinute_;
+        referenceFallTicksPerMinute = referenceFallTicksPerMinute_;
+        buyBandTicks = buyBandTicks_;
     }
 
     modifier nonReentrant() {
@@ -170,17 +215,18 @@ contract TaxVault is IUnlockCallback {
     // ------------------------------------------------------------------ the public calls
 
     /// @notice Adds one piece of the coin's Support Liquidity: Quote Asset alone, in a position from just
-    ///         below the current price down `supportWidthSpacings` tick spacings, held by this vault for good.
-    ///         It buys no coin and leaves the pool's price where it was. A piece is at most `pieceCap`, and a
-    ///         pool takes one piece per `pieceInterval`.
+    ///         below the lower of the current price and the Reference Price down `supportWidthSpacings` tick
+    ///         spacings, held by this vault for good. It buys no coin and leaves the pool's price where it
+    ///         was. A piece is at most `pieceCap`, and a pool takes one piece per `pieceInterval`.
     function addSupport(PoolKey calldata key) external nonReentrant returns (uint256 added, uint128 liquidity) {
         Pool memory p = _load(key);
         Books storage b = _books[p.id];
         _checkInterval(b.lastSupportAt);
-        uint256 amount = _min(_supportPart(p) - b.supportSpent, _pieceCap(p.id, p.terms.quoteIsCurrency0));
+        Prices memory px = _prices(p);
+        uint256 amount = _min(_supportPart(p) - b.supportSpent, _pieceCap(p, px));
         if (amount == 0) revert NothingToSpend();
 
-        (int24 lower, int24 upper) = _supportRange(key, p.id, p.terms.quoteIsCurrency0);
+        (int24 lower, int24 upper) = _supportRange(key, px.spendTick, p.terms.quoteIsCurrency0);
         uint160 sqrtLower = TickMath.getSqrtPriceAtTick(lower);
         uint160 sqrtUpper = TickMath.getSqrtPriceAtTick(upper);
         liquidity = p.terms.quoteIsCurrency0
@@ -202,14 +248,17 @@ contract TaxVault is IUnlockCallback {
 
     /// @notice Spends one piece of the coin's Reward Burn share on a buy of the coin, outside any trader's
     ///         swap, and burns exactly the coins it bought, so the supply falls by them. A piece is at most
-    ///         `pieceCap`; a pool takes one buy per `pieceInterval`, whether for the burn or for the holders.
-    ///         The buy pays the Platform Fee like any buy and no tax (see the hook's `_taxBps`).
+    ///         `pieceCap`; a pool takes one burn per `pieceInterval`, and the buy waits while the coin's price
+    ///         stands above the Reference Price by more than `buyBandTicks` (`AboveReference`). The buy pays
+    ///         the Platform Fee like any buy and no tax (see the hook's `_taxBps`).
     function burn(PoolKey calldata key) external nonReentrant returns (uint256 spent, uint256 burned) {
         Pool memory p = _load(key);
         Books storage b = _books[p.id];
         _checkInterval(b.lastBuyAt);
-        spent = _min(_part(p.booked, p.terms.burnShareBps) - b.burnSpent, _pieceCap(p.id, p.terms.quoteIsCurrency0));
+        Prices memory px = _prices(p);
+        spent = _min(_part(p.booked, p.terms.burnShareBps) - b.burnSpent, _pieceCap(p, px));
         if (spent == 0) revert NothingToSpend();
+        _checkNearReference(p, px);
         b.burnSpent += spent;
         b.lastBuyAt = OZSafeCast.toUint64(block.timestamp);
         burned = _buy(key, p, spent);
@@ -220,18 +269,19 @@ contract TaxVault is IUnlockCallback {
     }
 
     /// @notice When a Reward Launch's Payout Asset is the coin, spends one piece of the holders' part on a buy
-    ///         of the coin, under the same cap and the same interval as the burn, and keeps what it bought for
-    ///         the holders until `passHoldersPart`.
+    ///         of the coin, under the same cap, interval and Reference Price check as the burn, on a clock of
+    ///         its own, and keeps what it bought for the holders until `passHoldersPart`.
     function buyForHolders(PoolKey calldata key) external nonReentrant returns (uint256 spent, uint256 bought) {
         Pool memory p = _load(key);
         if (p.terms.payoutAsset != StokerHook.PayoutAsset.Coin) revert NothingToSpend();
         Books storage b = _books[p.id];
-        _checkInterval(b.lastBuyAt);
-        spent =
-            _min(_part(p.booked, _holdersShare(p.terms)) - b.holdersSpent, _pieceCap(p.id, p.terms.quoteIsCurrency0));
+        _checkInterval(b.lastHoldersBuyAt);
+        Prices memory px = _prices(p);
+        spent = _min(_part(p.booked, _holdersShare(p.terms)) - b.holdersSpent, _pieceCap(p, px));
         if (spent == 0) revert NothingToSpend();
+        _checkNearReference(p, px);
         b.holdersSpent += spent;
-        b.lastBuyAt = OZSafeCast.toUint64(block.timestamp);
+        b.lastHoldersBuyAt = OZSafeCast.toUint64(block.timestamp);
         bought = _buy(key, p, spent);
         b.holdersCoins += bought;
         // forge-lint: disable-next-line(reentrancy-events)
@@ -354,6 +404,7 @@ contract TaxVault is IUnlockCallback {
         (p.quote, p.coin) = p.terms.quoteIsCurrency0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
         p.booked = h.taxBooked(p.id);
         p.openingBooked = h.openingFeeBooked(p.id);
+        p.hook = h;
     }
 
     /// @dev The coin's Support Liquidity part so far: its share of the tax, rounded down, and every Opening Fee
@@ -369,6 +420,26 @@ contract TaxVault is IUnlockCallback {
         uint256 openAt = uint256(t.launchedAt) + t.openingFeeDuration;
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp < openAt) revert TooSoon(openAt);
+    }
+
+    /// @dev The pool's price and its Reference Price, read from the hook as the next swap would find it.
+    function _prices(Pool memory p) internal view returns (Prices memory px) {
+        (px.sqrtPriceX96, px.tick,,) = poolManager.getSlot0(p.id);
+        px.referenceTick = p.hook.referenceTick(p.id);
+        // The coin is cheaper at the lower tick with the coin as currency0, at the higher one with the Quote
+        // Asset as currency0.
+        bool referenceCheaper = p.terms.quoteIsCurrency0 ? px.referenceTick > px.tick : px.referenceTick < px.tick;
+        px.spendTick = referenceCheaper ? px.referenceTick : px.tick;
+    }
+
+    /// @dev A buy waits while the coin's price stands above the Reference Price by more than `buyBandTicks`:
+    ///      it would pay a price only just reached, and leave the Quote Asset for whoever reached it to take.
+    function _checkNearReference(Pool memory p, Prices memory px) internal view {
+        int256 band = int256(uint256(buyBandTicks));
+        bool above = p.terms.quoteIsCurrency0
+            ? int256(px.tick) < int256(px.referenceTick) - band
+            : int256(px.tick) > int256(px.referenceTick) + band;
+        if (above) revert AboveReference(px.tick, px.referenceTick);
     }
 
     /// @dev A part of a coin's tax so far, rounded down: each part only ever grows as the tax does, and the
@@ -417,17 +488,18 @@ contract TaxVault is IUnlockCallback {
         }
     }
 
-    /// @dev Where the next Support Liquidity piece goes: wholly on the Quote Asset's side of the pool's tick,
-    ///      from the first tick-spacing boundary past it, `supportWidthSpacings` deep. With the coin as
-    ///      currency0 the pool's price is Quote Asset per coin and the range lies below the tick; with the
-    ///      Quote Asset as currency0 it is coin per Quote Asset, the coin's price falls as the pool's rises,
-    ///      and the range lies above. Either way the coin's price falls into it.
-    function _supportRange(PoolKey calldata key, PoolId id, bool quoteIsCurrency0)
+    /// @dev Where the next Support Liquidity piece goes: wholly on the Quote Asset's side of `tick`, the lower
+    ///      of the pool's price and its Reference Price for the coin (#271), from the first tick-spacing
+    ///      boundary past it, `supportWidthSpacings` deep. With the coin as currency0 the pool's price is
+    ///      Quote Asset per coin and the range lies below the tick; with the Quote Asset as currency0 it is
+    ///      coin per Quote Asset, the coin's price falls as the pool's rises, and the range lies above. Either
+    ///      way the coin's price falls into it, and since `tick` is never on the coin's dear side of the
+    ///      pool's own tick, the range holds the Quote Asset alone.
+    function _supportRange(PoolKey calldata key, int24 tick, bool quoteIsCurrency0)
         internal
         view
         returns (int24 lower, int24 upper)
     {
-        (, int24 tick,,) = poolManager.getSlot0(id);
         int24 spacing = key.tickSpacing;
         int24 compressed = tick / spacing;
         if (tick < 0 && tick % spacing != 0) compressed--;
@@ -450,17 +522,20 @@ contract TaxVault is IUnlockCallback {
         if (lower >= upper) revert NoRoomForSupport();
     }
 
-    /// @dev The largest piece: `pieceBps` of the Quote Asset depth of the coin's Seed Position at the current
-    ///      price, its virtual reserve (liquidity times the square root of the Quote Asset's price, in the
-    ///      Quote Asset's units). A buy of that size moves the price by about twice `pieceBps`. It is never
-    ///      zero: at the start price it is the Opening Value, the whole supply's worth, though the pool then
-    ///      holds no Quote Asset at all, so a cap on what the pool holds would starve the burn of a coin that
-    ///      has been bought and sold back; it grows with the square root of the price.
-    function _pieceCap(PoolId id, bool quoteIsCurrency0) internal view returns (uint256) {
+    /// @dev The largest piece: `pieceBps` of the Quote Asset depth of the coin's Seed Position at the lower of
+    ///      the current price and the Reference Price (#271), its virtual reserve (liquidity times the square
+    ///      root of the Quote Asset's price, in the Quote Asset's units). A buy of that size moves the price by
+    ///      about twice `pieceBps`. It is never zero: at the start price it is the Opening Value, the whole
+    ///      supply's worth, though the pool then holds no Quote Asset at all, so a cap on what the pool holds
+    ///      would starve the burn of a coin that has been bought and sold back; it grows with the square root
+    ///      of the price, and so a lifted price does not grow it until the reference has followed.
+    function _pieceCap(Pool memory p, Prices memory px) internal view returns (uint256) {
+        PoolId id = p.id;
         (int24 lower, int24 upper) = IStokerLaunches(factory).seedRange(id);
         uint128 seedLiquidity =
             poolManager.getPositionLiquidity(id, Position.calculatePositionKey(factory, lower, upper, bytes32(0)));
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(id);
+        uint160 sqrtPriceX96 = px.spendTick == px.tick ? px.sqrtPriceX96 : TickMath.getSqrtPriceAtTick(px.spendTick);
+        bool quoteIsCurrency0 = p.terms.quoteIsCurrency0;
         uint256 depth = quoteIsCurrency0
             ? FullMath.mulDiv(seedLiquidity, FixedPoint96.Q96, sqrtPriceX96)
             : FullMath.mulDiv(seedLiquidity, sqrtPriceX96, FixedPoint96.Q96);
@@ -482,7 +557,7 @@ contract TaxVault is IUnlockCallback {
     /// @notice The largest piece a public call may spend in the pool now (see `_pieceCap`).
     function pieceCap(PoolKey calldata key) external view returns (uint256) {
         Pool memory p = _load(key);
-        return _pieceCap(p.id, p.terms.quoteIsCurrency0);
+        return _pieceCap(p, _prices(p));
     }
 
     /// @notice What waits for each path of one coin's tax: the Reward Burn's, the Support Liquidity's (every

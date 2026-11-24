@@ -27,6 +27,8 @@ contract ForkBurnTest is ForkTaxRouteBase {
             _trade(key, trader, true, true, 40 * u);
             _trade(key, trader, false, true, _coinOfKey(key).balanceOf(trader) / 2);
         }
+        // The vault spends at a price that has stood (#271).
+        _letThePriceStand();
     }
 
     function test_fork_burn_cappedPieces_supplyFalls_coinIsCurrency0() public {
@@ -60,7 +62,8 @@ contract ForkBurnTest is ForkTaxRouteBase {
             assertEq(supply - coin.totalSupply(), burned, "the supply fell by what was bought");
             spentTotal += spent;
             burnedTotal += burned;
-            vm.warp(vm.getBlockTimestamp() + PIECE_INTERVAL);
+            // Each burn's own buy moves the price, which the next buy waits for the reference to follow.
+            _letThePriceStand();
         }
         assertGt(n, 1, "it took several pieces");
         assertEq(supply0 - coin.totalSupply(), burnedTotal, "every coin bought was burned");
@@ -84,6 +87,7 @@ contract ForkBurnTest is ForkTaxRouteBase {
             _route(UNIVERSAL_ROUTER, trader, key, t, 0);
             _assertOneSwapBy(vm.getRecordedLogs(), UNIVERSAL_ROUTER);
             assertEq(taxVault.booksOf(key.toId()).burnSpent, before.burnSpent, "no vault buy in the trader's swap");
+            _letThePriceStand();
 
             // The vault's own buy is its own transaction, its own swap, with the vault as the sender.
             vm.recordLogs();

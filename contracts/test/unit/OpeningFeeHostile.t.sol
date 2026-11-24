@@ -104,7 +104,7 @@ contract OpeningFeeHostileTest is TaxLocalBase, OpeningFeeHelpers {
             address fitting = d.create(
                 abi.encodePacked(
                     type(TaxVault).creationCode,
-                    abi.encode(pm, bad, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS)
+                    abi.encode(pm, bad, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS, REFERENCE_RISE, REFERENCE_FALL, BUY_BAND)
                 )
             );
             assertEq(fitting, vm.computeCreateAddress(address(d), 1), "the vault at the deployer's first address");
@@ -119,7 +119,7 @@ contract OpeningFeeHostileTest is TaxLocalBase, OpeningFeeHelpers {
             );
         }
         address next = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        TaxVault vault = new TaxVault(pm, next, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS);
+        TaxVault vault = new TaxVault(pm, next, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS, REFERENCE_RISE, REFERENCE_FALL, BUY_BAND);
         bytes32 initHash =
             keccak256(abi.encodePacked(type(StokerHook).creationCode, abi.encode(pm, keys, address(vault))));
         bytes32 salt;

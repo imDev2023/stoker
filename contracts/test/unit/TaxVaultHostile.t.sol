@@ -25,6 +25,7 @@ contract TaxVaultHostileTest is TaxLocalBase {
             _trade(key, trader, true, true, 40 ether);
             _trade(key, trader, false, true, _coinOfKey(key).balanceOf(trader) / 2);
         }
+        _letThePriceStand();
     }
 
     /// A Distributor that re-enters every public call from inside `deposit` meets the guard each time.
@@ -53,6 +54,7 @@ contract TaxVaultHostileTest is TaxLocalBase {
         // The holders' buy, on a Launch whose Payout Asset is the coin.
         PoolKey memory inCoin = _launchReward(true, 0, 0, StokerHook.PayoutAsset.Coin);
         _trade(inCoin, trader, true, true, 40 ether);
+        _letThePriceStand();
         vm.expectRevert(IPoolManager.AlreadyUnlocked.selector);
         c.callInsideUnlock(address(taxVault), abi.encodeWithSelector(TaxVault.buyForHolders.selector, inCoin));
     }
@@ -97,7 +99,8 @@ contract TaxVaultHostileTest is TaxLocalBase {
     }
 
     /// Sandwiching the burn's buy loses money: the wallet pays the Platform Fee and the tax on both legs,
-    /// several times what one capped piece moves the price.
+    /// several times what one capped piece moves the price. Since #271 the front-run itself lifts the price
+    /// above the Reference Price, so the burn waits by name and the wallet is left with its round trip.
     function test_hostile_sandwichingTheBurnLoses() public {
         for (uint256 o; o < 2; o++) {
             PoolKey memory key = _rewardWithTax(o == 0);
@@ -108,9 +111,11 @@ contract TaxVaultHostileTest is TaxLocalBase {
                 uint256 snap = vm.snapshotState();
                 uint256 q0 = quote.balanceOf(attacker);
                 _trade(key, attacker, true, true, sizes[i]);
+                int24 lifted = _tickOf(key);
+                int24 referenceTick = hook.referenceTick(key.toId());
+                vm.expectRevert(abi.encodeWithSelector(TaxVault.AboveReference.selector, lifted, referenceTick));
                 vm.prank(attacker);
-                (uint256 spent,) = taxVault.burn(key);
-                assertGt(spent, 0);
+                taxVault.burn(key);
                 _trade(key, attacker, false, true, _coinOfKey(key).balanceOf(attacker));
                 assertLt(quote.balanceOf(attacker), q0, "the sandwich lost money");
                 vm.revertToState(snap);

@@ -58,6 +58,13 @@ abstract contract StokerTestBase is Test {
     bool internal _tradeInOpening;
     /// The start figure the fixture deploys with; a test of a lower figure sets it before `setUp`.
     uint16 internal openingFeeStartBps = OPENING_FEE_START_BPS;
+    /// The Reference Price's settings (#271): it follows a dearer coin by 2 ticks a minute (about 1.2% an
+    /// hour), a cheaper one by 60,000 ticks a minute (any fall within seconds), and a buy goes through only
+    /// while the coin's price stands at or below it (a band of 0), so the vault's own buys raise the price by
+    /// one piece and then no faster than the reference follows.
+    uint24 internal constant REFERENCE_RISE = 2;
+    uint24 internal constant REFERENCE_FALL = 60_000;
+    uint24 internal constant BUY_BAND = 0;
 
     uint160 internal constant HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
         | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_DONATE_FLAG
@@ -94,7 +101,17 @@ abstract contract StokerTestBase is Test {
 
         // The Tax Vault next, made for the factory's future address (the next deployment after it).
         address factoryAddr = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        taxVault = new TaxVault(pm, factoryAddr, part, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS);
+        taxVault = new TaxVault(
+            pm,
+            factoryAddr,
+            part,
+            PIECE_BPS,
+            PIECE_INTERVAL,
+            SUPPORT_WIDTH_SPACINGS,
+            REFERENCE_RISE,
+            REFERENCE_FALL,
+            BUY_BAND
+        );
 
         // Mine the hook's salt for the factory's future address with plain arithmetic: HookMiner also
         // reads each candidate's code, which on a fork is one RPC call per salt.
@@ -124,7 +141,7 @@ abstract contract StokerTestBase is Test {
     /// Deploys `initCode` from this contract through an external call, so `vm.expectRevert` sees the
     /// creation revert one call deep. A `new` in the test's own frame is a cheatcode deployment at the test's
     /// depth: an expected revert there ends the whole test as a pass, and every case after the first is never
-    /// run (gotcha 21).
+    /// run (gotcha 24).
     function create(bytes memory initCode) external returns (address a) {
         assembly ("memory-safe") {
             a := create(0, add(initCode, 0x20), mload(initCode))
