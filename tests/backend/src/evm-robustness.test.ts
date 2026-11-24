@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, describe, expect, inject, test } from "vitest";
 import { erc20Abi, parseAbi, type Address } from "viem";
 import { ChainList, LaunchSummary, TradeList } from "@launchpad/contract";
-import { NATIVE, taxVaultAbi } from "@launchpad/evm";
+import { NATIVE, ROBINHOOD_CHAIN, taxVaultAbi } from "@launchpad/evm";
 import { startApi, freePort, GRADUATION_WATCH_CRON } from "@launchpad/stack";
 import { env } from "./client";
 import { clients, evmWallet, launchCoin, listQuote, operatorAlerts, runIndexer, strictRpc, swapExactIn } from "./evm";
@@ -65,23 +65,23 @@ describe.skipIf(!hasEvm)("EVM chain: the Indexer stays up", () => {
     const b = await evmWallet();
     const l = await launchCoin(await evmWallet());
     const t = clients().test;
+    let receipts;
     await t.setAutomine(false);
     try {
-      const first = swapExactIn(a, l, "buy", 10n ** 16n);
-      // The second is sent once the first is in the pool of pending transactions.
-      await new Promise((r) => setTimeout(r, 300));
-      const second = swapExactIn(b, l, "buy", 2n * 10n ** 16n);
-      await new Promise((r) => setTimeout(r, 300));
+      const sent = [swapExactIn(a, l, "buy", 10n ** 16n), swapExactIn(b, l, "buy", 2n * 10n ** 16n)];
+      // Both waiting in the pool, then one block for the two.
+      for (let i = 0; i < 100 && (await t.getTxpoolStatus()).pending < 2; i++) await new Promise((r) => setTimeout(r, 100));
       await t.mine({ blocks: 1 });
-      const [r1, r2] = await Promise.all([first, second]);
-      expect(r1.receipt.blockNumber).toBe(r2.receipt.blockNumber);
+      receipts = (await Promise.all(sent)).map((x) => x.receipt);
     } finally {
       await t.setAutomine(true);
     }
+    expect(receipts[0]!.blockNumber).toBe(receipts[1]!.blockNumber);
     await runIndexer();
     const { trades } = TradeList.parse(await api(`/v1/launches/${l.coin}/trades`));
-    // Newest first: the second buy ran after the first, whatever their hashes.
-    expect(trades.map((x) => x.trader)).toEqual([b.address, a.address]);
+    // Newest first, by the order the two ran in the block (their logs'), whatever their hashes.
+    const ran = [...receipts].sort((x, y) => x.transactionIndex - y.transactionIndex).map((r) => r.from.toLowerCase());
+    expect(trades.map((x) => x.trader.toLowerCase())).toEqual([...ran].reverse());
     const { candles } = (await api(`/v1/launches/${l.coin}/candles?interval=1d`)) as { candles: { close: number }[] };
     expect(candles.at(-1)!.close).toBe(trades[0]!.price);
   });
@@ -187,11 +187,15 @@ describe.skipIf(!hasEvm)("EVM chain: a stricter RPC, a run's budget, and a deplo
   test("a failed read of a Stock Token's multiplier fails the run instead of losing the multiplier, and the next run has it", async () => {
     await listQuote(AAPL, STOCK_START_TICK);
     // Through the strict API alone, so the stack's own API does not read the asset first.
-    for (let i = 0; i < 20; i++) {
+    let behind = true;
+    for (let i = 0; i < 40 && behind; i++) {
       const caught = (await runIndexer(strictApi.url)) as { summary: { chains: { leftForLater: boolean }[] } };
-      if (!caught.summary.chains[0]!.leftForLater) break;
+      behind = caught.summary.chains[0]!.leftForLater;
     }
+    expect(behind).toBe(false);
     const l = await launchCoin(await evmWallet(), { quote: AAPL });
+    // Deep enough to be read, then read while every multiplier read fails.
+    await clients().test.mine({ blocks: ROBINHOOD_CHAIN.finalityDepth });
     strict.state.failMultiplier = true;
     const res = await fetch(`${strictApi.url}/v1/operator/jobs/indexer`, { method: "POST", headers: operator() });
     expect(res.status).toBe(500);
@@ -209,6 +213,7 @@ describe.skipIf(!hasEvm)("EVM chain: a stricter RPC, a run's budget, and a deplo
     const res = await fetch(`${brokenApi.url}/v1/operator/jobs/indexer`, { method: "POST", headers: operator() });
     expect(res.status).toBe(500);
     expect(((await res.json()) as { error: string }).error).toContain("names robinhood twice");
-    expect(((await api("/v1/launches?chain=solana&limit=1", brokenApi.url)) as { launches: unknown[] }).launches.length).toBe(1);
+    // Solana's board answers the same through it as through the stack's own API.
+    expect(await api("/v1/launches?chain=solana&limit=20", brokenApi.url)).toEqual(await api("/v1/launches?chain=solana&limit=20"));
   });
 });
