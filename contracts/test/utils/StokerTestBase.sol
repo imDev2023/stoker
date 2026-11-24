@@ -20,7 +20,8 @@ import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC2
 import {StokerFactory} from "../../src/StokerFactory.sol";
 import {StokerHook} from "../../src/StokerHook.sol";
 import {StokerCoin} from "../../src/StokerCoin.sol";
-import {ListingStandIn} from "../../src/ListingStandIn.sol";
+import {StokerKeys} from "../../src/StokerKeys.sol";
+import {QuoteRegistry} from "../../src/QuoteRegistry.sol";
 
 /// @notice What the local tests and the fork tests share: deploying our contracts against a PoolManager,
 ///         launching, swapping, and reading the books from outside.
@@ -33,6 +34,10 @@ abstract contract StokerTestBase is Test {
     int24 internal constant TICK_SPACING = 200;
     uint16 internal constant PLATFORM_FEE_BPS = 100; // 1.00% (ADR 0027)
     uint16 internal constant CREATOR_SHARE_BPS = 5_000; // the Creator Ladder's first tier (ADR 0020, ADR 0027)
+    /// The Listing's Graduation multiple (ADR 0024: 20 at first) and its Referrer Fee cap (1.00%, as
+    /// Solana's referral cap on SOL, #21; the owner sets each Listing's own, ADR 0027).
+    uint16 internal constant GRADUATION_MULTIPLE = 20;
+    uint16 internal constant REFERRER_FEE_CAP_BPS = 100;
     uint256 internal constant SUPPLY = 1e12 * 1e18;
 
     uint160 internal constant HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
@@ -43,26 +48,29 @@ abstract contract StokerTestBase is Test {
     IERC20 internal quote;
     StokerFactory internal factory;
     StokerHook internal hook;
-    ListingStandIn internal listings;
+    StokerKeys internal keys;
+    QuoteRegistry internal registry;
     PoolSwapTest internal swapRouter;
 
+    /// The Admin (ADR 0030): it writes the Quote Registry, and the platform's share of every fee is
+    /// booked to its address.
     address internal platform = makeAddr("platform");
-    address internal listingWriter = makeAddr("listingWriter");
     address internal creator;
     uint256 internal creatorKey;
     address internal trader = makeAddr("trader");
     address internal stranger = makeAddr("stranger");
 
-    /// Deploys the stand-in registry, the factory and (from the factory's constructor) the hook, and
-    /// lists `quote` at START_TICK.
+    /// Deploys the keys with `platform` as the Admin, the Quote Registry, the factory and (from the
+    /// factory's constructor) the hook, and lists `quote` at START_TICK.
     function _deployStoker() internal {
         (creator, creatorKey) = makeAddrAndKey("creator");
-        listings = new ListingStandIn(listingWriter);
+        keys = new StokerKeys(platform);
+        registry = new QuoteRegistry(keys, TICK_SPACING);
 
         // Mine the hook's salt for the factory's future address with plain arithmetic: HookMiner also
         // reads each candidate's code, which on a fork is one RPC call per salt.
         address factoryAddr = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
-        bytes32 initHash = keccak256(abi.encodePacked(type(StokerHook).creationCode, abi.encode(pm, platform)));
+        bytes32 initHash = keccak256(abi.encodePacked(type(StokerHook).creationCode, abi.encode(pm, keys)));
         bytes32 salt;
         for (uint256 i;; i++) {
             address a = vm.computeCreate2Address(bytes32(i), initHash, factoryAddr);
@@ -71,13 +79,13 @@ abstract contract StokerTestBase is Test {
                 break;
             }
         }
-        factory = new StokerFactory(pm, listings, platform, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, TICK_SPACING, salt);
+        factory = new StokerFactory(pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, salt);
         assertEq(address(factory), factoryAddr, "factory address");
         hook = factory.hook();
         assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS, "hook permission bits");
 
-        vm.prank(listingWriter);
-        listings.list(address(quote), START_TICK);
+        vm.prank(platform);
+        registry.list(address(quote), START_TICK, GRADUATION_MULTIPLE, REFERRER_FEE_CAP_BPS);
 
         swapRouter = new PoolSwapTest(pm);
     }
@@ -207,17 +215,51 @@ abstract contract StokerTestBase is Test {
         returns (BalanceDelta d)
     {
         bool zeroForOne = buy == _isQuote0(key);
+        d = _swapWithData(
+            key, who, buy, exactIn, amount, zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1, ""
+        );
+    }
+
+    /// The swap alone with a price limit and the `hookData` a front-end puts in it (#243), approved first.
+    function _swapWithData(
+        PoolKey memory key,
+        address who,
+        bool buy,
+        bool exactIn,
+        uint256 amount,
+        uint160 limit,
+        bytes memory hookData
+    ) internal returns (BalanceDelta d) {
         vm.prank(who);
         d = swapRouter.swap(
             key,
             SwapParams({
-                zeroForOne: zeroForOne,
+                zeroForOne: buy == _isQuote0(key),
                 amountSpecified: exactIn ? -int256(amount) : int256(amount),
-                sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+                sqrtPriceLimitX96: limit
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-            ""
+            hookData
         );
+    }
+
+    // ---------------------------------------------------------------- the Referrer Fee (#243)
+
+    /// The `hookData` naming a referrer and a Referrer Fee: two words, the referrer's address and the fee
+    /// in basis points of the Quote Asset's side.
+    function _referral(address referrer, uint256 feeBps) internal pure returns (bytes memory) {
+        return abi.encode(referrer, feeBps);
+    }
+
+    /// A fee on a known net amount when the Platform Fee and a Referrer Fee together are `totalBps`, so each
+    /// is its rate of net plus both fees, rounded up.
+    function _feeOnNetWith(uint256 net, uint256 feeBps, uint256 totalBps) internal pure returns (uint256) {
+        return (net * feeBps + (10_000 - totalBps) - 1) / (10_000 - totalBps);
+    }
+
+    /// A fee of a known gross amount at `feeBps`, rounded up.
+    function _feeOnGrossAt(uint256 gross, uint256 feeBps) internal pure returns (uint256) {
+        return (gross * feeBps + 9_999) / 10_000;
     }
 
     // ---------------------------------------------------------------- the native asset (#242)
@@ -232,8 +274,8 @@ abstract contract StokerTestBase is Test {
     uint256 internal _nativeLaunches;
 
     function _listNative() internal {
-        vm.prank(listingWriter);
-        listings.list(address(0), NATIVE_START_TICK);
+        vm.prank(platform);
+        registry.list(address(0), NATIVE_START_TICK, GRADUATION_MULTIPLE, REFERRER_FEE_CAP_BPS);
     }
 
     function _nativeParams(uint256 firstBuy, address destination)
@@ -302,6 +344,20 @@ abstract contract StokerTestBase is Test {
         uint256 maxIn,
         uint160 limit
     ) internal returns (BalanceDelta d) {
+        d = _swapNativeWithData(key, who, buy, exactIn, amount, maxIn, limit, "");
+    }
+
+    /// The same, carrying the `hookData` a front-end puts in it (#243).
+    function _swapNativeWithData(
+        PoolKey memory key,
+        address who,
+        bool buy,
+        bool exactIn,
+        uint256 amount,
+        uint256 maxIn,
+        uint160 limit,
+        bytes memory hookData
+    ) internal returns (BalanceDelta d) {
         uint256 value = buy ? (exactIn ? amount : maxIn) : 0;
         vm.prank(who);
         d = swapRouter.swap{value: value}(
@@ -312,7 +368,7 @@ abstract contract StokerTestBase is Test {
                 sqrtPriceLimitX96: limit
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-            ""
+            hookData
         );
     }
 

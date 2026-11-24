@@ -5,6 +5,8 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {FixedPoint96} from "@uniswap/v4-core/src/libraries/FixedPoint96.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
@@ -16,10 +18,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {SafeCast as OZSafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {StokerCoin} from "./StokerCoin.sol";
 import {StokerHook} from "./StokerHook.sol";
 import {IQuoteListings} from "./interfaces/IQuoteListings.sol";
+import {QuoteRegistry} from "./QuoteRegistry.sol";
 
 /// @title StokerFactory
 /// @notice Launches a Stoker coin on an EVM chain by Direct Seed (ADR 0024), in one transaction: it
@@ -27,8 +31,9 @@ import {IQuoteListings} from "./interfaces/IQuoteListings.sol";
 ///         price, places the whole supply in the pool as the Seed Position, and makes the Creator's First
 ///         Buy. The factory holds every Seed Position and has no code that removes liquidity; the hook
 ///         refuses every removal in any case.
-/// @dev No owner, no setter, no proxy and no pause. The settings are fixed at deployment and written into
-///      each Launch's terms; a later deployment changes them for later Launches only.
+/// @dev No owner, no setter, no proxy and no pause. Its own settings are fixed at deployment and the
+///      Listing's figures are read at launch, and both are written into each Launch's terms; a later
+///      deployment, or a later write to the Quote Registry, changes them for later Launches only.
 contract StokerFactory is IUnlockCallback {
     using SafeERC20 for IERC20;
     using SafeCast for uint256;
@@ -37,14 +42,15 @@ contract StokerFactory is IUnlockCallback {
 
     IPoolManager public immutable poolManager;
     StokerHook public immutable hook;
-    /// @notice Where each Quote Asset's Listing is read (a stand-in until the Quote Registry, #243).
-    IQuoteListings public immutable listings;
+    /// @notice The chain's Quote Registry, where each Quote Asset's Listing is read at launch (ADR 0028).
+    QuoteRegistry public immutable registry;
     /// @notice The Platform Fee written into every Launch, in basis points of the Quote Asset's side.
     uint16 public immutable platformFeeBps;
     /// @notice The Creator's share of the Platform Fee written into every Launch: the Creator Ladder's first
     ///         tier (ADR 0027). Never the launcher's to choose.
     uint16 public immutable creatorShareBps;
-    /// @notice The tick spacing of every pool this factory opens.
+    /// @notice The tick spacing of every pool this factory opens: the registry's, which every start price
+    ///         is a multiple of.
     int24 public immutable tickSpacing;
 
     /// @notice A Launch's own facts, as the factory recorded them.
@@ -109,33 +115,32 @@ contract StokerFactory is IUnlockCallback {
     error InvalidSettings();
     error NotListed(address quote);
     error InvalidStartTick(int24 startTick);
+    /// @notice The Listing's Graduation multiple gives no Graduation Target the pool can reach.
+    error InvalidGraduationMultiple(uint16 graduationMultiple);
     error NotPoolManager();
     /// @notice The launch was sent value other than its native First Buy: any value with an ERC-20 Quote
     ///         Asset, or value that differs from `firstBuy` with the native asset.
     error ValueMismatch(uint256 expected, uint256 sent);
 
+    /// @param registry_ The chain's Quote Registry; its keys are the hook's (the platform's share is booked
+    ///        to their Admin) and its tick spacing is every pool's.
     /// @param hookSalt The CREATE2 salt that gives the hook an address carrying its permission bits.
     constructor(
         IPoolManager poolManager_,
-        IQuoteListings listings_,
-        address platform_,
+        QuoteRegistry registry_,
         uint16 platformFeeBps_,
         uint16 creatorShareBps_,
-        int24 tickSpacing_,
         bytes32 hookSalt
     ) {
         // Bounded so that no deployment can take most of a swap: at most 10% of the Quote Asset's side.
         if (platformFeeBps_ == 0 || platformFeeBps_ > 1_000) revert InvalidSettings();
-        if (creatorShareBps_ > 10_000 || platform_ == address(0)) revert InvalidSettings();
-        if (tickSpacing_ < TickMath.MIN_TICK_SPACING || tickSpacing_ > TickMath.MAX_TICK_SPACING) {
-            revert InvalidSettings();
-        }
+        if (creatorShareBps_ > 10_000 || address(registry_) == address(0)) revert InvalidSettings();
         poolManager = poolManager_;
-        listings = listings_;
+        registry = registry_;
         platformFeeBps = platformFeeBps_;
         creatorShareBps = creatorShareBps_;
-        tickSpacing = tickSpacing_;
-        hook = new StokerHook{salt: hookSalt}(poolManager_, platform_);
+        tickSpacing = registry_.tickSpacing();
+        hook = new StokerHook{salt: hookSalt}(poolManager_, registry_.keys());
     }
 
     // ------------------------------------------------------------------ launching
@@ -163,7 +168,7 @@ contract StokerFactory is IUnlockCallback {
     }
 
     function _launch(LaunchParams calldata p) internal returns (address coin, PoolId poolId) {
-        IQuoteListings.Listing memory listing = listings.listingOf(p.quote);
+        IQuoteListings.Listing memory listing = registry.listingOf(p.quote);
         if (!listing.listed) revert NotListed(p.quote);
         // The factory keeps nothing it was not sent and refunds nothing: the value is the native First Buy
         // to the wei, and an ERC-20 launch takes none.
@@ -206,14 +211,21 @@ contract StokerFactory is IUnlockCallback {
             (seed.tickLower, seed.tickUpper) = (openTick, maxUsable);
         }
 
+        uint160 openSqrtPrice = TickMath.getSqrtPriceAtTick(openTick);
         hook.registerLaunch(
             seed.key,
             StokerHook.Terms({
                 creatorDestination: destination,
                 platformFeeBps: platformFeeBps,
                 creatorShareBps: creatorShareBps,
+                referrerFeeCapBps: listing.referrerFeeCapBps,
                 quoteIsCurrency0: seed.quoteIsCurrency0,
-                registered: true
+                registered: true,
+                startTick: startTick,
+                graduationMultiple: listing.graduationMultiple,
+                graduationSqrtPriceX96: _graduationTarget(
+                    openSqrtPrice, listing.graduationMultiple, seed.quoteIsCurrency0
+                )
             })
         );
         _launches[poolId] = Launch({
@@ -226,12 +238,32 @@ contract StokerFactory is IUnlockCallback {
 
         // The tick it returns is `openTick`, by construction.
         // forge-lint: disable-next-line(unused-return)
-        poolManager.initialize(seed.key, TickMath.getSqrtPriceAtTick(openTick));
+        poolManager.initialize(seed.key, openSqrtPrice);
         (uint128 liquidity, uint256 coinsBought) = abi.decode(poolManager.unlock(abi.encode(seed)), (uint128, uint256));
 
         // The calls before it are the PoolManager's, our hook's, the new coin's and the listed Quote Asset's.
         // forge-lint: disable-next-line(reentrancy-events)
         emit Launched(poolId, coin, msg.sender, p.quote, destination, startTick, liquidity, p.firstBuy, coinsBought);
+    }
+
+    /// @dev The Graduation Target as the pool's sqrt price: the start price times the multiple. The pool's
+    ///      price is Quote Asset per coin with the coin as currency0, so the target is above the open price;
+    ///      with the Quote Asset as currency0 it is coin per Quote Asset, and the target is below. Rounded so
+    ///      the target is never a lower coin price than the multiple says (#244 records Graduation against it).
+    function _graduationTarget(uint160 openSqrtPrice, uint16 multiple, bool quoteIsCurrency0)
+        internal
+        pure
+        returns (uint160 target)
+    {
+        if (multiple < 2) revert InvalidGraduationMultiple(multiple);
+        uint256 rootQ96 = Math.sqrt(uint256(multiple) << 192, Math.Rounding.Ceil);
+        uint256 t = quoteIsCurrency0
+            ? FullMath.mulDiv(openSqrtPrice, FixedPoint96.Q96, rootQ96)
+            : FullMath.mulDivRoundingUp(openSqrtPrice, rootQ96, FixedPoint96.Q96);
+        if (t <= TickMath.MIN_SQRT_PRICE || t >= TickMath.MAX_SQRT_PRICE) revert InvalidGraduationMultiple(multiple);
+        // Bounded by the line above.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        target = uint160(t);
     }
 
     /// @dev Runs inside the factory's own unlock: the PoolManager calls back the contract that unlocked it,
