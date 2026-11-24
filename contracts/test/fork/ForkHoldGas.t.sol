@@ -8,41 +8,34 @@ import {ForkRouteBase} from "./ForkRouteBase.sol";
 import {StokerHook} from "../../src/StokerHook.sol";
 
 /// What the Graduation Hold adds to a swap's gas (#244), measured through the Universal Router the chain's
-/// traffic uses, on the real PoolManager. One sequence walks every path the hold has: a swap under the
-/// target with no hold, the swap that starts it, a swap inside it, the swap that clears it, the swap that
-/// records Graduation an hour later, and a swap after Graduation. Every address the swap touches is made
-/// cold before it, so each figure is what a transaction of its own would pay, not one warmed by the swap
-/// before it. The same sequence ran on the contracts before the hold existed; the README sets the two side
+/// traffic uses, on the real PoolManager. Every top-level call is a transaction of its own (`isolate`), so each
+/// figure is what that transaction pays, cold. A pool's first swap in a transaction judges the price the last
+/// transaction left, so each step is named by what its judgement does: nothing to change, the start of a hold
+/// (from the transaction before), a running hold kept, a hold cleared, Graduation recorded, and a swap after
+/// Graduation. The same sequence was measured on `main` before the hold existed; the README sets the two side
 /// by side. Each step is asserted to have taken the path it names.
+/// forge-config: default.isolate = true
 contract ForkHoldGasTest is ForkRouteBase {
     string[7] internal steps = [
-        "buy under the target, no hold",
-        "buy across the target (starts the hold)",
-        "buy inside the hold",
-        "sell under the target (clears the hold)",
-        "buy across again (starts it again)",
-        "buy an hour later (records Graduation)",
+        "buy, judging a price under the target",
+        "buy across, judging a price under the target",
+        "buy, judging a price above: starts the hold",
+        "sell under, judging a hold that runs: kept",
+        "buy across, judging a price under: clears the hold",
+        "buy an hour later, judging a price above: records Graduation",
         "buy after Graduation"
     ];
 
-    function _measured(PoolKey memory key, Trade memory t) internal returns (uint256 used) {
-        vm.cool(address(pm));
-        vm.cool(address(hook));
-        vm.cool(UNIVERSAL_ROUTER);
-        vm.cool(PERMIT2);
-        vm.cool(address(_coinOf(key)));
-        if (!_isNative(key)) vm.cool(address(quote));
-        vm.cool(trader);
+    function _measured(PoolKey memory key, Trade memory t) internal returns (uint256) {
         (bytes[] memory inputs, uint256 value) = _routeCall(key, t, t.exactIn ? 0 : type(uint128).max, "");
         bytes memory commands = abi.encodePacked(uint8(0x10));
         uint256 deadline = vm.getBlockTimestamp() + 60;
         vm.prank(trader);
-        uint256 g = gasleft();
         (bool ok,) = UNIVERSAL_ROUTER.call{value: value}(
             abi.encodeWithSignature("execute(bytes,bytes[],uint256)", commands, inputs, deadline)
         );
-        used = g - gasleft();
         assertTrue(ok, "the swap went through");
+        return vm.lastCallGas().gasTotalUsed;
     }
 
     function _walk(PoolKey memory key, uint256 small, uint256 cross) internal returns (uint256[7] memory gas) {
@@ -51,13 +44,13 @@ contract ForkHoldGasTest is ForkRouteBase {
         gas[0] = _measured(key, Trade(true, true, small));
         _assertPath(key, 0, 0);
         gas[1] = _measured(key, Trade(true, true, cross));
-        _assertPath(key, t0, 0);
+        _assertPath(key, 0, 0);
         gas[2] = _measured(key, Trade(true, true, small));
         _assertPath(key, t0, 0);
         gas[3] = _measured(key, Trade(false, true, _coinOf(key).balanceOf(trader)));
-        _assertPath(key, 0, 0);
-        gas[4] = _measured(key, Trade(true, true, cross));
         _assertPath(key, t0, 0);
+        gas[4] = _measured(key, Trade(true, true, cross));
+        _assertPath(key, 0, 0);
         vm.warp(t0 + 1 hours);
         gas[5] = _measured(key, Trade(true, true, small));
         _assertPath(key, t0, t0 + 1 hours);
@@ -68,9 +61,10 @@ contract ForkHoldGasTest is ForkRouteBase {
         }
     }
 
+    /// The record as each transaction's judgement left it.
     function _assertPath(PoolKey memory key, uint256 holdSince, uint256 graduatedAt) internal view {
         StokerHook.Graduation memory g = hook.graduationOf(key.toId());
-        assertEq(g.holdSince, holdSince, "the hold");
+        assertEq(g.holdSince, holdSince, "the hold recorded");
         assertEq(g.graduatedAt, graduatedAt, "Graduation");
     }
 

@@ -14,7 +14,8 @@ import {StokerHook} from "../../src/StokerHook.sol";
 /// The Creator Lock on an EVM chain (#244, ADR 0024; Solana's is ADR 0023): up to a fifth of the supply held
 /// out of the Seed Position in a contract of its own, terms fixed at launch, nothing released before
 /// Graduation, the clock starting at Graduation and running at least seven days, and only the Creator's own
-/// address claiming what the schedule has released. In every pairing.
+/// address claiming what the schedule has released. In every pairing; every top-level call is a transaction.
+/// forge-config: default.isolate = true
 abstract contract CreatorLockCases is LocalBase {
     uint16 internal constant A_FIFTH = 2_000;
     uint32 internal constant WEEK = 7 days;
@@ -171,7 +172,7 @@ abstract contract CreatorLockCases is LocalBase {
         PoolKey memory key = _keyOf(coin);
         if (_native()) _swapNative(key, trader, true, true, _crossingBuy(), 0);
         else _swap(key, trader, true, true, _crossingBuy());
-        assertGt(hook.graduationOf(id).holdSince, 0, "the hold runs");
+        assertGt(hook.graduationNow(id).holdSince, 0, "the hold runs");
         vm.warp(vm.getBlockTimestamp() + 59 minutes);
         assertEq(lock.released(), 0);
         vm.expectRevert(StokerCreatorLock.NotGraduated.selector);
@@ -253,7 +254,7 @@ abstract contract CreatorLockCases is LocalBase {
         PoolKey memory key = _keyOf(coin);
         if (_native()) _swapNative(key, trader, true, true, _crossingBuy(), 0);
         else _swap(key, trader, true, true, _crossingBuy());
-        uint256 holdSince = hook.graduationOf(id).holdSince;
+        uint256 holdSince = hook.graduationNow(id).holdSince;
 
         vm.warp(holdSince + 1 hours + WEEK);
         vm.prank(stranger);

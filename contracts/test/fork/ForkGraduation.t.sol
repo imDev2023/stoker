@@ -11,6 +11,7 @@ import {StokerHook} from "../../src/StokerHook.sol";
 /// Universal Router and sells every coin back, in the same block or in the same transaction, on the real
 /// PoolManager. Under #231's first-touch rule the coin stayed graduated with nothing left in the pool; under
 /// the Graduation Hold it never graduates.
+/// forge-config: default.isolate = true
 contract ForkGraduationRoundTripTest is ForkGraduationBase {
     address internal attacker = makeAddr("attacker");
 
@@ -38,10 +39,10 @@ contract ForkGraduationRoundTripTest is ForkGraduationBase {
 
         _buy(UNIVERSAL_ROUTER, attacker, key, _crossing(key));
         assertTrue(_atOrAbove(key), "the buy crossed the target");
-        assertEq(_graduation(key).holdSince, vm.getBlockTimestamp(), "and started the hold");
+        assertEq(_holdNow(key), vm.getBlockTimestamp(), "and started the hold");
         _sellAll(UNIVERSAL_ROUTER, attacker, key);
         assertFalse(_atOrAbove(key), "the sell went back under");
-        assertEq(_graduation(key).holdSince, 0, "and cleared the hold in the same block");
+        assertEq(_holdNow(key), 0, "and cleared the hold in the same block");
         assertEq(_graduation(key).graduatedAt, 0, "not graduated");
 
         // The review's figures, as it logged them: what the round trip cost, half of the fees to the Creator.
@@ -58,7 +59,7 @@ contract ForkGraduationRoundTripTest is ForkGraduationBase {
         assertEq(_coinOf(key).balanceOf(attacker), 0, "every coin bought was sold back");
         assertGt(start - _quoteBalance(key, attacker), 0, "the round trip cost its fees");
         assertFalse(_atOrAbove(key), "back under the target");
-        assertEq(_graduation(key).holdSince, 0, "no hold survives the call");
+        assertEq(_holdNow(key), 0, "no hold survives the call");
         _assertNeverGraduates(key);
     }
 
@@ -90,13 +91,14 @@ contract ForkGraduationRoundTripTest is ForkGraduationBase {
 /// The Graduation Hold on the real PoolManager, through both Universal Routers, in every pairing (#244):
 /// 59 minutes does not graduate and an hour does, by the next swap or by the public call; a swap under the
 /// target restarts the hour; and Graduation, once recorded, survives the price falling to the start.
+/// forge-config: default.isolate = true
 contract ForkGraduationHoldTest is ForkGraduationBase {
     function _start(uint256 pairing, address router) internal returns (PoolKey memory key, uint256 start) {
         key = _launchPairing(pairing);
         _approveFor(router, trader, key);
         _buy(router, trader, key, _crossing(key));
         start = vm.getBlockTimestamp();
-        assertEq(_graduation(key).holdSince, start, "the hold runs");
+        assertEq(_holdNow(key), start, "the hold runs");
     }
 
     function _byTheNextSwap(uint256 pairing) internal {
@@ -132,10 +134,10 @@ contract ForkGraduationHoldTest is ForkGraduationBase {
         (PoolKey memory key, uint256 first) = _start(pairing, UNIVERSAL_ROUTER);
         vm.warp(first + 30 minutes);
         _sellAll(UNIVERSAL_ROUTER, trader, key);
-        assertEq(_graduation(key).holdSince, 0, "a sell under the target clears it");
+        assertEq(_holdNow(key), 0, "a sell under the target clears it");
         _buy(UNIVERSAL_ROUTER, trader, key, _crossing(key));
         uint256 second = first + 30 minutes;
-        assertEq(_graduation(key).holdSince, second, "the hour starts again");
+        assertEq(_holdNow(key), second, "the hour starts again");
 
         vm.warp(first + 1 hours);
         _buy(UNIVERSAL_ROUTER, trader, key, _dust(key));

@@ -12,6 +12,7 @@ import {StokerCreatorLock} from "../../src/StokerCreatorLock.sol";
 /// The Creator Lock on the real PoolManager, in every pairing (#244): a lock of a fifth seeds four fifths; a
 /// lock above a fifth, or shorter than seven days, reverts; nothing is claimed before Graduation, and after it
 /// the Creator alone claims exactly what the schedule has released.
+/// forge-config: default.isolate = true
 contract ForkCreatorLockTest is ForkGraduationBase {
     uint16 internal constant A_FIFTH = 2_000;
     uint256 internal _n;

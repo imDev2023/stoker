@@ -18,6 +18,7 @@ contract ClockTest is LocalBase {
         assertFalse(OpcodeScan.contains(address(keys).code, OpcodeScan.NUMBER), "keys");
         // The registry's clocks (a day between writes, 48 hours to a scheduled change) read the timestamp.
         assertTrue(OpcodeScan.contains(address(registry).code, OpcodeScan.TIMESTAMP), "the registry reads the time");
+        assertFalse(OpcodeScan.contains(address(taxVault).code, OpcodeScan.NUMBER), "tax vault");
         // So do the Graduation Hold (#244) and the Creator Lock's schedule.
         assertTrue(OpcodeScan.contains(address(hook).code, OpcodeScan.TIMESTAMP), "the hold reads the time");
     }

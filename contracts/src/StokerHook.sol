@@ -35,11 +35,18 @@ import {StokerKeys} from "./StokerKeys.sol";
 ///         for one; the hook never holds an ERC-20. A Payout Call, which anyone can make, pays Credits to
 ///         their owners, and a Credit owed to an address the Quote Asset refuses stays owed to it.
 ///
-///         The hook also guards the pool: only the factory opens a pool on it and adds liquidity to it,
-///         no liquidity is ever removed, and donations are refused.
+///         A Reward Launch's Reward Tax and a Stoke Launch's Stoke Tax (#245) are taken beside these fees, on
+///         the same side, and minted as ERC-6909 claims to the Tax Vault, with a running total per pool
+///         (`taxBooked`); the hook does nothing else with them inside a swap.
 ///
-///         It keeps each coin's Graduation Hold (#244, ADR 0024): the time the pool's price has stood at or
-///         above the Graduation Target since, unbroken; an hour of it graduates the coin, once and for good.
+///         The hook also guards the pool: only the factory opens a pool on it, only the factory and the Tax
+///         Vault add liquidity to it, no liquidity is ever removed, and donations are refused.
+///
+///         It keeps each coin's Graduation Hold (#244, ADR 0024): the time the price its transactions have
+///         left has stood at or above the Graduation Target, unbroken; an hour of it graduates the coin, once
+///         and for good. A swap inside a transaction is never judged on its own, only the price the whole
+///         transaction leaves, so a round trip inside one transaction, in either direction, neither forces
+///         nor resets the hold.
 /// @dev Reads the clock through `block.timestamp` only, never `block.number`, which is an estimate of the
 ///      L1 block on Robinhood Chain and Arbitrum.
 contract StokerHook is BaseHook, IUnlockCallback {
@@ -75,6 +82,24 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         the moment the fee is taken (ADR 0030).
     StokerKeys public immutable keys;
 
+    /// @notice The Tax Vault: it receives every Reward Tax and Stoke Tax as claims, and is the only address
+    ///         beside the factory that may add liquidity to a pool on this hook (Support Liquidity, #245).
+    address public immutable taxVault;
+
+    /// @notice The three Launch types (#231 story 8). `Liquidity` is the Stoke Launch.
+    enum LaunchType {
+        Standard,
+        Reward,
+        Liquidity
+    }
+
+    /// @notice What a Reward Launch's holders are paid in (ADR 0029): the Quote Asset as it was collected,
+    ///         or the coin, bought with the holders' part by the Tax Vault's capped buy.
+    enum PayoutAsset {
+        QuoteAsset,
+        Coin
+    }
+
     /// @notice A Launch's terms, written once by the factory before its pool opens and never changed: every
     ///         figure of its Listing is copied here, so no write to the Quote Registry reaches a launched coin.
     /// @param creatorDestination The Creator Earnings Destination credited with the Creator's share.
@@ -87,6 +112,13 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @param graduationSqrtPriceX96 The Graduation Target, the start price times the multiple, as the pool's
     ///        own sqrt price (#244 reads it; with the Quote Asset as currency0 the pool's price falls as the
     ///        coin's rises, so the target is below the open price there).
+    /// @param launchType Standard, Reward or Liquidity (the Stoke Launch).
+    /// @param taxBps The Reward Tax or the Stoke Tax, of the Quote Asset's side of every swap; 0 on a
+    ///        standard Launch.
+    /// @param burnShareBps The Reward Burn's share of the tax.
+    /// @param liquidityShareBps The share of the tax that becomes Support Liquidity: the Reward Liquidity's
+    ///        on a Reward Launch, all of it on a Stoke Launch. The rest is the holders' part.
+    /// @param payoutAsset A Reward Launch's Payout Asset.
     struct Terms {
         address creatorDestination;
         uint16 platformFeeBps;
@@ -97,6 +129,11 @@ contract StokerHook is BaseHook, IUnlockCallback {
         int24 startTick;
         uint16 graduationMultiple;
         uint160 graduationSqrtPriceX96;
+        LaunchType launchType;
+        uint16 taxBps;
+        uint16 burnShareBps;
+        uint16 liquidityShareBps;
+        PayoutAsset payoutAsset;
     }
 
     mapping(PoolId => Terms) internal _terms;
@@ -107,22 +144,35 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @notice The sum of every Credit owed in a currency, equal to this hook's claims on it.
     mapping(Currency currency => uint256) public totalCredits;
 
+    /// @notice Every Reward Tax or Stoke Tax a pool's swaps have paid, in its Quote Asset, since launch. Each
+    ///         one was minted to the Tax Vault as claims in the same swap, so it is the Tax Vault's exact book
+    ///         of what that coin's tax gave it.
+    mapping(PoolId => uint256) public taxBooked;
+
     /// @notice How long a coin's price must stay at or above its Graduation Target, without a break, before
     ///         the coin graduates: the Graduation Hold (ADR 0024, the owner's hour).
     uint64 public constant GRADUATION_HOLD = 1 hours;
 
-    /// @notice A coin's Graduation Hold and its Graduation (#244).
-    /// @param holdSince When the swap that left the price at or above the target was made, if the price has
-    ///        stood there since; zero while it stands under. Kept once the coin has graduated: the hold that
-    ///        graduated it.
+    /// @notice A coin's Graduation Hold and its Graduation (#244), as last judged. The hook judges the price a
+    ///         transaction left when the next transaction first swaps the pool, or when `graduate` is called,
+    ///         so `holdSince` here can lag the price by one transaction; `graduationNow` judges it now.
+    /// @param holdSince When the transaction that left the price at or above the target was made, if the
+    ///        price has stood there since; zero while it stands under. Kept once the coin has graduated: the
+    ///        hold that graduated it.
     /// @param graduatedAt When the coin graduated, `holdSince` plus the hour, whoever recorded it and
     ///        however late; zero until then, and never changed after.
+    /// @param lastSwapAt When a transaction last swapped the pool: since then the price it left has stood.
     struct Graduation {
         uint64 holdSince;
         uint64 graduatedAt;
+        uint64 lastSwapAt;
     }
 
     mapping(PoolId => Graduation) internal _graduations;
+
+    /// @dev Whether a pool has been swapped in this transaction, in transient storage (EIP-1153): the base of
+    ///      each pool's slot, keccak256("stoker.hook.swappedThisTransaction") - 1.
+    bytes32 internal constant SWAPPED_SLOT = bytes32(uint256(keccak256("stoker.hook.swappedThisTransaction")) - 1);
 
     event LaunchRegistered(
         PoolId indexed poolId,
@@ -147,6 +197,17 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @notice One swap's Referrer Fee, taken on top of the Platform Fee and credited to the referrer the
     ///         trade named.
     event ReferrerFeeCredited(PoolId indexed poolId, Currency indexed currency, address indexed referrer, uint256 fee);
+    /// @notice A Launch's tax terms, written with the rest of its terms.
+    event TaxTermsRegistered(
+        PoolId indexed poolId,
+        LaunchType launchType,
+        uint16 taxBps,
+        uint16 burnShareBps,
+        uint16 liquidityShareBps,
+        PayoutAsset payoutAsset
+    );
+    /// @notice One swap's Reward Tax or Stoke Tax, minted to the Tax Vault as claims.
+    event TaxBooked(PoolId indexed poolId, Currency indexed currency, uint256 tax);
     event CreditPaid(address indexed owner, Currency indexed currency, uint256 amount);
     /// @notice The Quote Asset refused to pay `owner` (a blocklist, a pause); the Credit stays owed to it.
     event CreditRefused(address indexed owner, Currency indexed currency, uint256 amount);
@@ -183,11 +244,15 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @notice The price has not stood at or above the target for the hour; `holdSince` is zero when no hold
     ///         is running.
     error GraduationHoldNotComplete(uint256 holdSince);
+    /// @notice `graduate` was called in a transaction that has swapped the pool, whose price is not yet one a
+    ///         transaction has left.
+    error SwappedThisTransaction();
 
-    constructor(IPoolManager poolManager_, StokerKeys keys_) BaseHook(poolManager_) {
-        if (address(keys_) == address(0)) revert ZeroAddress();
+    constructor(IPoolManager poolManager_, StokerKeys keys_, address taxVault_) BaseHook(poolManager_) {
+        if (address(keys_) == address(0) || taxVault_ == address(0)) revert ZeroAddress();
         factory = msg.sender;
         keys = keys_;
+        taxVault = taxVault_;
     }
 
     /// @inheritdoc BaseHook
@@ -231,6 +296,7 @@ contract StokerHook is BaseHook, IUnlockCallback {
             t.graduationMultiple,
             t.graduationSqrtPriceX96
         );
+        emit TaxTermsRegistered(id, t.launchType, t.taxBps, t.burnShareBps, t.liquidityShareBps, t.payoutAsset);
     }
 
     // ------------------------------------------------------------------ the pool's guards
@@ -247,7 +313,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
         override
         returns (bytes4)
     {
-        if (sender != factory) revert OnlyFactory();
+        // The factory places the Seed Position; the Tax Vault adds Support Liquidity (#245). Neither has code
+        // that removes liquidity, and the hook refuses every removal below in any case.
+        if (sender != factory && sender != taxVault) revert OnlyFactory();
         return this.beforeAddLiquidity.selector;
     }
 
@@ -277,25 +345,31 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @dev When the Quote Asset is the swap's specified currency the fees are taken here, on the specified
     ///      amount: an exact-in buy (the trader pays the amount, fees included) or an exact-out sell (the
     ///      trader receives the amount, the pool pays the fees on top). A trade's referrer is read here for
-    ///      every swap, so a malformed `hookData` or a fee over the cap reverts before the pool runs.
-    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
+    ///      every swap, so a malformed `hookData` or a fee over the cap reverts before the pool runs. The fees
+    ///      are the Platform Fee, the Referrer Fee and the Launch's tax (#245), each its own rate.
+    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         PoolId id = key.toId();
         Terms memory t = _termsOf(id);
+        // Before the pool moves, and ahead of every return below: on a pool's first swap in a transaction the
+        // price still standing is the one earlier transactions left, and that is what the hold judges.
+        _judgeHold(id, t);
         (address referrer, uint256 referrerBps) = _referral(hookData, t);
         bool exactIn = params.amountSpecified < 0;
         bool specifiedIsCurrency0 = exactIn == params.zeroForOne;
         if (specifiedIsCurrency0 != t.quoteIsCurrency0) {
             return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
-        (uint256 fee, uint256 referrerFee) = _feesOnSpecified(params.amountSpecified, t.platformFeeBps, referrerBps);
-        uint256 taken = fee + referrerFee;
+        (uint256 fee, uint256 referrerFee, uint256 tax) =
+            _feesOnSpecified(params.amountSpecified, t.platformFeeBps, referrerBps, _taxBps(sender, t));
+        uint256 taken = fee + referrerFee + tax;
         // Never consume the whole specified amount: a swap the hook swallowed would be a NoOp swap.
         if (exactIn && taken >= OZSafeCast.toUint256(-params.amountSpecified)) revert SwapTooSmall();
         _book(id, key, t, fee, referrer, referrerFee);
+        _bookTax(id, key, t, tax);
         return (this.beforeSwap.selector, toBeforeSwapDelta(taken.toInt128(), 0), 0);
     }
 
@@ -304,7 +378,7 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///      buy (the pool's input, the trader pays the fees on top). When it is the specified currency this
     ///      only checks that the pool traded the whole amount the fees were taken on.
     function _afterSwap(
-        address,
+        address sender,
         PoolKey calldata key,
         SwapParams calldata params,
         BalanceDelta delta,
@@ -312,10 +386,8 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ) internal override returns (bytes4, int128) {
         PoolId id = key.toId();
         Terms memory t = _termsOf(id);
-        // The pool's price is final when `afterSwap` runs, and no fee below moves it, so the hold is judged
-        // here, ahead of the fee branches, on every path through them.
-        _keepHold(id, t);
         (address referrer, uint256 referrerBps) = _referral(hookData, t);
+        uint256 taxBps = _taxBps(sender, t);
         bool exactIn = params.amountSpecified < 0;
         bool specifiedIsCurrency0 = exactIn == params.zeroForOne;
         int128 quoteDelta = t.quoteIsCurrency0 ? delta.amount0() : delta.amount1();
@@ -324,9 +396,12 @@ contract StokerHook is BaseHook, IUnlockCallback {
             // traded all of it. A swap its own price limit stopped early would have paid them on Quote Asset
             // it never traded, so it is refused; the same trade with the coin as the specified side goes
             // through, since its fees are taken below on what really moved.
-            (uint256 feeTaken, uint256 referrerFeeTaken) =
-                _feesOnSpecified(params.amountSpecified, t.platformFeeBps, referrerBps);
-            if (int256(quoteDelta) != params.amountSpecified + OZSafeCast.toInt256(feeTaken + referrerFeeTaken)) {
+            (uint256 feeTaken, uint256 referrerFeeTaken, uint256 taxTaken) =
+                _feesOnSpecified(params.amountSpecified, t.platformFeeBps, referrerBps, taxBps);
+            if (
+                int256(quoteDelta)
+                    != params.amountSpecified + OZSafeCast.toInt256(feeTaken + referrerFeeTaken + taxTaken)
+            ) {
                 revert SwapStoppedEarly();
             }
             return (this.afterSwap.selector, 0);
@@ -334,26 +409,30 @@ contract StokerHook is BaseHook, IUnlockCallback {
 
         uint256 fee = 0;
         uint256 referrerFee = 0;
+        uint256 tax = 0;
         if (exactIn) {
             // A sell: the pool owes the trader `quoteDelta` (positive), the gross, before the fees.
             if (quoteDelta > 0) {
                 uint256 gross = OZSafeCast.toUint256(quoteDelta);
                 fee = _feeOnGross(gross, t.platformFeeBps);
                 referrerFee = _feeOnGross(gross, referrerBps);
-                // Never more than the pool pays out: the trader would pay to sell. Only a referrer's fee
-                // beside the Platform Fee can reach past a gross of 1, so a swap naming none is untouched.
-                if (fee + referrerFee > gross) revert SwapTooSmall();
+                tax = _feeOnGross(gross, taxBps);
+                // Never more than the pool pays out: the trader would pay to sell. Only a referrer's fee or a
+                // tax beside the Platform Fee can reach past a gross of 1, so a swap with neither is untouched.
+                if (fee + referrerFee + tax > gross) revert SwapTooSmall();
             }
         } else if (quoteDelta < 0) {
             // A buy: the trader owes the pool `-quoteDelta`, the net, before the fees.
             uint256 net = OZSafeCast.toUint256(-int256(quoteDelta));
-            uint256 totalBps = uint256(t.platformFeeBps) + referrerBps;
+            uint256 totalBps = uint256(t.platformFeeBps) + referrerBps + taxBps;
             fee = _feeOnNet(net, t.platformFeeBps, totalBps);
             referrerFee = _feeOnNet(net, referrerBps, totalBps);
+            tax = _feeOnNet(net, taxBps, totalBps);
         }
-        uint256 taken = fee + referrerFee;
+        uint256 taken = fee + referrerFee + tax;
         if (taken == 0) return (this.afterSwap.selector, 0);
         _book(id, key, t, fee, referrer, referrerFee);
+        _bookTax(id, key, t, tax);
         return (this.afterSwap.selector, taken.toInt128());
     }
 
@@ -411,20 +490,43 @@ contract StokerHook is BaseHook, IUnlockCallback {
         return (referrer, feeBps);
     }
 
-    /// @dev The two fees when the Quote Asset is the swap's specified currency: of the gross for an exact-in
-    ///      buy (a negative amount), on the net for an exact-out sell (a positive one).
-    function _feesOnSpecified(int256 amountSpecified, uint16 feeBps, uint256 referrerBps)
+    /// @dev Mints `tax` of the Quote Asset to the Tax Vault as claims, against the delta the hook is owed by
+    ///      the swap, and adds it to the pool's running total. Nothing is transferred and nothing is called
+    ///      but the PoolManager's own `mint`, which cannot fail here.
+    function _bookTax(PoolId id, PoolKey calldata key, Terms memory t, uint256 tax) internal {
+        if (tax == 0) return;
+        Currency currency = t.quoteIsCurrency0 ? key.currency0 : key.currency1;
+        poolManager.mint(taxVault, currency.toId(), tax);
+        taxBooked[id] += tax;
+        // The only call before it is the PoolManager's own `mint`.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit TaxBooked(id, currency, tax);
+    }
+
+    /// @dev The tax a swap pays: the Launch's rate, except on the Tax Vault's own buys (the Reward Burn's
+    ///      and a Payout Asset of the coin's), which pay the Platform Fee like any buy but no tax: taxing
+    ///      the tax would send part of the burn's share back to the holders and the liquidity, mixing parts
+    ///      the Launch fixed. `sender` is compared with the Tax Vault's address and never read otherwise.
+    function _taxBps(address sender, Terms memory t) internal view returns (uint256) {
+        return sender == taxVault ? 0 : t.taxBps;
+    }
+
+    /// @dev The three fees when the Quote Asset is the swap's specified currency (the Platform Fee, the
+    ///      Referrer Fee and the tax): of the gross for an exact-in buy (a negative amount), on the net for an
+    ///      exact-out sell (a positive one).
+    function _feesOnSpecified(int256 amountSpecified, uint16 feeBps, uint256 referrerBps, uint256 taxBps)
         internal
         pure
-        returns (uint256 fee, uint256 referrerFee)
+        returns (uint256 fee, uint256 referrerFee, uint256 tax)
     {
         if (amountSpecified < 0) {
             uint256 gross = OZSafeCast.toUint256(-amountSpecified);
-            return (_feeOnGross(gross, feeBps), _feeOnGross(gross, referrerBps));
+            return (_feeOnGross(gross, feeBps), _feeOnGross(gross, referrerBps), _feeOnGross(gross, taxBps));
         }
         uint256 net = OZSafeCast.toUint256(amountSpecified);
-        uint256 totalBps = uint256(feeBps) + referrerBps;
-        return (_feeOnNet(net, feeBps, totalBps), _feeOnNet(net, referrerBps, totalBps));
+        uint256 totalBps = uint256(feeBps) + referrerBps + taxBps;
+        return
+            (_feeOnNet(net, feeBps, totalBps), _feeOnNet(net, referrerBps, totalBps), _feeOnNet(net, taxBps, totalBps));
     }
 
     /// @dev A rate of a known gross amount, rounded up in the platform's favour.
@@ -433,8 +535,8 @@ contract StokerHook is BaseHook, IUnlockCallback {
     }
 
     /// @dev A rate of a gross amount known only as its net, when the fees taken from it together are
-    ///      `totalBps`: so that each fee is its rate of net plus every fee, rounded up. With no referrer
-    ///      `totalBps` is the Platform Fee alone, as before #243.
+    ///      `totalBps`: so that each fee is its rate of net plus every fee, rounded up. With no referrer and
+    ///      no tax `totalBps` is the Platform Fee alone, as before #243 and #245.
     function _feeOnNet(uint256 net, uint256 feeBps, uint256 totalBps) internal pure returns (uint256) {
         return FullMath.mulDivRoundingUp(net, feeBps, BPS - totalBps);
     }
@@ -446,65 +548,95 @@ contract StokerHook is BaseHook, IUnlockCallback {
 
     // ------------------------------------------------------------------ the Graduation Hold
 
-    /// @notice Records the coin's Graduation once its price has stood at or above the Graduation Target for
-    ///         the hour, when no swap has come to record it. Anyone may call it; the Keeper does. It reverts
-    ///         for a pool that is not a Launch's, a coin already graduated, and a hold short of the hour.
+    /// @notice Records the coin's Graduation once the price its transactions have left has stood at or above
+    ///         the Graduation Target for the hour, when no swap has come to record it. Anyone may call it; the
+    ///         Keeper does. It reverts for a pool that is not a Launch's, a coin already graduated, a hold
+    ///         short of the hour or not running (a price left under the target never graduates, whatever was
+    ///         judged before), and inside a transaction that has swapped the pool.
     function graduate(PoolId id) external {
-        _termsOf(id);
+        Terms memory t = _termsOf(id);
+        if (_swappedThisTransaction(id)) revert SwappedThisTransaction();
         Graduation memory g = _graduations[id];
         if (g.graduatedAt != 0) revert AlreadyGraduated();
-        // Only a swap moves the price (nothing else may add liquidity in a way that moves it, remove any,
-        // or donate), and every swap passes through `_keepHold`, so a hold still running means the price has
-        // stood at or above the target since it began.
-        if (!_holdComplete(g)) revert GraduationHoldNotComplete(g.holdSince);
-        _graduate(id, g.holdSince);
+        Graduation memory judged = _judged(g, _atOrAbove(id, t));
+        if (judged.graduatedAt == 0) revert GraduationHoldNotComplete(judged.holdSince);
+        _graduations[id] = judged;
+        _emitJudgement(id, g, judged);
     }
 
-    /// @dev Called by every swap in a Launch's pool, after the pool has moved. A hold that had already run the
-    ///      hour before this swap graduates the coin, whatever this swap does to the price: the price stood
-    ///      there for the whole hour, and the result must not depend on who came first after it, a trader or
-    ///      the public call. Otherwise the price this swap left decides: at or above the target starts a
-    ///      hold if none runs, under it clears the one that does.
-    function _keepHold(PoolId id, Terms memory t) internal {
+    /// @dev Called by every swap in a Launch's pool, before the pool moves. Only a pool's first swap in a
+    ///      transaction judges: the price standing then is the one the last transaction to swap the pool left,
+    ///      at `lastSwapAt` (only a swap moves a v4 pool's price; added liquidity never does, and removals and
+    ///      donations are refused). The swaps after it in the same transaction are not judged, so a flash
+    ///      round trip, across the target and back or under it and back, leaves the hold exactly where the
+    ///      price it ends at says, as if it had never been made.
+    function _judgeHold(PoolId id, Terms memory t) internal {
+        if (_swappedThisTransaction(id)) return;
+        bytes32 slot = _swappedSlot(id);
+        assembly ("memory-safe") {
+            tstore(slot, 1)
+        }
         Graduation memory g = _graduations[id];
-        if (g.graduatedAt != 0) return;
-        if (_holdComplete(g)) {
-            _graduate(id, g.holdSince);
-            return;
-        }
-        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(poolManager, id);
-        // The pool's price is currency1 per currency0. With the coin as currency0 a dearer coin is a higher
-        // price; with the Quote Asset as currency0 (the native asset always is) it is a lower one.
-        bool atOrAbove =
-            t.quoteIsCurrency0 ? sqrtPriceX96 <= t.graduationSqrtPriceX96 : sqrtPriceX96 >= t.graduationSqrtPriceX96;
-        // The only call before these events is the PoolManager's `extsload` view of the price.
-        if (atOrAbove) {
-            if (g.holdSince == 0) {
-                // A timestamp, which fits 64 bits for 584 billion years.
-                // forge-lint: disable-next-line(unsafe-typecast)
-                _graduations[id].holdSince = uint64(block.timestamp);
-                // forge-lint: disable-next-line(reentrancy-events)
-                emit GraduationHoldStarted(id, block.timestamp);
-            }
-        } else if (g.holdSince != 0) {
-            _graduations[id].holdSince = 0;
-            // forge-lint: disable-next-line(reentrancy-events)
-            emit GraduationHoldCleared(id, g.holdSince);
-        }
+        Graduation memory judged = _judged(g, _atOrAbove(id, t));
+        // A timestamp, which fits 64 bits for 584 billion years.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        judged.lastSwapAt = uint64(block.timestamp);
+        _graduations[id] = judged;
+        _emitJudgement(id, g, judged);
     }
 
-    /// @dev The hour is the clock's: a sequencer's few seconds move it by as much and no more.
-    function _holdComplete(Graduation memory g) internal view returns (bool) {
+    /// @dev The record judged against the price standing now, which has stood since `g.lastSwapAt`: under the
+    ///      target, no hold; at or above it, the hold that runs, or one from `lastSwapAt`; and a hold that has
+    ///      run the hour graduates the coin at the hour's end, so the same hold graduates it at the same moment
+    ///      whoever records it and however late. The hour is the clock's: a sequencer's few seconds move it by
+    ///      as much and no more.
+    function _judged(Graduation memory g, bool atOrAbove) internal view returns (Graduation memory j) {
+        j = _copy(g);
+        if (j.graduatedAt != 0) return j;
+        if (!atOrAbove) {
+            j.holdSince = 0;
+            return j;
+        }
+        if (j.holdSince == 0) j.holdSince = j.lastSwapAt;
         // forge-lint: disable-next-line(block-timestamp)
-        return g.holdSince != 0 && block.timestamp >= g.holdSince + GRADUATION_HOLD;
+        if (j.holdSince != 0 && block.timestamp >= j.holdSince + GRADUATION_HOLD) {
+            j.graduatedAt = j.holdSince + GRADUATION_HOLD;
+        }
     }
 
-    /// @dev Graduation's time is the hour's end, so the same hold graduates the coin at the same moment
-    ///      whoever records it and however late.
-    function _graduate(PoolId id, uint64 holdSince) internal {
-        uint64 graduatedAt = holdSince + GRADUATION_HOLD;
-        _graduations[id].graduatedAt = graduatedAt;
-        emit Graduated(id, graduatedAt, holdSince);
+    function _emitJudgement(PoolId id, Graduation memory before, Graduation memory j) internal {
+        // The only call before these events is the PoolManager's `extsload` view of the price.
+        if (before.holdSince != j.holdSince) {
+            // forge-lint: disable-next-line(reentrancy-events)
+            if (before.holdSince != 0) emit GraduationHoldCleared(id, before.holdSince);
+            // forge-lint: disable-next-line(reentrancy-events)
+            if (j.holdSince != 0) emit GraduationHoldStarted(id, j.holdSince);
+        }
+        // forge-lint: disable-next-line(reentrancy-events)
+        if (before.graduatedAt == 0 && j.graduatedAt != 0) emit Graduated(id, j.graduatedAt, j.holdSince);
+    }
+
+    /// @dev Whether the pool's price now stands at or above its Graduation Target. The pool's price is currency1
+    ///      per currency0: with the coin as currency0 a dearer coin is a higher price; with the Quote Asset as
+    ///      currency0 (the native asset always is) it is a lower one.
+    function _atOrAbove(PoolId id, Terms memory t) internal view returns (bool) {
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(poolManager, id);
+        return t.quoteIsCurrency0 ? sqrtPriceX96 <= t.graduationSqrtPriceX96 : sqrtPriceX96 >= t.graduationSqrtPriceX96;
+    }
+
+    function _swappedSlot(PoolId id) internal pure returns (bytes32) {
+        return keccak256(abi.encode(SWAPPED_SLOT, id));
+    }
+
+    function _swappedThisTransaction(PoolId id) internal view returns (bool swapped) {
+        bytes32 slot = _swappedSlot(id);
+        assembly ("memory-safe") {
+            swapped := tload(slot)
+        }
+    }
+
+    function _copy(Graduation memory g) internal pure returns (Graduation memory) {
+        return Graduation({holdSince: g.holdSince, graduatedAt: g.graduatedAt, lastSwapAt: g.lastSwapAt});
     }
 
     // ------------------------------------------------------------------ the Payout Call
@@ -680,10 +812,21 @@ contract StokerHook is BaseHook, IUnlockCallback {
         return _terms[id];
     }
 
-    /// @notice A Launch's Graduation Hold and its Graduation, by its pool (#244). A hold that has run the hour
-    ///         with no swap or call since reads as running until one records it.
+    /// @notice A Launch's Graduation Hold and its Graduation as last judged, by its pool (#244). The hold
+    ///         can lag the price by one transaction, and a hold that has run the hour reads as running until a
+    ///         swap or a call records Graduation; `graduatedAt` here is the recorded one, which a Creator Lock
+    ///         reads.
     function graduationOf(PoolId id) external view returns (Graduation memory) {
         return _graduations[id];
+    }
+
+    /// @notice The same record judged against the price standing now, as the next transaction to swap the
+    ///         pool or a call to `graduate` would leave it: the hold the price has kept, and the Graduation
+    ///         such a call would record. Read inside a transaction that has swapped the pool, it judges a price
+    ///         that transaction has not yet left.
+    function graduationNow(PoolId id) external view returns (Graduation memory) {
+        Terms memory t = _termsOf(id);
+        return _judged(_graduations[id], _atOrAbove(id, t));
     }
 
     /// @notice Where the platform's share of a Platform Fee taken now is booked: the Admin's address.

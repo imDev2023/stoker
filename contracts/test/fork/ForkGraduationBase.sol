@@ -12,7 +12,9 @@ import {RouterLib, IUniversalRouter} from "./RouterLib.sol";
 import {StokerHook} from "../../src/StokerHook.sol";
 
 /// @notice What the fork tests of Graduation and the Creator Lock share (#244): the three pairings, trades
-///         through the Universal Router, and the coin's price read against its Graduation Target.
+///         through the Universal Router, and the coin's price read against its Graduation Target. The hold
+///         judges the price each transaction leaves, so the contracts over it run every top-level call as a
+///         transaction of its own (`isolate`).
 abstract contract ForkGraduationBase is ForkRouteBase {
     using StateLibrary for IPoolManager;
 
@@ -40,8 +42,14 @@ abstract contract ForkGraduationBase is ForkRouteBase {
 
     // ------------------------------------------------ the coin's price against the target
 
+    /// The record as last judged: the recorded Graduation, and the hold as recorded.
     function _graduation(PoolKey memory key) internal view returns (StokerHook.Graduation memory) {
         return hook.graduationOf(key.toId());
+    }
+
+    /// The hold as the price stands now: what the next transaction or `graduate` would judge.
+    function _holdNow(PoolKey memory key) internal view returns (uint256) {
+        return hook.graduationNow(key.toId()).holdSince;
     }
 
     function _priceOf(PoolKey memory key) internal view returns (uint160 p) {

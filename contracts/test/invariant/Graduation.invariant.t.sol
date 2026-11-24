@@ -12,6 +12,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {LocalBase} from "../utils/LocalBase.sol";
 import {HoldAttacker} from "../utils/HoldAttacker.sol";
+import {FlashReset} from "../utils/FlashReset.sol";
 import {StokerFactory} from "../../src/StokerFactory.sol";
 import {StokerHook} from "../../src/StokerHook.sol";
 import {StokerCreatorLock} from "../../src/StokerCreatorLock.sol";
@@ -19,15 +20,20 @@ import {StokerCreatorLock} from "../../src/StokerCreatorLock.sol";
 /// Drives a locked Launch through random buys and sells (to the target's edge, a wei either side, as well as
 /// by amounts), round trips across the target inside one unlock, warps of the clock, public calls to
 /// graduate, and claims of the Creator Lock by the Creator and by others. It keeps its own model of the
-/// Graduation Hold, built only from the prices it sees after each swap and its own clock (#244).
+/// Graduation Hold, built only from the prices it sees and its own clock (#244): each handler call is one
+/// transaction, and a transaction's first swap judges the price the transaction before it left. Since the
+/// review of #269 it also resets as that review's griefer did: a sell of coins it does not own and the buy
+/// back, inside one unlock.
 contract GraduationHandler is Test {
     GraduationInvariantBase internal immutable t;
     address[3] internal actors;
     HoldAttacker internal attacker;
+    FlashReset internal griefer;
 
-    // The model of the hold, from outside.
+    // The model of the hold, from outside: the record as the hook should hold it.
     uint256 public modelHold;
     uint256 public modelGraduatedAt;
+    uint256 public modelLastSwapAt;
 
     // Ghosts.
     uint256 public swaps;
@@ -37,7 +43,7 @@ contract GraduationHandler is Test {
     uint256 public claimedByCreator; // coins the Creator's claims delivered
     uint256 public claimMismatches; // a claim that paid other than what the schedule had released and not paid
     uint256 public othersClaims;
-    uint256 public publicCallMismatches; // a public call to graduate whose outcome differed from the model's // claims by anyone but the Creator that went through
+    uint256 public publicCallMismatches; // a public call to graduate whose outcome differed from the model's
     uint256 public lockLeaks; // the lock's balance fell other than by the Creator's claim
 
     constructor(GraduationInvariantBase t_) {
@@ -45,25 +51,29 @@ contract GraduationHandler is Test {
         actors = [makeAddr("g0"), makeAddr("g1"), makeAddr("g2")];
         attacker = new HoldAttacker(IPoolManager(t.poolManager()), t.theHook());
         t.fund(address(attacker));
+        griefer = new FlashReset(IPoolManager(t.poolManager()), t.theHook());
+        t.fund(address(griefer));
     }
 
     // ------------------------------------------------ the model
 
-    function _step(bool atOrAbove) internal {
-        if (modelGraduatedAt != 0) return;
-        uint256 now_ = vm.getBlockTimestamp();
-        if (modelHold != 0 && now_ >= modelHold + 1 hours) {
-            modelGraduatedAt = modelHold + 1 hours;
-            return;
-        }
-        if (atOrAbove) {
-            if (modelHold == 0) {
-                modelHold = now_;
-                holdsStarted++;
-            }
-        } else {
-            modelHold = 0;
-        }
+    /// The record judged against a price that has stood since the model's last swap.
+    function _judged(bool atOrAbove) internal view returns (uint256 hold, uint256 graduatedAt) {
+        (hold, graduatedAt) = (modelHold, modelGraduatedAt);
+        if (graduatedAt != 0) return (hold, graduatedAt);
+        if (!atOrAbove) return (0, 0);
+        if (hold == 0) hold = modelLastSwapAt;
+        if (hold != 0 && vm.getBlockTimestamp() >= hold + 1 hours) graduatedAt = hold + 1 hours;
+    }
+
+    /// A transaction that swapped the pool went through: its first swap judged the price standing before it,
+    /// read before the call as `aboveBefore`, and the price it left stands from now.
+    function _transactionSwapped(bool aboveBefore) internal {
+        uint256 before = modelHold;
+        (modelHold, modelGraduatedAt) = _judged(aboveBefore);
+        if (before == 0 && modelHold != 0) holdsStarted++;
+        modelLastSwapAt = vm.getBlockTimestamp();
+        swaps++;
     }
 
     /// Every action ends here: the Graduation once seen never changes, and the lock's coins leave only by
@@ -83,9 +93,9 @@ contract GraduationHandler is Test {
         uint256 lb = t.lockBalance();
         t.fund(who);
         amount = bound(amount, t.quoteUnit() / 1_000, 2 * t.crossingBuy());
+        bool aboveBefore = t.atOrAbove();
         try t.swapAs(who, true, true, amount, 0) {
-            swaps++;
-            _step(t.atOrAbove());
+            _transactionSwapped(aboveBefore);
         } catch {}
         _check(lb, false);
     }
@@ -95,9 +105,9 @@ contract GraduationHandler is Test {
         uint256 lb = t.lockBalance();
         uint256 coins = t.coinBalance(who) * bound(share, 1, 100) / 100;
         if (coins == 0) return;
+        bool aboveBefore = t.atOrAbove();
         try t.swapAs(who, false, true, coins, 0) {
-            swaps++;
-            _step(t.atOrAbove());
+            _transactionSwapped(aboveBefore);
         } catch {}
         _check(lb, false);
     }
@@ -111,9 +121,9 @@ contract GraduationHandler is Test {
         uint160 limit = t.edge(bound(edge, 0, 3), dearSide);
         uint256 amount = buy_ ? 9.5e11 ether : t.coinBalance(who);
         if (amount == 0) return;
+        bool aboveBefore = t.atOrAbove();
         try t.swapAs(who, buy_, !buy_, amount, limit) {
-            swaps++;
-            _step(t.atOrAbove());
+            _transactionSwapped(aboveBefore);
         } catch {}
         _check(lb, false);
     }
@@ -123,10 +133,24 @@ contract GraduationHandler is Test {
         uint256 lb = t.lockBalance();
         t.fund(address(attacker));
         amount = bound(amount, t.crossingBuy() / 2, 2 * t.crossingBuy());
+        bool aboveBefore = t.atOrAbove();
         try attacker.roundTrip(t.theKey(), amount) {
-            swaps += 2;
-            _step(t.atOrAbovePrice(attacker.priceMidway()));
-            _step(t.atOrAbove());
+            // Two swaps in one transaction: only the first judges, and the price between them counts for
+            // nothing.
+            _transactionSwapped(aboveBefore);
+        } catch {}
+        _check(lb, false);
+    }
+
+    /// The review of #269's reset: a sell of coins nobody holds, under the target, and the buy back, inside one
+    /// unlock. Judged by the price the transaction leaves, it is a transaction like any other.
+    function flashReset(uint256 coins) external {
+        uint256 lb = t.lockBalance();
+        t.fund(address(griefer));
+        coins = bound(coins, 1 ether, 2e10 ether);
+        bool aboveBefore = t.atOrAbove();
+        try griefer.reset(t.theKey(), coins) {
+            _transactionSwapped(aboveBefore);
         } catch {}
         _check(lb, false);
     }
@@ -147,19 +171,14 @@ contract GraduationHandler is Test {
 
     function graduate(uint256 actorSeed) external {
         uint256 lb = t.lockBalance();
+        (uint256 hold, uint256 graduatedAt) = _judged(t.atOrAbove());
+        bool shouldRecord = modelGraduatedAt == 0 && graduatedAt != 0;
         vm.prank(actors[actorSeed % actors.length]);
         try t.theHook().graduate(t.theId()) {
-            // The public call records what the model would: a hold that ran the hour.
-            if (modelGraduatedAt == 0 && modelHold != 0 && vm.getBlockTimestamp() >= modelHold + 1 hours) {
-                modelGraduatedAt = modelHold + 1 hours;
-            } else {
-                publicCallMismatches++; // a public call the model says should have failed went through
-            }
+            if (shouldRecord) (modelHold, modelGraduatedAt) = (hold, graduatedAt);
+            else publicCallMismatches++; // a public call the model says should have failed went through
         } catch {
-            // ... and one it says should have gone through failed.
-            if (modelGraduatedAt == 0 && modelHold != 0 && vm.getBlockTimestamp() >= modelHold + 1 hours) {
-                publicCallMismatches++;
-            }
+            if (shouldRecord) publicCallMismatches++; // and one it says should have gone through failed
         }
         _check(lb, false);
     }
@@ -241,13 +260,15 @@ abstract contract GraduationInvariantBase is LocalBase {
         assertGt(handler.swaps(), 0, "no swap went through");
     }
 
-    /// The hook's hold and Graduation are exactly the model's: the hold starts with the swap that leaves the
-    /// price at or above the target, ends with one that leaves it under, and an unbroken hour graduates the
-    /// coin at the hour's end. So Graduation is never recorded inside the hour, nor by a round trip.
+    /// The hook's record is exactly the model's: a hold runs from the transaction that left the price at or
+    /// above the target, ends with one that left it under, and an unbroken hour graduates the coin at the
+    /// hour's end. So Graduation is never recorded inside the hour, nor by a round trip, and a flash reset
+    /// changes nothing.
     function invariant_graduationIsTheHoldsHour() public view {
         StokerHook.Graduation memory g = hook.graduationOf(id);
         assertEq(g.graduatedAt, handler.modelGraduatedAt(), "Graduation, against the model");
         assertEq(g.holdSince, handler.modelHold(), "the hold, against the model");
+        assertEq(g.lastSwapAt, handler.modelLastSwapAt(), "the last transaction to swap the pool");
         assertEq(handler.publicCallMismatches(), 0, "a public call that should have failed went through, or not");
         if (g.graduatedAt != 0) {
             assertEq(g.graduatedAt, uint256(g.holdSince) + 1 hours, "an hour after the hold began");

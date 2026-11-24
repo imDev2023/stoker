@@ -15,12 +15,15 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {LocalBase} from "../utils/LocalBase.sol";
 import {HoldAttacker} from "../utils/HoldAttacker.sol";
+import {FlashReset, SwapThenGraduate} from "../utils/FlashReset.sol";
 import {StokerHook} from "../../src/StokerHook.sol";
 import {StokerFactory} from "../../src/StokerFactory.sol";
 
 /// The Graduation Hold (#244, ADR 0024), proven from outside in every pairing: the coin as currency0, the
 /// coin as currency1 (where the pool's price falls as the coin's rises), and the native asset (always
 /// currency0). "Above" and "below" always mean the coin's price against its Graduation Target.
+/// The hold judges the price each transaction leaves, so every top-level call here is a transaction of its own.
+/// forge-config: default.isolate = true
 abstract contract GraduationCases is LocalBase {
     using StateLibrary for IPoolManager;
 
@@ -84,7 +87,13 @@ abstract contract GraduationCases is LocalBase {
         return _coinIs0(key) ? _price() >= _target() : _price() <= _target();
     }
 
+    /// The hold as the price stands now: what the next transaction or `graduate` would judge.
     function _hold() internal view returns (uint256) {
+        return hook.graduationNow(id).holdSince;
+    }
+
+    /// The hold as last judged and recorded.
+    function _recordedHold() internal view returns (uint256) {
         return hook.graduationOf(id).holdSince;
     }
 
@@ -136,12 +145,19 @@ abstract contract GraduationCases is LocalBase {
     // ------------------------------------------------ the hold starts, runs and clears
 
     function test_hold_aBuyToTheTargetStartsIt() public {
-        vm.expectEmit(true, false, false, true, address(hook));
-        emit StokerHook.GraduationHoldStarted(id, vm.getBlockTimestamp());
+        uint256 t0 = vm.getBlockTimestamp();
         _buyTo(trader, _target());
         assertEq(_price(), _target(), "the buy stopped on the target");
-        assertEq(_hold(), vm.getBlockTimestamp(), "the hold runs from this swap");
+        assertEq(_hold(), t0, "the hold runs from the transaction that left the price there");
+        assertEq(_recordedHold(), 0, "judged by the next transaction, not by this one");
         assertEq(_graduatedAt(), 0, "and nothing has graduated");
+
+        // The next transaction to swap the pool judges the price this one left, and records the hold from it.
+        vm.warp(t0 + 5 minutes);
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit StokerHook.GraduationHoldStarted(id, t0);
+        _dustBuy(trader);
+        assertEq(_recordedHold(), t0, "recorded from the transaction that left the price there");
     }
 
     function test_hold_aWeiUnderTheTargetStartsNothing() public {
@@ -191,12 +207,13 @@ abstract contract GraduationCases is LocalBase {
         uint256 first = vm.getBlockTimestamp();
 
         vm.warp(first + 50 minutes);
-        vm.expectEmit(true, false, false, true, address(hook));
-        emit StokerHook.GraduationHoldCleared(id, first);
         _sellTo(trader, _cheaper(_target(), 1));
         assertEq(_hold(), 0, "cleared");
 
+        // The next transaction judges the price the sell left, and records the hold's end.
         vm.warp(first + 55 minutes);
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit StokerHook.GraduationHoldCleared(id, first);
         _buyTo(trader, _above());
         uint256 second = vm.getBlockTimestamp();
         assertEq(_hold(), second, "a new hold");
@@ -259,16 +276,18 @@ abstract contract GraduationCases is LocalBase {
     // ------------------------------------------------ crossing and leaving cannot graduate
 
     /// The spike review's forced Graduation as a flash loan: across the target and straight back inside one
-    /// unlock. The hold starts between the two swaps and is gone after them, so an hour later nothing
-    /// graduates.
+    /// unlock. Only the price the transaction leaves is judged, so the price between the two swaps counts for
+    /// nothing, and an hour later nothing graduates.
     function test_hold_acrossAndBackInOneUnlock_leavesTheCoinNotGraduated() public {
         HoldAttacker attacker = new HoldAttacker(pm, hook);
         if (_native()) vm.deal(address(attacker), 100 ether);
         else mockQuote.mint(address(attacker), 1_000 ether);
 
         attacker.roundTrip(key, _crossingBuy());
-        assertEq(attacker.holdSeenMidway(), vm.getBlockTimestamp(), "the buy crossed the target");
-        assertEq(_hold(), 0, "the sell cleared the hold in the same call");
+        uint160 midway = attacker.priceMidway();
+        assertTrue(_coinIs0(key) ? midway >= _target() : midway <= _target(), "the buy crossed the target");
+        assertEq(attacker.holdSeenMidway(), 0, "and recorded nothing: a swap inside a transaction is not judged");
+        assertEq(_hold(), 0, "the price the transaction left is under the target");
         assertGt(attacker.cost(), 0, "the round trip paid its fees");
 
         vm.warp(vm.getBlockTimestamp() + 2 hours);
@@ -295,7 +314,7 @@ abstract contract GraduationCases is LocalBase {
         uint256 launchedAt = vm.getBlockTimestamp();
         PoolKey memory k = _launchAnother(_crossingBuy());
         PoolId kid = k.toId();
-        assertEq(hook.graduationOf(kid).holdSince, launchedAt, "the hold runs from the launch");
+        assertEq(hook.graduationNow(kid).holdSince, launchedAt, "the hold runs from the launch");
         vm.warp(launchedAt + 1 hours - 1);
         vm.expectRevert(abi.encodeWithSelector(StokerHook.GraduationHoldNotComplete.selector, launchedAt));
         hook.graduate(kid);
@@ -303,6 +322,66 @@ abstract contract GraduationCases is LocalBase {
         hook.graduate(kid);
         assertEq(hook.graduationOf(kid).graduatedAt, launchedAt + 1 hours);
         assertEq(_hold(), 0, "the other Launch's hold is its own");
+    }
+
+    /// The review of #269's finding, the other direction: inside one unlock a contract with no coins sells
+    /// coins it does not own, taking the price under the target, and buys the same coins back. It resets
+    /// nothing now: only the price the transaction leaves is judged, and that is where it began.
+    function test_hold_aFlashSellAndBuyBackInOneUnlock_resetsNothing() public {
+        _buyTo(trader, _above());
+        uint256 start = vm.getBlockTimestamp();
+        FlashReset griefer = new FlashReset(pm, hook);
+        if (_native()) vm.deal(address(griefer), 1 ether);
+        else mockQuote.mint(address(griefer), 1 ether);
+
+        for (uint256 i = 1; i <= 5; i++) {
+            vm.warp(start + i * 11 minutes);
+            griefer.reset(key, 1e10 ether);
+            assertTrue(_coinIs0(key) ? griefer.priceMidway() < _target() : griefer.priceMidway() > _target());
+            assertEq(IERC20(coin).balanceOf(address(griefer)), 0, "the griefer holds no coins");
+            assertEq(_hold(), start, "the hold runs on from its start");
+        }
+        vm.warp(start + 1 hours);
+        vm.prank(stranger);
+        hook.graduate(id);
+        assertEq(_graduatedAt(), start + 1 hours, "and the coin graduates on the hour");
+    }
+
+    /// Inside a transaction that has swapped the pool, the price is not one a transaction has left, so the
+    /// public call refuses to judge it, even for a hold that has run the hour.
+    function test_graduate_inATransactionThatSwappedThePool_isRefused() public {
+        _buyTo(trader, _above());
+        vm.warp(vm.getBlockTimestamp() + 2 hours);
+        SwapThenGraduate both = new SwapThenGraduate(pm, hook);
+        if (_native()) vm.deal(address(both), 1 ether);
+        else mockQuote.mint(address(both), 1 ether);
+        vm.expectRevert(StokerHook.SwappedThisTransaction.selector);
+        both.run(key, 1e12);
+
+        vm.prank(stranger);
+        hook.graduate(id);
+        assertGt(_graduatedAt(), 0, "the same call on its own records it");
+    }
+
+    /// A price a transaction left under the target never graduates, whatever an earlier judgement recorded.
+    function test_graduate_aPriceLeftUnderNeverGraduates_whateverWasRecorded() public {
+        _buyTo(trader, _above());
+        uint256 start = vm.getBlockTimestamp();
+        vm.warp(start + 30 minutes);
+        _dustBuy(trader);
+        assertEq(_recordedHold(), start, "the hold recorded");
+        vm.warp(start + 40 minutes);
+        _sellTo(trader, _cheaper(_target(), 1));
+        assertEq(_recordedHold(), start, "still recorded: the sell's price is judged later");
+
+        vm.warp(start + 3 hours);
+        vm.expectRevert(abi.encodeWithSelector(StokerHook.GraduationHoldNotComplete.selector, 0));
+        vm.prank(stranger);
+        hook.graduate(id);
+        assertEq(hook.graduationNow(id).graduatedAt, 0, "nothing to record");
+        _dustBuy(trader);
+        assertEq(_recordedHold(), 0, "the next transaction records the hold's end");
+        assertEq(_graduatedAt(), 0);
     }
 
     // ------------------------------------------------ once recorded, for good
