@@ -186,22 +186,24 @@ REGISTRY=0x... ACTION=list QUOTE=0x... OPENING_VALUE=5000000000 MULTIPLE=20 CAP_
   The first run reads the chain; later runs read Foundry's cache under `~/.foundry/cache/rpc/4663/`.
 - CI (`.github/workflows/ci.yml`, job `contracts`) checks the format, builds with sizes, lints `src`, and runs every test that needs no RPC on every push, with deeper fuzz and invariant campaigns (`FOUNDRY_PROFILE=ci`); it runs the fork tests only where the repository has the `ROBINHOOD_RPC_URL` secret.
 
-Results on 2026-11-24, with #243 after the main session's review: 124 local tests (unit, fuzz, and five invariants in two campaigns, one per kind of Quote Asset, plus one for native leftovers) and 27 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
+Results on 2026-11-24, #245 as its lane pushed it, with #243 merged in: 173 local tests (unit, fuzz, the five invariants of the two Books campaigns, the native leftovers, and the five of the tax campaign) and 48 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
+#243 after the main session's review: 124 local tests (unit, fuzz, and five invariants in two campaigns, one per kind of Quote Asset, plus one for native leftovers) and 27 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
 Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test (the PR lists them); the review added two more, each shown failing before its fix.
 #243 as its lane pushed it: 122 local and 27 fork tests.
 #242 after the main session's review: 70 local and 18 fork tests.
 #242 as its lane pushed it: 68 local and 17 fork tests, all passing; the review found no defect in the contracts and added two local tests, one fork test and the own-pull action in the invariant campaigns.
 #241 alone, after the main session's review: 40 local and 11 fork tests.
 
-| Contract | Runtime | Initcode | #242 | #241 |
-| --- | ---: | ---: | ---: | ---: |
-| `StokerFactory` | 11,267 | 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
-| `StokerHook` | 9,979 | 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
-| `QuoteRegistry` | 3,740 | 3,965 | new | new |
-| `StokerKeys` | 1,291 | 1,483 | new | new |
-| `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged |
+| Contract | Runtime | Initcode | #243 | #242 | #241 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `StokerFactory` | 12,155 | 25,463 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
+| `StokerHook` | 11,461 | 12,447 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
+| `TaxVault` | 11,417 | 11,947 | new | new | new |
+| `QuoteRegistry` | 3,740 | 3,965 | new | new | new |
+| `StokerKeys` | 1,291 | 1,483 | new | new | new |
+| `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged | unchanged |
 
-Launch gas on the fork: about 1.22M with a permit First Buy in NVDA, about 1.06M with a native First Buy (#242: 1.18M and 1.03M; the Listing's three figures and the Graduation Target are read and written into the terms).
+Launch gas on the fork, a standard Launch: about 1.23M with a permit First Buy in NVDA, about 1.07M with a native First Buy (#245, the tax terms written beside the rest; #243: 1.22M and 1.06M; #242: 1.18M and 1.03M; the Listing's three figures and the Graduation Target are read and written into the terms).
 A swap costs about 8,000 gas more than in #242: the terms take a second slot and the Admin is read from the keys.
 A native Payout Call to eight owners, five of them refusing (each spending its whole 50,000), took 321,867 gas on the fork.
 
@@ -409,6 +411,10 @@ The pre-deployment checklist for the vault, item by item:
 
 #243's code raised 13 more, each fixed or annotated: the registry's five comparisons of `block.timestamp` (its two clocks, a day and 48 hours, which a sequencer's few seconds move by as much and no more), four casts to `uint40` (timestamps, which last until the year 36812), the cast of `hookData`'s first word to an address (its upper bits checked zero first), a missing zero check on `proposeAdmin` (the zero address withdraws a proposal and nobody can accept for it), and two uninitialised locals in `_afterSwap` (made explicit, with the two in `_referral` beside them).
 
+#245's code raised seven more in `forge lint src`, each fixed or annotated: three casts of the time to `uint64` (now `SafeCast.toUint64`), the unused fee delta of a Support Liquidity addition (zero in a pool with no LP fee and no donations, and any coin in the delta is refused), the exact comparison of what left the vault with the amount deposited (on purpose: the Distributor must take exactly that), the vault's interval read from `block.timestamp` (the only clock these contracts read), and the support range rounded down to the tick spacing (on purpose).
+Slither 0.11.3 on #245's code (with #243 merged): 54 results across the workspace.
+For the Tax Vault it cannot generate IR for `addSupport`, `burn`, `buyForHolders`, `_swapIn` and `_addLiquidity` (the same via IR gap as the factory's), and so reports `_books` as never written, four helpers as unused and two decoded locals as uninitialised, all of which those functions use; the rest are the lint's classes above (the range's division, the empty result of an unlock, the fields of `getSlot0` it does not need, the timestamp), each on purpose.
+For the hook it adds `_bookTax` to `_book`'s reentrancy finding: the only call before its write and its event is the PoolManager's own `mint`.
 #242's code raised four more, now fixed or annotated: two uninitialised locals (made explicit), the reentrancy finding on the native Payout Call's first unlock (the PoolManager's call back into the hook's own callback; a Credit is only ever added back after it), and a revert in a loop (the gas floor, which must revert the whole call).
 
 Slither 0.11.3 (`slither . --config-file <security standards>/tooling/slither.config.json --filter-paths "lib/|test/|script/"`) reports the same classes, and two more that are its own limits: it cannot generate IR for `StokerFactory._placeSeed` and `_firstBuy` (memory structs under via IR), and so reports `SUPPLY` as unused and the launch's `seed` as uninitialized, both of which those two functions use.
@@ -434,3 +440,7 @@ Running Slither and the security standards' gate in CI is #251's.
 11. Gotcha 2's general form: `vm.expectRevert` binds to the next external call, and reading the pool's price for a limit (`getSlot0` is an `extsload`) inside the swap's own arguments is one; read the limit into a local first.
 12. Every handler function added to an invariant campaign dilutes the trades in a run: with #243's five, a run of 64 calls once held four trades, all stopped by their own limits, and `afterInvariant`'s "no swap went through" failed; the campaign now has four trade entry points.
     A failing sequence persists under `cache/invariant/failures/` and replays on the next run even after the fix, so delete the file once the cause is gone.
+13. Gotcha 10 bites the fork tests as well: a loop of Tax Vault pieces that warps by `block.timestamp + PIECE_INTERVAL` stops moving after the first warp and the next piece reverts `TooSoon`; #245's tests warp from `vm.getBlockTimestamp()` everywhere, a router's deadline included.
+14. `vm.expectEmit` matches the next event emitted, and a launch with an ERC-20 First Buy emits the Creator's `Approval` first; the terms' event is read back from `vm.recordLogs` instead.
+15. Removing a guard to show its test fails can leave a parameter or a local unused, and with `deny = "warnings"` the build fails, which proves nothing; write the removal so it still compiles (`sender == taxVault ? t.taxBps : t.taxBps`, `taxTaken * 0`), as #245's guard-removal run did.
+16. A pool id hashes every field of its key, its hook included, so a key on another hook can never read registered terms: the Tax Vault's separate comparison of `key.hooks` with our hook caught nothing when removed, and was dropped as redundant.
