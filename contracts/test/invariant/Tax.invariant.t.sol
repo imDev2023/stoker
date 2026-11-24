@@ -377,8 +377,7 @@ contract TaxInvariantTest is TaxLocalBase {
             );
             assertEq(IERC20(coin).balanceOf(address(taxVault)), taxVault.booksOf(key.toId()).holdersCoins);
             assertEq(
-                holdersPart.deposited(coin, handler.quoteOf(k))
-                    + holdersPart.deposited(coin, Currency.wrap(coin)),
+                holdersPart.deposited(coin, handler.quoteOf(k)) + holdersPart.deposited(coin, Currency.wrap(coin)),
                 handler.passedToDistributor(k),
                 "the Distributor received exactly what was passed"
             );

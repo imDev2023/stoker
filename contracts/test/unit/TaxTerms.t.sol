@@ -120,7 +120,9 @@ contract TaxTermsTest is TaxLocalBase {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         uint256 found;
         for (uint256 i; i < logs.length; i++) {
-            if (logs[i].emitter != address(hook) || logs[i].topics[0] != StokerHook.TaxTermsRegistered.selector) continue;
+            if (logs[i].emitter != address(hook) || logs[i].topics[0] != StokerHook.TaxTermsRegistered.selector) {
+                continue;
+            }
             found++;
             assertEq(logs[i].topics[1], PoolId.unwrap(key.toId()));
             (uint8 t, uint16 tax, uint16 b, uint16 l, uint8 pa) =

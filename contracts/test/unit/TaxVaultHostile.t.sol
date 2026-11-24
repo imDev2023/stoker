@@ -44,7 +44,8 @@ contract TaxVaultHostileTest is TaxLocalBase {
     function test_hostile_noCallRunsInsideAnUnlock() public {
         PoolKey memory key = _rewardWithTax(false);
         UnlockedCaller c = new UnlockedCaller(pm);
-        bytes4[3] memory calls = [TaxVault.burn.selector, TaxVault.addSupport.selector, TaxVault.passHoldersPart.selector];
+        bytes4[3] memory calls =
+            [TaxVault.burn.selector, TaxVault.addSupport.selector, TaxVault.passHoldersPart.selector];
         for (uint256 i; i < 3; i++) {
             vm.expectRevert(IPoolManager.AlreadyUnlocked.selector);
             c.callInsideUnlock(address(taxVault), abi.encodeWithSelector(calls[i], key));
@@ -170,8 +171,12 @@ contract ReenteringDistributor {
     }
 
     function deposit(address, Currency asset, uint256 amount) external payable {
-        bytes4[4] memory calls =
-            [TaxVault.burn.selector, TaxVault.addSupport.selector, TaxVault.passHoldersPart.selector, TaxVault.buyForHolders.selector];
+        bytes4[4] memory calls = [
+            TaxVault.burn.selector,
+            TaxVault.addSupport.selector,
+            TaxVault.passHoldersPart.selector,
+            TaxVault.buyForHolders.selector
+        ];
         for (uint256 i; i < 4; i++) {
             attempts++;
             (bool ok, bytes memory err) = address(vault).call(abi.encodeWithSelector(calls[i], key));
