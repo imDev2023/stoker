@@ -152,6 +152,7 @@ contract DestinationGuardsTest is DestinationsLocalBase {
                 if (destination == address(burnDestination)) {
                     vm.prank(thief);
                     burnDestination.applyEarnings(key);
+                    _letThePriceStand();
                     vm.startPrank(thief);
                     taxVault.burn(key);
                     taxVault.addSupport(key);

@@ -13,7 +13,12 @@ import {StokerHook} from "../../src/StokerHook.sol";
 import {TaxVault} from "../../src/TaxVault.sol";
 import {Distributor} from "../../src/Distributor.sol";
 import {EarningsDestination} from "../../src/destinations/EarningsDestination.sol";
-import {CharityDestination, ReenteringDestination, ApplyingRecipient} from "../utils/TestDestinations.sol";
+import {
+    CharityDestination,
+    ReenteringDestination,
+    ApplyingRecipient,
+    ShortHandOverDestination
+} from "../utils/TestDestinations.sol";
 import {RevertingRecipient, GasBurningRecipient, ReentrantPayoutRecipient} from "../utils/Recipients.sol";
 import {UnlockedCaller} from "./TaxVaultHostile.t.sol";
 
@@ -78,6 +83,8 @@ contract DestinationsTest is DestinationsLocalBase {
             assertEq(supportFunded, 0);
             assertEq(_creditIn(key, address(burnDestination)), 0, "its Credit was paid to it");
 
+            // The price the trading left must have stood before the vault buys at it (#271).
+            _letThePriceStand();
             uint256 supply = coin.totalSupply();
             uint256 burnedInAll;
             for (uint256 i; i < 50; i++) {
@@ -88,7 +95,7 @@ contract DestinationsTest is DestinationsLocalBase {
                 (uint256 spent, uint256 burned) = taxVault.burn(key);
                 assertLe(spent, cap, "a capped piece");
                 burnedInAll += burned;
-                skip(PIECE_INTERVAL);
+                _letThePriceStand();
             }
             assertGt(burnedInAll, 0);
             assertEq(supply - coin.totalSupply(), burnedInAll, "the supply fell by exactly what was bought");
@@ -415,6 +422,18 @@ contract DestinationsTest is DestinationsLocalBase {
         assertEq(d.met(), EarningsDestination.Reentered.selector);
         assertEq(d.appliedOf(b.toId()), 0, "the call inside applied nothing");
         assertEq(d.appliedOf(a.toId()), _credited(a));
+    }
+
+    /// A hand-over that does not leave the Destination whole is refused, and nothing is counted as applied.
+    function test_destinations_aHandOverTakenShortIsRefused() public {
+        ShortHandOverDestination d = new ShortHandOverDestination(hook);
+        PoolKey memory key = _launchTo(QUOTE_FIRST, address(d));
+        _churn(key, 1);
+        vm.prank(stranger);
+        vm.expectRevert(EarningsDestination.HandOverShort.selector);
+        d.applyEarnings(key);
+        assertEq(d.appliedOf(key.toId()), 0);
+        assertEq(d.waitingOf(key), _credited(key));
     }
 
     // ---------------------------------------------------------------- a fourth kind

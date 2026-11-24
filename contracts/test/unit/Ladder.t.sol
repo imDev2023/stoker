@@ -431,7 +431,17 @@ contract LadderTest is LadderTestBase {
             payable(d.create(
                     abi.encodePacked(
                         type(TaxVault).creationCode,
-                        abi.encode(pm, next, distributor, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS)
+                        abi.encode(
+                            pm,
+                            next,
+                            distributor,
+                            PIECE_BPS,
+                            PIECE_INTERVAL,
+                            SUPPORT_WIDTH_SPACINGS,
+                            REFERENCE_RISE,
+                            REFERENCE_FALL,
+                            BUY_BAND
+                        )
                     )
                 ))
         );

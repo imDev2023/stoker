@@ -77,3 +77,19 @@ It works, and the spike and its review measured what it costs.
 - Support Liquidity is depth on the buy side only; it is not a price floor and the site never calls it one.
 - The cap on the burn's buy is measured against the Quote Asset in the pool, which is nothing at launch; the first tax slice checks that a burn is never starved by it and may set another base.
 - The three Destination contracts of #231 (holders, burn, liquidity) were not grilled; they are slices of their own and may reuse the Tax Vault's and the Distributor's calls.
+
+## Note of 2026-11-24 (#271)
+
+Corrected by #271, found by the main session's review of #245 (PR #268); the decision above stands but for the words "just below the current price".
+A wallet that bought a coin's price up and held it there while the Tax Vault's pieces landed took part of that coin's waiting tax, over half of it given long enough, through all three market calls: Support Liquidity was placed under its lifted price and it sold into it, and the Reward Burn's and the holders' buys paid its lifted price.
+The interval and the cap bounded the rate, not the total, since the wallet's round trip is paid once.
+
+- The hook keeps a Reference Price for every taxed pool: before each swap it moves toward the price that has stood since the last swap, by at most a set number of ticks per minute that price stood, so a price reached in the same second moves it by nothing.
+  It rises slowly toward a dearer coin and falls fast toward a cheaper one; both rates are the Tax Vault's settings, fixed at deployment (2 and 60,000 ticks a minute at first: about 1.2% an hour up, any fall within seconds).
+- Support Liquidity is placed just below the lower of the current price and the Reference Price, and a piece is capped at the depth at that lower price.
+- A buy (the Reward Burn's, and the holders' when they are paid in the coin) waits, refused by name, while the coin's price stands above the Reference Price by more than a set band (0 at first), so the vault's own buys are judged like anyone's.
+- The burn's and the holders' buys keep separate intervals, so a caller who always chooses the burn cannot hold off the holders.
+- A standard coin keeps no Reference Price.
+
+What stays true: a price that stands is followed, so a wallet that holds a lifted price for many hours with nobody selling into it is eventually treated as the market; the contracts' README measures how long that takes and what it pays, and what holding the buys off costs.
+The rates and the band are the agent's call (#271), the owner's to overrule: a faster rise follows a real rally sooner and shortens that time.

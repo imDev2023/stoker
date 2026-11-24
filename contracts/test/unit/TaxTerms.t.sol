@@ -139,7 +139,17 @@ contract TaxTermsTest is TaxLocalBase {
     // ------------------------------------------------ the Tax Vault's deployment
 
     function test_vault_factoryRefusesAVaultMadeForAnother() public {
-        TaxVault other = new TaxVault(pm, stranger, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS);
+        TaxVault other = new TaxVault(
+            pm,
+            stranger,
+            holdersPart,
+            PIECE_BPS,
+            PIECE_INTERVAL,
+            SUPPORT_WIDTH_SPACINGS,
+            REFERENCE_RISE,
+            REFERENCE_FALL,
+            BUY_BAND
+        );
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
         new StokerFactory(
             pm,
@@ -168,19 +178,19 @@ contract TaxTermsTest is TaxLocalBase {
         IHoldersPart d = holdersPart;
         IPoolManager m = pm;
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 0, 60, 10);
+        new TaxVault(m, stranger, d, 0, 60, 10, 2, 60_000, 200);
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 101, 60, 10);
+        new TaxVault(m, stranger, d, 101, 60, 10, 2, 60_000, 200);
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 0, 10);
+        new TaxVault(m, stranger, d, 50, 0, 10, 2, 60_000, 200);
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 60, 0);
+        new TaxVault(m, stranger, d, 50, 60, 0, 2, 60_000, 200);
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 60, 1_001);
+        new TaxVault(m, stranger, d, 50, 60, 1_001, 2, 60_000, 200);
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, IHoldersPart(address(0)), 50, 60, 10);
+        new TaxVault(m, stranger, IHoldersPart(address(0)), 50, 60, 10, 2, 60_000, 200);
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, address(0), d, 50, 60, 10);
+        new TaxVault(m, address(0), d, 50, 60, 10, 2, 60_000, 200);
         // The vault has no owner and no setter: its settings are what it was deployed with.
         assertEq(address(taxVault.distributor()), address(holdersPart));
         assertEq(taxVault.factory(), address(factory));

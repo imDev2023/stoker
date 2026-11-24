@@ -198,8 +198,9 @@ contract Distributor is IHoldersPart {
     /// @param key The coin's pool: it names the coin and the Quote Asset.
     function depositEarnings(PoolKey calldata key, uint256 amount) external payable {
         StokerHook.Terms memory t = IFactoryHook(IVaultFactory(taxVault).factory()).hook().termsOf(key.toId());
-        // The pool id hashes every field of the key, so only a pool our factory opened has registered terms.
-        if (!t.registered || msg.sender != t.creatorDestination) revert NotTheCoinsDestination();
+        // The pool id hashes every field of the key, so only a pool our factory opened has terms at all: any
+        // other key names nobody, whom no caller is.
+        if (msg.sender != t.creatorDestination) revert NotTheCoinsDestination();
         (Currency asset, Currency coin) =
             t.quoteIsCurrency0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
         _pull(asset, amount);

@@ -59,6 +59,9 @@ contract TaxHandler is Test {
     uint256 public lockBreaches; // a removal or a donation that went through
     uint256 public swaps;
     uint256 public pieces; // public calls that went through
+    uint256 public buys; // the burn's and the holders' buys that went through (#271)
+    uint256 public waits; // buys refused with AboveReference
+    uint256 public wrongWaits; // of those, refused while the price did not stand above the reference
     mapping(uint256 => uint256) public passedToDistributor; // by pool, in what was deposited
 
     constructor(
@@ -256,16 +259,41 @@ contract TaxHandler is Test {
 
     function burn(uint256 poolSeed, uint256 callerSeed) external {
         vm.prank(actors[callerSeed % actors.length]);
-        try vault.burn(_keys[poolSeed % _keys.length]) {
+        uint256 k = poolSeed % _keys.length;
+        try vault.burn(_keys[k]) {
             pieces++;
-        } catch {}
+            buys++;
+        } catch (bytes memory reason) {
+            _judgeWait(k, reason);
+        }
     }
 
     function buyForHolders(uint256 poolSeed, uint256 callerSeed) external {
         vm.prank(actors[callerSeed % actors.length]);
-        try vault.buyForHolders(_keys[poolSeed % _keys.length]) {
+        uint256 k = poolSeed % _keys.length;
+        try vault.buyForHolders(_keys[k]) {
             pieces++;
-        } catch {}
+            buys++;
+        } catch (bytes memory reason) {
+            _judgeWait(k, reason);
+        }
+    }
+
+    /// A buy refused because the price stands above the Reference Price must name the pool's real tick and
+    /// reference, with the coin dearer than the reference allows.
+    function _judgeWait(uint256 k, bytes memory reason) internal {
+        if (reason.length != 68 || bytes4(reason) != TaxVault.AboveReference.selector) return;
+        waits++;
+        int24 tick;
+        int24 ref;
+        assembly ("memory-safe") {
+            tick := mload(add(reason, 36))
+            ref := mload(add(reason, 68))
+        }
+        PoolId id = _keys[k].toId();
+        (, int24 now_,,) = StateLibrary.getSlot0(pm, id);
+        bool dearer = _quote0(k) ? tick < ref : tick > ref;
+        if (tick != now_ || ref != hook.referenceTick(id) || !dearer) wrongWaits++;
     }
 
     function passHoldersPart(uint256 poolSeed, uint256 callerSeed) external {
@@ -277,8 +305,11 @@ contract TaxHandler is Test {
         } catch {}
     }
 
+    /// Mostly seconds to minutes; one wait in eight is up to a day, so the Reference Price (#271) follows a
+    /// price that stood and the buys it holds off go through again.
     function wait(uint256 secondsSeed) external {
-        vm.warp(vm.getBlockTimestamp() + bound(secondsSeed, 1, 300));
+        uint256 most = secondsSeed % 8 == 0 ? 1 days : 300;
+        vm.warp(vm.getBlockTimestamp() + bound(secondsSeed >> 3, 1, most));
     }
 
     // ---------------------------------------------------------------- what must be refused
@@ -314,6 +345,8 @@ contract TaxInvariantTest is TaxLocalBase {
         keys[0] = _launchReward(true, 2_500, 2_500, StokerHook.PayoutAsset.QuoteAsset);
         keys[1] = _launchStoke(false, 500);
         keys[2] = _launchNativeTyped(StokerHook.LaunchType.Reward, 1_000, 0, StokerHook.PayoutAsset.Coin);
+        // The First Buys' prices stand before the campaign, so the Reference Price (#271) starts at them.
+        _letThePriceStand();
         handler = new TaxHandler(pm, hook, taxVault, mockQuote, swapRouter, PLATFORM_FEE_BPS, keys);
         targetContract(address(handler));
     }
@@ -392,12 +425,19 @@ contract TaxInvariantTest is TaxLocalBase {
         assertEq(handler.vaultTouchedInASwap(), 0, "no swap moved the vault's books");
     }
 
+    /// A buy waits only while the coin's price really stands above the Reference Price (#271).
+    function invariant_buysWaitOnlyAboveTheReference() public view {
+        assertEq(handler.wrongWaits(), 0, "a buy waited with the price at or under the reference");
+    }
+
     /// Each run must have traded and made public calls, or the properties above prove nothing.
     function afterInvariant() external {
         assertGt(handler.swaps(), 0, "the campaign traded");
         assertGt(handler.pieces(), 0, "the campaign spent tax");
         emit log_named_uint("swaps", handler.swaps());
         emit log_named_uint("public calls that went through", handler.pieces());
+        emit log_named_uint("buys that went through", handler.buys());
+        emit log_named_uint("buys that waited for the reference", handler.waits());
         emit log_named_uint("support ranges", handler.rangeCount());
     }
 }

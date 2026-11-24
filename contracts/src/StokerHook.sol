@@ -6,6 +6,7 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {SafeCast as OZSafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -20,6 +21,7 @@ import {
 import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 
 import {StokerKeys} from "./StokerKeys.sol";
+import {IReferenceSettings} from "./interfaces/IReferenceSettings.sol";
 
 /// @notice What the hook reads from the Tax Vault at its deployment: where the holders' part goes.
 interface IHoldersPartHolder {
@@ -49,10 +51,15 @@ interface IHoldersPartHolder {
 ///         its swaps have credited its Creator Earnings Destination (`creatorCreditedOf`), so a Destination
 ///         contract that serves many coins can tell their earnings apart.
 ///
+///         It keeps a Reference Price for every pool (#271): a price that follows the pool's price slowly,
+///         by how long each price has stood, so the Tax Vault never spends at a price that was only just
+///         reached (`referenceTick`). Every pool, since anyone may fund any coin's burn or Support Liquidity
+///         in the Tax Vault (#248), a standard coin's among them.
+///
 ///         The hook also guards the pool: only the factory opens a pool on it, only the factory and the Tax
 ///         Vault add liquidity to it, no liquidity is ever removed, and donations are refused.
-/// @dev Reads no clock in this slice; Graduation (#244) will read `block.timestamp` only, never
-///      `block.number`, which is an estimate of the L1 block on Robinhood Chain and Arbitrum.
+/// @dev Reads the clock through `block.timestamp` only, never `block.number`, which is an estimate of the
+///      L1 block on Robinhood Chain and Arbitrum.
 contract StokerHook is BaseHook, IUnlockCallback {
     using SafeCast for uint256;
 
@@ -98,6 +105,16 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         ladder key may raise it to the second or the top.
     uint8 public constant FIRST_TIER = 1;
     uint8 public constant TOP_TIER = 3;
+
+    /// @notice How fast a pool's Reference Price may follow the pool's price (#271), in ticks per minute
+    ///         the price stood: slowly toward a dearer coin, faster toward a cheaper one. Read from the Tax
+    ///         Vault at deployment and fixed.
+    uint24 internal immutable referenceRiseTicksPerMinute;
+    uint24 internal immutable referenceFallTicksPerMinute;
+
+    /// @dev A Reference Price is kept in sixty-thousandths of a tick, so that a rate in ticks a minute times
+    ///      the seconds elapsed moves it exactly (a thousandth of the rate per second), with no rounding.
+    int256 internal constant REFERENCE_SCALE = 60_000;
 
     /// @notice The three Launch types (#231 story 8). `Liquidity` is the Stoke Launch.
     enum LaunchType {
@@ -179,6 +196,17 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         of what that coin's tax gave it.
     mapping(PoolId => uint256) public taxBooked;
 
+    /// @notice A pool's Reference Price (#271), as the last swap left it.
+    /// @param scaledTick The price, as a pool tick in sixty-thousandths of a tick.
+    /// @param updatedAt When it was last moved: the time of the last swap in the pool, or zero before the
+    ///        pool's first swap.
+    struct Reference {
+        int64 scaledTick;
+        uint40 updatedAt;
+    }
+
+    mapping(PoolId => Reference) internal _references;
+
     event LaunchRegistered(
         PoolId indexed poolId,
         address indexed creatorDestination,
@@ -253,6 +281,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
         keys = keys_;
         taxVault = taxVault_;
         distributor = IHoldersPartHolder(taxVault_).distributor();
+        // The Tax Vault holds the settings of the price it trusts; the hook keeps them as its own.
+        referenceRiseTicksPerMinute = IReferenceSettings(taxVault_).referenceRiseTicksPerMinute();
+        referenceFallTicksPerMinute = IReferenceSettings(taxVault_).referenceFallTicksPerMinute();
     }
 
     /// @inheritdoc BaseHook
@@ -383,6 +414,8 @@ contract StokerHook is BaseHook, IUnlockCallback {
     {
         PoolId id = key.toId();
         Terms memory t = _termsOf(id);
+        // Before the pool moves: the price it reads is the one that has stood since the last swap.
+        _followReference(id, t.quoteIsCurrency0);
         (address referrer, uint256 referrerBps) = _referral(hookData, t);
         bool exactIn = params.amountSpecified < 0;
         bool specifiedIsCurrency0 = exactIn == params.zeroForOne;
@@ -578,6 +611,64 @@ contract StokerHook is BaseHook, IUnlockCallback {
     function _termsOf(PoolId id) internal view returns (Terms memory t) {
         t = _terms[id];
         if (!t.registered) revert NotRegistered();
+    }
+
+    // ------------------------------------------------------------------ the Reference Price (#271)
+
+    /// @dev Called by every swap in a pool of ours before the pool moves. Every pool keeps a Reference Price,
+    ///      a standard coin's too: the Tax Vault spends for any coin that anyone has funded (#248), and a
+    ///      reference begun only once a coin was funded would begin at whatever price stood then, a lifted
+    ///      one among them. The pool's price now is the one that
+    ///      has stood since the last swap (nothing else moves it: no removal, no donation, and the Tax Vault
+    ///      adds Support Liquidity only beside the price), so the time since then is credited to it. A swap
+    ///      in the same second as the last moves nothing, so a price lifted or dropped and undone inside one
+    ///      block leaves no mark. The pool's first swap starts the reference at the price the pool opened at,
+    ///      which has stood since the launch.
+    function _followReference(PoolId id, bool quoteIsCurrency0) internal {
+        Reference memory r = _references[id];
+        // forge-lint: disable-next-line(block-timestamp)
+        if (r.updatedAt == block.timestamp) return;
+        (, int24 tick,,) = StateLibrary.getSlot0(poolManager, id);
+        int256 next = r.updatedAt == 0 ? int256(tick) * REFERENCE_SCALE : _referenceNow(r, tick, quoteIsCurrency0);
+        // A tick in sixty-thousandths fits 64 bits a hundred thousand times over; the time fits 40 bits
+        // until the year 36812.
+        _references[id] =
+            Reference({scaledTick: OZSafeCast.toInt64(next), updatedAt: OZSafeCast.toUint40(block.timestamp)});
+    }
+
+    /// @dev Where the reference stands now, given the price that has stood since it was last moved: toward
+    ///      that price by at most the rate times the seconds elapsed, rising slowly toward a dearer coin and
+    ///      falling faster toward a cheaper one. With the coin as currency0 a dearer coin is a higher tick;
+    ///      with the Quote Asset as currency0 (the native asset always is) a lower one.
+    function _referenceNow(Reference memory r, int24 tick, bool quoteIsCurrency0) internal view returns (int256) {
+        int256 target = int256(tick) * REFERENCE_SCALE;
+        int256 current = r.scaledTick;
+        if (target == current) return current;
+        bool coinDearer = (target > current) != quoteIsCurrency0;
+        uint256 rate = coinDearer ? referenceRiseTicksPerMinute : referenceFallTicksPerMinute;
+        // A rate of ticks a minute is a thousandth of it a second in sixty-thousandths of a tick. At most
+        // 2^24 * 2^40 * 1000, far inside 255 bits.
+        int256 step = OZSafeCast.toInt256(rate * (block.timestamp - r.updatedAt) * 1_000);
+        if (target > current) return current + step < target ? current + step : target;
+        return current - step > target ? current - step : target;
+    }
+
+    /// @notice A pool's Reference Price now, as a pool tick: where the next swap would find it, the time
+    ///         since the last swap credited to the price that stood. Rounded toward the cheaper coin. A pool
+    ///         that has not traded yet answers its own tick, the price it opened at.
+    function referenceTick(PoolId id) external view returns (int24) {
+        Terms memory t = _termsOf(id);
+        (, int24 tick,,) = StateLibrary.getSlot0(poolManager, id);
+        Reference memory r = _references[id];
+        if (r.updatedAt == 0) return tick;
+        int256 scaled = _referenceNow(r, tick, t.quoteIsCurrency0);
+        int256 whole = scaled / REFERENCE_SCALE;
+        // Solidity divides toward zero; the cheaper coin is the lower tick with the coin as currency0 and the
+        // higher one with the Quote Asset as currency0.
+        int256 rest = scaled % REFERENCE_SCALE;
+        if (!t.quoteIsCurrency0 && rest < 0) whole -= 1;
+        if (t.quoteIsCurrency0 && rest > 0) whole += 1;
+        return OZSafeCast.toInt24(whole);
     }
 
     // ------------------------------------------------------------------ the Payout Call

@@ -41,6 +41,32 @@ contract SkimmingStock is ERC20 {
     }
 }
 
+/// Stands where the Distributor is and, from inside `deposit`, calls the vault's two funding calls, then
+/// takes the deposit as the interface says so the outer call completes.
+contract FundingReenterer {
+    TaxVault internal vault;
+    PoolKey internal key;
+    uint256 public attempts;
+    uint256 public metTheGuard;
+
+    function arm(TaxVault vault_, PoolKey calldata key_) external {
+        vault = vault_;
+        key = key_;
+    }
+
+    function deposit(address, Currency asset, uint256 amount) external payable {
+        IERC20 token = IERC20(Currency.unwrap(asset));
+        token.approve(address(vault), type(uint256).max);
+        bytes4[2] memory calls = [TaxVault.fundBurn.selector, TaxVault.fundSupport.selector];
+        for (uint256 i; i < 2; i++) {
+            attempts++;
+            (bool ok, bytes memory err) = address(vault).call(abi.encodeWithSelector(calls[i], key, 1 ether));
+            if (!ok && err.length == 4 && bytes4(err) == TaxVault.Reentered.selector) metTheGuard++;
+        }
+        token.transferFrom(msg.sender, address(this), amount);
+    }
+}
+
 /// The Tax Vault's funding entry points (#248): anyone may give a coin's Quote Asset to its burn or to its
 /// Support Liquidity, and the vault's existing capped calls spend it, by the same buy and the same addition,
 /// in books apart from the coin's tax.
@@ -149,7 +175,8 @@ contract VaultFundingTest is DestinationsLocalBase {
                 assertEq(_count(logs, TaxVault.FundedBurned.selector), 1, "a funded burn says so");
                 assertEq(_count(logs, TaxVault.RewardBurned.selector), 0, "and is no Reward Burn");
                 spentInAll += spent;
-                skip(PIECE_INTERVAL);
+                // The vault's own buy raised the price; the next waits until the Reference Price has followed.
+                _letThePriceStand();
             }
             assertEq(spentInAll, funded, "all of it was spent, and no more");
             TaxVault.Books memory b = taxVault.booksOf(key.toId());
@@ -216,6 +243,7 @@ contract VaultFundingTest is DestinationsLocalBase {
         for (uint256 kind; kind < 3; kind++) {
             PoolKey memory key = _launchRewardTo(kind, address(0), 5_000, 0);
             _trade(key, trader, true, true, 2 * _unit(key));
+            _letThePriceStand();
             (uint256 taxPart,,,) = taxVault.waiting(key);
             uint256 cap = taxVault.pieceCap(key);
             assertGt(taxPart, 0);
@@ -275,6 +303,7 @@ contract VaultFundingTest is DestinationsLocalBase {
             // What earlier turns of this loop left in the vault in the same asset (a piece's rounding).
             uint256 claimsBefore = _vaultClaims(key);
             _churn(key, 3);
+            _letThePriceStand();
             uint256 booked = _taxBooked(key);
             (uint256 burnPart, uint256 supportPart, uint256 holdersPart,) = taxVault.waiting(key);
             assertEq(burnPart, booked * 2_500 / 10_000);
@@ -305,7 +334,7 @@ contract VaultFundingTest is DestinationsLocalBase {
                     vm.prank(stranger);
                     try taxVault.addSupport(key) {} catch {}
                 }
-                skip(PIECE_INTERVAL);
+                _letThePriceStand();
             }
             TaxVault.Books memory b = taxVault.booksOf(key.toId());
             assertEq(b.burnSpent, burnPart, "the burn spent exactly its share of the tax");
@@ -438,6 +467,23 @@ contract VaultFundingTest is DestinationsLocalBase {
         c.callInsideUnlock(address(taxVault), abi.encodeCall(TaxVault.fundBurn, (key, 1 ether)));
         vm.expectRevert(IPoolManager.AlreadyUnlocked.selector);
         c.callInsideUnlock(address(taxVault), abi.encodeCall(TaxVault.fundSupport, (key, 1 ether)));
+    }
+
+    /// The funding calls are behind the vault's own guard: a Distributor that calls them from inside its
+    /// `deposit`, in the middle of `passHoldersPart`, meets it both times.
+    function test_fund_reenteringFromTheDistributorMeetsTheGuard() public {
+        PoolKey memory key = _launchRewardTo(QUOTE_FIRST, address(0), 0, 0);
+        _churn(key, 1);
+        vm.etch(address(distributor), address(new FundingReenterer()).code);
+        FundingReenterer d = FundingReenterer(address(distributor));
+        d.arm(taxVault, key);
+        mockQuote.mint(address(d), 10 ether);
+        vm.prank(stranger);
+        taxVault.passHoldersPart(key);
+        assertEq(d.attempts(), 2, "it tried both funding calls");
+        assertEq(d.metTheGuard(), 2, "each met Reentered");
+        (uint256 burnFunded, uint256 supportFunded) = taxVault.fundedWaiting(key);
+        assertEq(burnFunded + supportFunded, 0);
     }
 
     // ---------------------------------------------------------------- dust

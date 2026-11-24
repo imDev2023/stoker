@@ -32,6 +32,27 @@ contract CharityDestination is EarningsDestination {
     }
 }
 
+/// @notice Takes half of what it is approved for.
+contract HalfTaker {
+    function take(IERC20 token, uint256 amount) external {
+        require(token.transferFrom(msg.sender, address(this), amount / 2), "transferFrom");
+    }
+}
+
+/// @notice A Destination that hands a coin's earnings to a contract that takes only half: the base's own
+///         check refuses a hand-over that did not leave whole.
+contract ShortHandOverDestination is EarningsDestination {
+    HalfTaker public immutable taker = new HalfTaker();
+
+    constructor(StokerHook hook_) EarningsDestination(hook_) {}
+
+    function _apply(PoolKey calldata, Currency asset, uint256 amount) internal override {
+        uint256 before = _approve(asset, address(taker), amount);
+        taker.take(IERC20(Currency.unwrap(asset)), amount);
+        _settled(asset, address(taker), amount, before);
+    }
+}
+
 /// @notice A Destination whose work calls `applyEarnings` again, for the same coin or another, and records
 ///         what it met.
 contract ReenteringDestination is EarningsDestination {

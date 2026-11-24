@@ -103,8 +103,9 @@ abstract contract EarningsDestination {
     /// @dev The pool's Quote Asset, for a pool of ours whose Launch names this contract.
     function _quoteOf(PoolKey calldata key, PoolId id) internal view returns (Currency) {
         StokerHook.Terms memory t = hook.termsOf(id);
-        // The pool id hashes every field of the key, so only a pool our factory opened has registered terms.
-        if (!t.registered || t.creatorDestination != address(this)) revert NotThisCoinsDestination();
+        // The pool id hashes every field of the key, so only a pool our factory opened has terms at all: any
+        // other key names nobody.
+        if (t.creatorDestination != address(this)) revert NotThisCoinsDestination();
         return t.quoteIsCurrency0 ? key.currency0 : key.currency1;
     }
 
