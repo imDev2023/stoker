@@ -132,7 +132,8 @@ export async function runRewardRounds({ db, cfg, operations, now = new Date() }:
         payout: launches.rewardPayout, burnBps: launches.rewardBurnBps, liquidityBps: launches.rewardLiquidityBps,
       })
       .from(launches)
-      .where(isNotNull(launches.rewardTaxBps))
+      // Solana's coins alone: an EVM coin's tax goes to its chain's Tax Vault and Distributor (ADR 0029, #255).
+      .where(and(eq(launches.chain, "solana"), isNotNull(launches.rewardTaxBps)))
       .orderBy(asc(launches.createdSlot))
   ).map((c) => ({ ...c, kind: c.kind ?? "reward", payout: c.payout ?? "coin", burnBps: c.burnBps ?? 0, liquidityBps: c.liquidityBps ?? 0 }));
   let budget = maxPayouts;
