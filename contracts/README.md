@@ -254,6 +254,7 @@ REGISTRY=0x... ACTION=list QUOTE=0x... OPENING_VALUE=5000000000 MULTIPLE=20 CAP_
   The first run reads the chain; later runs read Foundry's cache under `~/.foundry/cache/rpc/4663/`.
 - CI (`.github/workflows/ci.yml`, job `contracts`) checks the format, builds with sizes, lints `src`, and runs every test that needs no RPC on every push, with deeper fuzz and invariant campaigns (`FOUNDRY_PROFILE=ci`); it runs the fork tests only where the repository has the `ROBINHOOD_RPC_URL` secret.
 
+Results on 2026-11-24 with #246, the Opening Fee, with #247 merged in: 253 local tests (29 of the Opening Fee's in three unit files and an invariant campaign of two properties) and 66 fork tests (8 of the Opening Fee's) pass, the local ones under `FOUNDRY_PROFILE=ci` too; each of the Opening Fee's 13 guards, removed in turn, fails a named test (the PR lists them), and four earlier bounds tests now check every case (gotcha 21).
 Results on 2026-11-24 with #247, the Distributor, after #245 landed and the review of its first head: 225 local tests (50 of the Distributor's: unit, hostile, native, the Merkle format, its invariant campaign with nine properties) and 58 fork tests (10 of the Distributor's, two of them paying rounds from real tax through the Tax Vault) pass, the local ones under `FOUNDRY_PROFILE=ci` too; each of the Distributor's 33 guards, removed in turn, fails a named test (the PR lists them).
 Results on 2026-11-24, #245 as its lane pushed it, with #243 merged in after its two reviews: 175 local tests (unit, fuzz, the five invariants of the two Books campaigns, the native leftovers, the registry's model test, and the five of the tax campaign) and 48 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
 #243 after its two reviews and the registry's model test: 126 local tests (unit, fuzz, and five invariants in two campaigns, one per kind of Quote Asset, plus one for native leftovers) and 27 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
@@ -263,18 +264,18 @@ Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test
 #242 as its lane pushed it: 68 local and 17 fork tests, all passing; the review found no defect in the contracts and added two local tests, one fork test and the own-pull action in the invariant campaigns.
 #241 alone, after the main session's review: 40 local and 11 fork tests.
 
-| Contract | Runtime | Initcode | #243 | #242 | #241 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `StokerFactory` | 12,155 | 25,463 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
-| `StokerHook` | 11,461 | 12,447 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
-| `TaxVault` | 11,417 | 11,947 | new | new | new |
-| `QuoteRegistry` | 3,740 | 3,965 | new | new | new |
-| `StokerKeys` | 1,291 | 1,483 | new | new | new |
-| `Distributor` (#247) | 5,998 | 6,231 | new | new | new |
-| `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged | unchanged |
+| Contract | Runtime | Initcode | #245 | #243 | #242 | #241 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `StokerFactory` | 12,513 | 27,507 | 12,155 / 25,463 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
+| `StokerHook` | 12,984 | 13,991 | 11,461 / 12,447 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
+| `TaxVault` | 11,672 | 12,202 | 11,417 / 11,947 | new | new | new |
+| `QuoteRegistry` | 3,740 | 3,965 | unchanged | new | new | new |
+| `StokerKeys` | 1,291 | 1,483 | unchanged | new | new | new |
+| `Distributor` (#247) | 5,998 | 6,231 | new | new | new | new |
+| `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged | unchanged | unchanged |
 
-Launch gas on the fork, a standard Launch: about 1.23M with a permit First Buy in NVDA, about 1.07M with a native First Buy (#245, the tax terms written beside the rest; #243: 1.22M and 1.06M; #242: 1.18M and 1.03M; the Listing's three figures and the Graduation Target are read and written into the terms).
-A swap costs about 8,000 gas more than in #242: the terms take a second slot and the Admin is read from the keys.
+Launch gas on the fork, a standard Launch: about 1.25M with a permit First Buy in NVDA, about 1.10M with a native First Buy (#246, the Opening Fee's terms in a third slot; #245: 1.23M and 1.07M, the tax terms written beside the rest; #243: 1.22M and 1.06M; #242: 1.18M and 1.03M; the Listing's three figures and the Graduation Target are read and written into the terms).
+A swap costs about 8,000 gas more than in #242: the terms take a second slot and the Admin is read from the keys; #246 adds a third slot, about 2,100 gas cold, and a buy inside the Opening Fee mints once more to the vault.
 A native Payout Call to eight owners, five of them refusing (each spending its whole 50,000), took 321,867 gas on the fork.
 
 The Distributor's claims on the fork (#247), measured as #232 measured its minimal distributor (`docs/evm/research/robinhood-chain.md`, section 5): a round of 16,384 holders, every account and slot the claim touches marked cold, holders with no prior balance, and each total counting the 21,000 base and the calldata's gas beside the execution (`test/fork/ForkDistributorGas.t.sol`).
@@ -548,6 +549,8 @@ The pre-deployment checklist for the vault, item by item:
 Slither 0.11.3 on #245's code (with #243 merged): 54 results across the workspace.
 For the Tax Vault it cannot generate IR for `addSupport`, `burn`, `buyForHolders`, `_swapIn` and `_addLiquidity` (the same via IR gap as the factory's), and so reports `_books` as never written, four helpers as unused and two decoded locals as uninitialised, all of which those functions use; the rest are the lint's classes above (the range's division, the empty result of an unlock, the fields of `getSlot0` it does not need, the timestamp), each on purpose.
 For the hook it adds `_bookTax` to `_book`'s reentrancy finding: the only call before its write and its event is the PoolManager's own `mint`.
+#246's code raises nothing in `forge lint src` (the timestamp comparison of `_openingBps` and of the vault's `_checkOpeningOver` annotated, the only clock these contracts read).
+Slither 0.11.3 on #246's code with #247 merged: 78 results across the workspace, and the Opening Fee's are three classes already triaged here: `_bookOpeningFee`'s writes and event after the PoolManager's own `mint` (the only call before them, as in `_bookTax`), its early return on `opening == 0` read as a "dangerous strict equality" (a zero fee books nothing), and every comparison downstream of `block.timestamp` (`_openingBps`, `_feesOnGross`, `_feesOnNet`, `_openingRest`, `_checkOpeningOver`), which the schedule reads on purpose and alone.
 #242's code raised four more, now fixed or annotated: two uninitialised locals (made explicit), the reentrancy finding on the native Payout Call's first unlock (the PoolManager's call back into the hook's own callback; a Credit is only ever added back after it), and a revert in a loop (the gas floor, which must revert the whole call).
 
 Slither 0.11.3 (`slither . --config-file <security standards>/tooling/slither.config.json --filter-paths "lib/|test/|script/"`) reports the same classes, and two more that are its own limits: it cannot generate IR for `StokerFactory._placeSeed` and `_firstBuy` (memory structs under via IR), and so reports `SUPPLY` as unused and the launch's `seed` as uninitialized, both of which those two functions use.
