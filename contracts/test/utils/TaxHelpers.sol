@@ -11,6 +11,10 @@ import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SqrtPriceMath} from "@uniswap/v4-core/src/libraries/SqrtPriceMath.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
+import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 
 import {StokerFactory} from "../../src/StokerFactory.sol";
 import {StokerHook} from "../../src/StokerHook.sol";
@@ -193,6 +197,43 @@ abstract contract TaxHelpers is StokerTestBase {
                 (s.lower, s.upper,,) = abi.decode(logs[i].data, (int24, int24, uint128, uint256));
             }
         }
+    }
+
+    // ---------------------------------------------------------------- trading and refusals
+
+    /// A trade through the test router in a pool paired with the ERC-20 Quote Asset or the native asset.
+    function _trade(PoolKey memory key, address who, bool buy, bool exactIn, uint256 amount)
+        internal
+        returns (BalanceDelta)
+    {
+        if (_native(key)) return _swapNative(key, who, buy, exactIn, amount, who.balance);
+        return _swap(key, who, buy, exactIn, amount);
+    }
+
+    function _quoteBalanceOf(PoolKey memory key, address who) internal view returns (uint256) {
+        return _native(key) ? who.balance : quote.balanceOf(who);
+    }
+
+    /// The hook's ERC-6909 claims on the pool's Quote Asset: what backs every Credit in it.
+    function _hookClaimsOf(PoolKey memory key) internal view returns (uint256) {
+        return pm.balanceOf(address(hook), _quoteOfKey(key).toId());
+    }
+
+    /// The error a hook's refusal arrives as, wrapped by the PoolManager.
+    function _hookError(bytes4 callback, bytes memory reason) internal view returns (bytes memory) {
+        return abi.encodeWithSelector(
+            CustomRevert.WrappedError.selector,
+            address(hook),
+            callback,
+            reason,
+            abi.encodeWithSelector(Hooks.HookCallFailed.selector)
+        );
+    }
+
+    function _removalRefused() internal view returns (bytes memory) {
+        return _hookError(
+            IHooks.beforeRemoveLiquidity.selector, abi.encodeWithSelector(StokerHook.SeedPositionLocked.selector)
+        );
     }
 
     // ---------------------------------------------------------------- the tax's arithmetic

@@ -13,6 +13,7 @@ contract ClockTest is LocalBase {
         assertFalse(OpcodeScan.contains(address(factory).code, OpcodeScan.NUMBER), "factory");
         assertFalse(OpcodeScan.contains(coin.code, OpcodeScan.NUMBER), "coin");
         assertFalse(OpcodeScan.contains(address(listings).code, OpcodeScan.NUMBER), "listing stand-in");
+        assertFalse(OpcodeScan.contains(address(taxVault).code, OpcodeScan.NUMBER), "tax vault");
     }
 
     function test_clock_theScanFindsNumberWhereItIs() public {
