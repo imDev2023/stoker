@@ -17,6 +17,9 @@ The text is the original's, one sentence a line.
   A backend test that wants a pool trade to stay unindexed must make it after that window has closed.
   The webhook never watches quote mints (owner, 2026-10-04): a busy mint such as wrapped SOL would deliver every transaction that names it, so Quote Risk Labels follow an issuer's change at the five-minute Quote Registry refresh.
 
+- Since #252 `launches`, `trades` and the other tables hold EVM chains' rows beside Solana's: every Solana job selects `chain = 'solana'` (the Fee Collector's quote mints, the Creator Ladder's Active Days, the Creator Forward's shares, the rebates, the Reward Engine, the Holding Checks, the tax lock, the mentions job), since an EVM coin can match by kind (since #245 it carries `tax_kind`) and its `0x` address fails Solana's `PublicKey` ("Non-base58 character", met twice: the Fee Collector, then a Holding Check in CI).
+  A new job, or a new filter in one, says its chain.
+
 ## The Ledger, the fees and the Burn
 
 - `ledger_entries` is append-only in Postgres itself (a trigger rejects UPDATE, DELETE and TRUNCATE): fix a wrong entry with a new one, never an edit.
