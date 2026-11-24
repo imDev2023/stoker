@@ -22,6 +22,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {StokerCoin} from "./StokerCoin.sol";
 import {StokerHook} from "./StokerHook.sol";
+import {TaxVault} from "./TaxVault.sol";
 import {IQuoteListings} from "./interfaces/IQuoteListings.sol";
 import {QuoteRegistry} from "./QuoteRegistry.sol";
 
@@ -39,6 +40,7 @@ contract StokerFactory is IUnlockCallback {
     using SafeCast for uint256;
 
     uint256 internal constant SUPPLY = 1e12 * 1e18;
+    uint256 internal constant BPS = 10_000;
 
     IPoolManager public immutable poolManager;
     StokerHook public immutable hook;
@@ -70,6 +72,13 @@ contract StokerFactory is IUnlockCallback {
     ///        Creator's own wallet. Fixed at launch; nobody can change it.
     /// @param firstBuy The Quote Asset the Creator spends on the First Buy, fee included; zero for none.
     ///        With the native asset as the Quote Asset it is the value the launch is sent, exactly.
+    /// @param launchType Standard, Reward or Liquidity (the Stoke Launch), fixed at launch (#245).
+    /// @param taxBps A Reward Launch's Reward Tax or a Stoke Launch's Stoke Tax: 1% to 5% in whole percents
+    ///        (Solana's rates); zero on a standard Launch.
+    /// @param burnShareBps A Reward Launch's Reward Burn share of the tax: none, a tenth, a quarter or half.
+    /// @param liquidityShareBps A Reward Launch's Reward Liquidity share, on the same steps, the two together
+    ///        at most half. Zero on a Stoke Launch, whose whole tax becomes Support Liquidity by its type.
+    /// @param payoutAsset A Reward Launch's Payout Asset; the Quote Asset on the other two types.
     struct LaunchParams {
         string name;
         string symbol;
@@ -77,6 +86,11 @@ contract StokerFactory is IUnlockCallback {
         bytes32 salt;
         address creatorDestination;
         uint256 firstBuy;
+        StokerHook.LaunchType launchType;
+        uint16 taxBps;
+        uint16 burnShareBps;
+        uint16 liquidityShareBps;
+        StokerHook.PayoutAsset payoutAsset;
     }
 
     /// @notice An ERC-2612 permit by the Creator for the factory, for the First Buy's amount.
@@ -121,16 +135,25 @@ contract StokerFactory is IUnlockCallback {
     /// @notice The launch was sent value other than its native First Buy: any value with an ERC-20 Quote
     ///         Asset, or value that differs from `firstBuy` with the native asset.
     error ValueMismatch(uint256 expected, uint256 sent);
+    /// @notice A tax off Solana's rates (1% to 5% in whole percents), or any tax on a standard Launch.
+    error InvalidTaxRate(uint16 taxBps);
+    /// @notice A burn or liquidity share off the steps (none, a tenth, a quarter, half), the two together over
+    ///         half, or any share on a standard Launch or a Stoke Launch.
+    error InvalidShares(uint16 burnShareBps, uint16 liquidityShareBps);
+    /// @notice A Payout Asset of the coin on a Launch that has no holders' part.
+    error InvalidPayoutAsset();
 
     /// @param registry_ The chain's Quote Registry; its keys are the hook's (the platform's share is booked
     ///        to their Admin) and its tick spacing is every pool's.
     /// @param hookSalt The CREATE2 salt that gives the hook an address carrying its permission bits.
+    /// @param taxVault_ The Tax Vault, deployed beforehand for this factory's address (#245).
     constructor(
         IPoolManager poolManager_,
         QuoteRegistry registry_,
         uint16 platformFeeBps_,
         uint16 creatorShareBps_,
-        bytes32 hookSalt
+        bytes32 hookSalt,
+        TaxVault taxVault_
     ) {
         // Bounded so that no deployment can take most of a swap: at most 10% of the Quote Asset's side.
         if (platformFeeBps_ == 0 || platformFeeBps_ > 1_000) revert InvalidSettings();
@@ -140,7 +163,9 @@ contract StokerFactory is IUnlockCallback {
         platformFeeBps = platformFeeBps_;
         creatorShareBps = creatorShareBps_;
         tickSpacing = registry_.tickSpacing();
-        hook = new StokerHook{salt: hookSalt}(poolManager_, registry_.keys());
+        // The Tax Vault reads this factory's hook and Seed Positions, so it must have been made for it.
+        if (address(taxVault_) == address(0) || taxVault_.factory() != address(this)) revert InvalidSettings();
+        hook = new StokerHook{salt: hookSalt}(poolManager_, registry_.keys(), address(taxVault_));
     }
 
     // ------------------------------------------------------------------ launching
@@ -212,22 +237,24 @@ contract StokerFactory is IUnlockCallback {
         }
 
         uint160 openSqrtPrice = TickMath.getSqrtPriceAtTick(openTick);
-        hook.registerLaunch(
-            seed.key,
-            StokerHook.Terms({
-                creatorDestination: destination,
-                platformFeeBps: platformFeeBps,
-                creatorShareBps: creatorShareBps,
-                referrerFeeCapBps: listing.referrerFeeCapBps,
-                quoteIsCurrency0: seed.quoteIsCurrency0,
-                registered: true,
-                startTick: startTick,
-                graduationMultiple: listing.graduationMultiple,
-                graduationSqrtPriceX96: _graduationTarget(
-                    openSqrtPrice, listing.graduationMultiple, seed.quoteIsCurrency0
-                )
-            })
-        );
+        StokerHook.Terms memory terms = StokerHook.Terms({
+            creatorDestination: destination,
+            platformFeeBps: platformFeeBps,
+            creatorShareBps: creatorShareBps,
+            referrerFeeCapBps: listing.referrerFeeCapBps,
+            quoteIsCurrency0: seed.quoteIsCurrency0,
+            registered: true,
+            startTick: startTick,
+            graduationMultiple: listing.graduationMultiple,
+            graduationSqrtPriceX96: _graduationTarget(openSqrtPrice, listing.graduationMultiple, seed.quoteIsCurrency0),
+            launchType: p.launchType,
+            taxBps: 0,
+            burnShareBps: 0,
+            liquidityShareBps: 0,
+            payoutAsset: StokerHook.PayoutAsset.QuoteAsset
+        });
+        _writeTaxTerms(terms, p);
+        hook.registerLaunch(seed.key, terms);
         _launches[poolId] = Launch({
             coin: coin,
             quote: p.quote,
@@ -244,6 +271,44 @@ contract StokerFactory is IUnlockCallback {
         // The calls before it are the PoolManager's, our hook's, the new coin's and the listed Quote Asset's.
         // forge-lint: disable-next-line(reentrancy-events)
         emit Launched(poolId, coin, msg.sender, p.quote, destination, startTick, liquidity, p.firstBuy, coinsBought);
+    }
+
+    /// @dev Checks a Launch's type, tax and shares against Solana's steps (ADR 0025) and writes them into its
+    ///      terms. A standard Launch has none; a Reward Launch has a tax of 1% to 5% in whole percents, a
+    ///      burn and a liquidity share of none, a tenth, a quarter or half each, at most half together, and a
+    ///      Payout Asset; a Stoke Launch has a tax and nothing else, and its whole tax becomes Support
+    ///      Liquidity, so it has no holders' part.
+    function _writeTaxTerms(StokerHook.Terms memory terms, LaunchParams calldata p) internal pure {
+        if (p.launchType == StokerHook.LaunchType.Standard) {
+            if (p.taxBps != 0) revert InvalidTaxRate(p.taxBps);
+            if (p.burnShareBps != 0 || p.liquidityShareBps != 0) {
+                revert InvalidShares(p.burnShareBps, p.liquidityShareBps);
+            }
+            if (p.payoutAsset != StokerHook.PayoutAsset.QuoteAsset) revert InvalidPayoutAsset();
+            return;
+        }
+        if (p.taxBps < 100 || p.taxBps > 500 || p.taxBps % 100 != 0) revert InvalidTaxRate(p.taxBps);
+        terms.taxBps = p.taxBps;
+        if (p.launchType == StokerHook.LaunchType.Liquidity) {
+            if (p.burnShareBps != 0 || p.liquidityShareBps != 0) {
+                revert InvalidShares(p.burnShareBps, p.liquidityShareBps);
+            }
+            if (p.payoutAsset != StokerHook.PayoutAsset.QuoteAsset) revert InvalidPayoutAsset();
+            terms.liquidityShareBps = 10_000;
+            return;
+        }
+        if (
+            !_onStep(p.burnShareBps) || !_onStep(p.liquidityShareBps)
+                || uint256(p.burnShareBps) + p.liquidityShareBps > BPS / 2
+        ) revert InvalidShares(p.burnShareBps, p.liquidityShareBps);
+        terms.burnShareBps = p.burnShareBps;
+        terms.liquidityShareBps = p.liquidityShareBps;
+        terms.payoutAsset = p.payoutAsset;
+    }
+
+    /// @dev Solana's steps for the Reward Burn and the Reward Liquidity: none, a tenth, a quarter or half.
+    function _onStep(uint16 shareBps) internal pure returns (bool) {
+        return shareBps == 0 || shareBps == 1_000 || shareBps == 2_500 || shareBps == 5_000;
     }
 
     /// @dev The Graduation Target as the pool's sqrt price: the start price times the multiple. The pool's
