@@ -47,6 +47,13 @@ abstract contract StokerTestBase is Test {
     uint16 internal constant PIECE_BPS = 50;
     uint32 internal constant PIECE_INTERVAL = 60;
     int24 internal constant SUPPORT_WIDTH_SPACINGS = 10;
+    /// The Reference Price's settings (#271): it follows a dearer coin by 2 ticks a minute (about 1.2% an
+    /// hour), a cheaper one by 60,000 ticks a minute (any fall within seconds), and a buy goes through only
+    /// while the coin's price stands at or below it (a band of 0), so the vault's own buys raise the price by
+    /// one piece and then no faster than the reference follows.
+    uint24 internal constant REFERENCE_RISE = 2;
+    uint24 internal constant REFERENCE_FALL = 60_000;
+    uint24 internal constant BUY_BAND = 0;
 
     uint160 internal constant HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
         | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_DONATE_FLAG
@@ -81,7 +88,17 @@ abstract contract StokerTestBase is Test {
 
         // The Tax Vault first, made for the factory's future address (the next deployment after it).
         address factoryAddr = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        taxVault = new TaxVault(pm, factoryAddr, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS);
+        taxVault = new TaxVault(
+            pm,
+            factoryAddr,
+            holdersPart,
+            PIECE_BPS,
+            PIECE_INTERVAL,
+            SUPPORT_WIDTH_SPACINGS,
+            REFERENCE_RISE,
+            REFERENCE_FALL,
+            BUY_BAND
+        );
 
         // Mine the hook's salt for the factory's future address with plain arithmetic: HookMiner also
         // reads each candidate's code, which on a fork is one RPC call per salt.

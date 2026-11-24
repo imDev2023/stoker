@@ -192,6 +192,7 @@ contract TaxTest is TaxLocalBase {
         for (uint256 kind; kind < 3; kind++) {
             PoolKey memory key = _launchKind(kind, StokerHook.LaunchType.Reward, TAX_BPS);
             _trade(key, trader, true, true, 40 * _unit(key));
+            _letThePriceStand();
             uint256 booked = _taxBooked(key);
             uint256 fee0 = _hookClaimsOf(key);
             vm.prank(stranger);
