@@ -252,7 +252,8 @@ export async function rulePots(db: Db, mints?: string[]): Promise<RulePot[]> {
     .from(launches)
     .innerJoin(quoteAssets, eq(quoteAssets.mint, launches.quoteMint))
     .leftJoin(graduations, eq(graduations.mint, launches.mint))
-    .where(and(ne(launches.earningsDestination, "wallet"), mints ? inArray(launches.mint, mints) : undefined))
+    // Solana's coins alone (#252): an EVM chain's are its own jobs' (#254).
+    .where(and(eq(launches.chain, "solana"), ne(launches.earningsDestination, "wallet"), mints ? inArray(launches.mint, mints) : undefined))
     .orderBy(launches.createdSlot, launches.mint);
   if (!coins.length) return [];
   const own = coins.map((c) => c.mint);

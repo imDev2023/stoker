@@ -16,9 +16,9 @@ export type GraduationTarget = z.infer<typeof GraduationTarget>;
  * Backpack); a real-world asset that is not a stock (gold, silver); a coin of another chain wrapped on Solana (BTC, ETH,
  * BNB); a DeFi protocol's token, staked SOL included; one of Hylo's leveraged tokens; a collectible; a meme coin; and
  * everything else, a community token. Read from the mint's address and authorities and from Jupiter's token tags, never
- * from a name.
+ * from a name. `native` is an EVM chain's own coin as a Quote Asset (ETH on Robinhood Chain, #252), apart from `sol`.
  */
-export const QUOTE_CATEGORIES = ["sol", "stablecoin", "tokenized_stock", "rwa", "wrapped", "defi", "leveraged", "collectible", "meme", "community"] as const;
+export const QUOTE_CATEGORIES = ["sol", "stablecoin", "tokenized_stock", "rwa", "wrapped", "defi", "leveraged", "collectible", "meme", "community", "native"] as const;
 export const QuoteCategory = z.enum(QUOTE_CATEGORIES);
 export type QuoteCategory = z.infer<typeof QuoteCategory>;
 

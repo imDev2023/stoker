@@ -1,9 +1,9 @@
 import { Connection } from "@solana/web3.js";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { ChainIndexer, ChainInfo } from "@launchpad/contract";
 import { chainCursors, type Db } from "@launchpad/db";
 import type { Bindings, Config } from "../env";
-import { evmChains, withoutRpcUrl } from "./evm/config";
+import { evmChains, withoutRpcUrl, type EvmChainConfig } from "./evm/config";
 import { evmClient, indexEvmChain, type EvmIndexRun } from "./evm/indexer";
 
 /**
@@ -56,18 +56,35 @@ function solanaIndexer(cfg: Config): Indexer {
   };
 }
 
-/** Every chain this API reads: Solana, and each EVM chain `EVM_DEPLOYMENTS` names. */
-export function indexers(env: Bindings, cfg: Config): Indexer[] {
-  return [
-    solanaIndexer(cfg),
-    ...evmChains(env).map((c): Indexer => ({
+/**
+ * The EVM chains' Indexers, or none and the reason when `EVM_DEPLOYMENTS` cannot be read (a malformed list, a missing
+ * RPC secret), so a bad EVM setting never takes Solana's answer down with it.
+ */
+function evmIndexers(env: Bindings): { indexers: Indexer[]; problem: string | null } {
+  let chains;
+  try {
+    chains = evmChains(env);
+  } catch (e) {
+    return { indexers: [], problem: (e as Error).message };
+  }
+  return { indexers: chains.map(evmIndexer), problem: null };
+}
+
+/** Every chain this API reads: Solana, and each EVM chain `EVM_DEPLOYMENTS` names that can be read. */
+export function indexers(env: Bindings, cfg: Config): { indexers: Indexer[]; problem: string | null } {
+  const evm = evmIndexers(env);
+  return { indexers: [solanaIndexer(cfg), ...evm.indexers], problem: evm.problem };
+}
+
+function evmIndexer(c: EvmChainConfig): Indexer {
+  return {
       info: { chain: c.chain, family: "evm", name: c.profile.name, chainId: c.profile.chainId, explorer: c.profile.explorer },
       run: (db) => indexEvmChain(db, c).catch((e: unknown) => Promise.reject(withoutRpcUrl(e, c))),
       async status(db) {
         // The head is read now, so an Indexer that has stopped running shows as falling behind.
         const head = await evmClient(c).getBlock({ blockTag: "latest" }).catch((e: unknown) => Promise.reject(withoutRpcUrl(e, c)));
         const headTime = new Date(Number(head.timestamp) * 1000);
-        const [cursor] = await db.select().from(chainCursors).where(eq(chainCursors.chain, c.chain)).limit(1);
+        const [cursor] = await db.select().from(chainCursors).where(and(eq(chainCursors.chain, c.chain), eq(chainCursors.factory, c.factory))).limit(1);
         return {
           mode: "poll",
           head: { block: Number(head.number), time: headTime.toISOString() },
@@ -78,15 +95,16 @@ export function indexers(env: Bindings, cfg: Config): Indexer[] {
           checkedAt: new Date().toISOString(),
         };
       },
-    })),
-  ];
+  };
 }
 
 /** Runs every polled chain's Indexer once, each even if another fails; the failures are thrown together after. */
 export async function runIndexers(env: Bindings, cfg: Config, db: Db) {
   const runs: EvmIndexRun[] = [];
   const failures: Error[] = [];
-  for (const ix of indexers(env, cfg)) {
+  const { indexers: all, problem } = indexers(env, cfg);
+  if (problem) failures.push(new Error(problem));
+  for (const ix of all) {
     if (!ix.run) continue;
     try {
       runs.push(await ix.run(db));

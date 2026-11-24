@@ -1,37 +1,101 @@
-import { createPublicClient, erc20Abi, http, parseAbi, type Address, type Hex, type PublicClient, type TransactionReceipt } from "viem";
-import { and, eq, isNotNull, sql } from "drizzle-orm";
 import {
-  checksum, decodeLaunches, decodeTrades, NATIVE, priceFromSqrtX96, priceFromStartTick, type ChainContracts, type LaunchEvent, type PoolInfo,
+  ContractFunctionRevertedError, ContractFunctionZeroDataError, createPublicClient, erc20Abi, http, parseAbi, type Address, type Hex, type PublicClient,
+  type TransactionReceipt,
+} from "viem";
+import { and, eq, ne, sql } from "drizzle-orm";
+import {
+  checksum, decodeBurns, decodeLaunches, decodeTrades, EvmDecodeError, NATIVE, priceFromSqrtX96, priceFromStartTick, type ChainContracts, type LaunchEvent,
+  type PoolInfo,
 } from "@launchpad/evm";
-import { chainCursors, evmQuoteAssets, launches, launchMarkets, type Db } from "@launchpad/db";
+import { chainCursors, evmQuoteAssets, launches, launchMarkets, operatorAlerts, type Db } from "@launchpad/db";
 import { insertTrade, openMarket } from "../../market";
 import type { EvmChainConfig } from "./config";
 
 /** ERC-8056's one required read (the knowledge base's `09-eip-8056.md`): a Stock Token's multiplier in force, 18 decimals. */
 const scaledUiAbi = parseAbi(["function uiMultiplier() view returns (uint256)"]);
 
-export type EvmIndexRun = { chain: string; from: number | null; to: number | null; head: number; launched: number; traded: number };
+/** How much one run does at most unless the deployment says otherwise: the rest waits for the next minute's run. */
+const MAX_RANGES_PER_RUN = 60;
+const MAX_RUN_SECONDS = 20;
+/** The longest name and ticker an EVM coin is stored with; the factory takes any string. */
+const NAME_MAX = 64;
+const SYMBOL_MAX = 16;
+
+export type EvmIndexRun = {
+  chain: string;
+  from: number | null;
+  to: number | null;
+  head: number;
+  launched: number;
+  traded: number;
+  burned: number;
+  /** Transactions that could never be written, each with why; each raised an `indexer_skipped` alert and the run went on. */
+  skipped: { hash: string; error: string }[];
+  /** The `eth_getLogs` range the run ended on, which the next starts from. */
+  logBlockRange: number;
+  /** Whether the run stopped at its budget with blocks still to read. */
+  leftForLater: boolean;
+};
 
 /** A pool of ours as the Indexer carries it through a run: what a trade needs to be read, and the price it moved from. */
 type Pool = PoolInfo & { coinDecimals: number; quoteDecimals: number; price: number };
 
 export const evmClient = (c: EvmChainConfig): PublicClient => createPublicClient({ transport: http(c.rpcUrl, { retryCount: 2 }) });
 
+/** Whether viem's error, or any error under it, is one of these. */
+const has = (e: unknown, test: (x: unknown) => boolean) => {
+  for (let x: unknown = e, i = 0; x && i < 10; x = (x as { cause?: unknown }).cause, i++) if (test(x)) return true;
+  return false;
+};
+/** A call the contract refused or answered with nothing: a fact about the contract, the same on every retry. */
+const isRevert = (e: unknown) => has(e, (x) => x instanceof ContractFunctionRevertedError || x instanceof ContractFunctionZeroDataError);
+/** A provider refusing a `getLogs` range as too wide (Alchemy's free tier: -32600, "up to a 10 block range"). */
+const isRangeRefused = (e: unknown) =>
+  has(e, (x) => (x as { code?: unknown }).code === -32600 || /block range|range (is )?too (large|wide)|exceed/i.test(String((x as Error).message ?? "")));
 /**
- * One run of an EVM chain's Indexer (#252): reads our factory's and hook's events from the block after the last one it
- * wrote to the chain's head less its finality depth, a bounded range of blocks at a time, and writes each Launch, its
- * Quote Asset, and every trade in its pool as Solana's Indexer writes them (`insertTrade`), so the board, the trades and
- * the candles read both chains alike. Each transaction that logged an event of ours is read whole from its receipt, so
- * the trade's wallet (the transaction's sender) and the PoolManager's `Swap` beside our hook's fees come together.
- * The cursor moves only after a range is written, so a run that dies reads that range again; every write is idempotent.
+ * Whether a transaction's failure is its own and would recur on every retry: the decoder's refusal, a contract's revert,
+ * or Postgres refusing the data (a SQLSTATE of class 22, a data exception such as a NUL byte, or 23, an integrity
+ * violation). Anything else (the RPC, the network, the database's connection) is the moment's, and the run stops so
+ * the next one reads the same blocks again.
+ */
+const isPermanent = (e: unknown) =>
+  has(e, (x) => x instanceof EvmDecodeError || x instanceof ContractFunctionRevertedError || x instanceof ContractFunctionZeroDataError) ||
+  has(e, (x) => /^2[23]/.test(String((x as { code?: unknown }).code ?? "")));
+
+/** A coin's or an asset's name or ticker as it is stored: no control characters (Postgres refuses a NUL), at most `max` characters. */
+export const cleanText = (s: string, max: number) =>
+  [...s]
+    .filter((ch) => {
+      const code = ch.codePointAt(0)!;
+      return code > 0x1f && code !== 0x7f;
+    })
+    .slice(0, max)
+    .join("");
+
+/**
+ * One run of an EVM chain's Indexer (#252): reads our factory's, hook's and Tax Vault's events from the block after the
+ * last one it wrote to the chain's head less its finality depth, a bounded range of blocks at a time, and writes each
+ * Launch, its Quote Asset, every trade in its pool and every Reward Burn, as Solana's Indexer writes them
+ * (`insertTrade`), so the board, the trades and the candles read both chains alike. Each transaction that logged an
+ * event of ours is read whole from its receipt, so a trade's wallet (the transaction's sender) and the PoolManager's
+ * `Swap` beside our hook's fees come together.
+ *
+ * The cursor moves after each range is written, so a run that dies reads that range again; every write is idempotent.
+ * A transaction that can never be written is set aside with an operator alert and the run goes on; a provider that
+ * refuses a range has it halved, and the size that worked is kept; a run stops at its budget of ranges and seconds.
  */
 export async function indexEvmChain(db: Db, c: EvmChainConfig, client: PublicClient = evmClient(c)): Promise<EvmIndexRun> {
-  const contracts: ChainContracts = { factory: c.factory, hook: c.hook, poolManager: c.profile.uniswap.poolManager };
+  const contracts: ChainContracts = { factory: c.factory, hook: c.hook, poolManager: c.profile.uniswap.poolManager, taxVault: c.taxVault };
   const head = await client.getBlock({ blockTag: "latest" });
   const target = Number(head.number) - c.profile.finalityDepth;
-  const [cursor] = await db.select().from(chainCursors).where(eq(chainCursors.chain, c.chain)).limit(1);
+  const cursorKey = and(eq(chainCursors.chain, c.chain), eq(chainCursors.factory, c.factory));
+  const [cursor] = await db.select().from(chainCursors).where(cursorKey).limit(1);
   const from = cursor ? cursor.indexedBlock + 1 : c.fromBlock;
-  const run: EvmIndexRun = { chain: c.chain, from: from <= target ? from : null, to: null, head: Number(head.number), launched: 0, traded: 0 };
+  let range = cursor?.logBlockRange ?? c.logBlockRange ?? c.profile.logBlockRange;
+  const run: EvmIndexRun = {
+    chain: c.chain, from: from <= target ? from : null, to: null, head: Number(head.number), launched: 0, traded: 0, burned: 0, skipped: [], logBlockRange: range,
+    leftForLater: false,
+  };
   const pools = await knownPools(db, c);
   const times = new Map<bigint, Date>([[head.number, new Date(Number(head.timestamp) * 1000)]]);
   const timeOf = async (block: bigint) => {
@@ -39,32 +103,81 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig, client: PublicCli
     if (!t) times.set(block, (t = new Date(Number((await client.getBlock({ blockNumber: block })).timestamp) * 1000)));
     return t;
   };
+  const saveCursor = (values: Partial<typeof chainCursors.$inferInsert>) =>
+    db.insert(chainCursors).values({ chain: c.chain, factory: c.factory, indexedBlock: from - 1, ...values }).onConflictDoUpdate({ target: [chainCursors.chain, chainCursors.factory], set: values });
 
-  for (let start = from; start <= target; start += c.profile.logBlockRange) {
-    const end = Math.min(target, start + c.profile.logBlockRange - 1);
-    const logs = await client.getLogs({ address: [c.factory, c.hook], fromBlock: BigInt(start), toBlock: BigInt(end) });
-    const txs = [...new Set(logs.map((l) => l.transactionHash!))];
-    for (const hash of txs) {
-      const receipt = await client.getTransactionReceipt({ hash });
-      if (receipt.status !== "success") continue;
-      const blockTime = await timeOf(receipt.blockNumber);
-      for (const e of decodeLaunches(receipt.logs, contracts)) run.launched += await writeLaunch(db, c, client, e, receipt, blockTime, pools);
-      run.traded += await writeTrades(db, c, receipt, blockTime, contracts, pools);
+  const started = Date.now();
+  const maxRanges = c.maxRangesPerRun ?? MAX_RANGES_PER_RUN;
+  const maxMs = (c.maxRunSeconds ?? MAX_RUN_SECONDS) * 1000;
+  let ranges = 0;
+  for (let start = from; start <= target; ) {
+    if (ranges >= maxRanges || Date.now() - started >= maxMs) {
+      run.leftForLater = true;
+      break;
     }
-    const endTime = await timeOf(BigInt(end));
-    await db
-      .insert(chainCursors)
-      .values({ chain: c.chain, indexedBlock: end, indexedBlockTime: endTime })
-      .onConflictDoUpdate({ target: chainCursors.chain, set: { indexedBlock: end, indexedBlockTime: endTime } });
+    const end = Math.min(target, start + range - 1);
+    let logs;
+    try {
+      logs = await client.getLogs({ address: [c.factory, c.hook, c.taxVault], fromBlock: BigInt(start), toBlock: BigInt(end) });
+    } catch (e) {
+      if (range > 1 && isRangeRefused(e)) {
+        range = Math.max(1, Math.floor(range / 2));
+        continue;
+      }
+      throw e;
+    }
+    ranges++;
+    for (const hash of [...new Set(logs.map((l) => l.transactionHash!))]) {
+      try {
+        const written = await writeTransaction(db, c, client, hash, contracts, pools, timeOf);
+        run.launched += written.launched;
+        run.traded += written.traded;
+        run.burned += written.burned;
+      } catch (e) {
+        if (!isPermanent(e)) throw e;
+        const error = (e as Error).message.split("\n")[0]!.slice(0, 300);
+        run.skipped.push({ hash, error });
+        await setAside(db, c, hash, error);
+      }
+    }
+    await saveCursor({ indexedBlock: end, indexedBlockTime: await timeOf(BigInt(end)), logBlockRange: range });
     run.to = end;
+    start = end + 1;
   }
-  const headTime = times.get(head.number)!;
-  await db
-    .insert(chainCursors)
-    .values({ chain: c.chain, indexedBlock: from - 1, headBlock: Number(head.number), headBlockTime: headTime, checkedAt: sql`now()` })
-    .onConflictDoUpdate({ target: chainCursors.chain, set: { headBlock: Number(head.number), headBlockTime: headTime, checkedAt: sql`now()` } });
+  run.logBlockRange = range;
+  await saveCursor({ headBlock: Number(head.number), headBlockTime: times.get(head.number)!, checkedAt: new Date(), logBlockRange: range });
   await refreshMultipliers(db, c, client);
   return run;
+}
+
+/** Writes what one transaction did: its Launches, its trades and its Reward Burns. */
+async function writeTransaction(
+  db: Db, c: EvmChainConfig, client: PublicClient, hash: Hex, contracts: ChainContracts, pools: Map<Hex, Pool>, timeOf: (block: bigint) => Promise<Date>,
+) {
+  const written = { launched: 0, traded: 0, burned: 0 };
+  const receipt = await client.getTransactionReceipt({ hash });
+  if (receipt.status !== "success") return written;
+  const blockTime = await timeOf(receipt.blockNumber);
+  for (const e of decodeLaunches(receipt.logs, contracts)) written.launched += await writeLaunch(db, c, client, e, receipt, blockTime, pools);
+  written.traded += await writeTrades(db, c, receipt, blockTime, contracts, pools);
+  for (const b of decodeBurns(receipt.logs, contracts)) {
+    const pool = pools.get(b.poolId);
+    if (!pool) continue;
+    // The supply after the burn, read at its own block, so a range read again writes the same figure.
+    const supply = await client.readContract({ address: pool.coin, abi: erc20Abi, functionName: "totalSupply", blockNumber: receipt.blockNumber });
+    await db.update(launches).set({ supply: supply.toString() }).where(and(eq(launches.chain, c.chain), eq(launches.mint, pool.coin)));
+    written.burned++;
+  }
+  return written;
+}
+
+/** Raises the operator's alert for a transaction the Indexer could not write, and set aside to go on. */
+async function setAside(db: Db, c: EvmChainConfig, hash: string, error: string) {
+  console.error(`${c.chain}: setting aside ${hash}: ${error}`);
+  await db
+    .insert(operatorAlerts)
+    .values({ kind: "indexer_skipped", subject: hash, message: `${c.profile.name}'s Indexer could not write transaction ${hash} and went on without it: ${error}` })
+    .onConflictDoNothing();
 }
 
 /** Every pool of ours on the chain, with the price it last traded at. */
@@ -109,8 +222,9 @@ async function writeLaunch(db: Db, c: EvmChainConfig, client: PublicClient, e: L
       creator: e.creator,
       quoteMint: e.quote,
       globalConfig: null,
-      name,
-      symbol,
+      // The factory takes any string: a NUL would be refused by Postgres and a long one would fill the page.
+      name: cleanText(name, NAME_MAX),
+      symbol: cleanText(symbol, SYMBOL_MAX),
       // No metadata of ours until a launch is prepared through the API on an EVM chain (#253).
       metadataUri: "",
       decimals,
@@ -142,7 +256,11 @@ function taxColumns(e: LaunchEvent): Partial<typeof launches.$inferInsert> {
   return { taxKind: "reward", rewardTaxBps: e.taxBps, rewardPayout: e.payoutAsset, rewardBurnBps: e.burnShareBps, rewardLiquidityBps: e.liquidityShareBps };
 }
 
-/** Writes every trade in our pools the receipt records, each moving its coin's market (`insertTrade`). */
+/**
+ * Writes every trade in our pools the receipt records, each moving its coin's market (`insertTrade`). A trade is the
+ * wallet's that sent the transaction, whatever router carried it, except the Tax Vault's own buys (the Reward Burn's, a
+ * Payout Asset of the coin's), which anyone may set off and which are the vault's: the caller never receives a coin.
+ */
 async function writeTrades(db: Db, c: EvmChainConfig, receipt: TransactionReceipt, blockTime: Date, contracts: ChainContracts, pools: Map<Hex, Pool>) {
   let written = 0;
   for (const t of decodeTrades(receipt.logs, contracts, pools)) {
@@ -155,7 +273,7 @@ async function writeTrades(db: Db, c: EvmChainConfig, receipt: TransactionReceip
       mint: pool.coin,
       // An EVM coin trades in its own pool from its first block.
       venue: "pool",
-      trader: checksum(receipt.from),
+      trader: t.sender === c.taxVault ? c.taxVault : checksum(receipt.from),
       side: t.side,
       baseAmount: t.coinAmount.toString(),
       quoteAmount: t.quoteAmount.toString(),
@@ -176,47 +294,55 @@ async function writeTrades(db: Db, c: EvmChainConfig, receipt: TransactionReceip
   return written;
 }
 
+/** A read that answers null when the contract refuses it (it has no such function) and throws on anything else. */
+const unlessReverted = <T>(read: Promise<T>) => read.catch((e: unknown) => (isRevert(e) ? null : Promise.reject(e)));
+
 /** The chain's row for a Quote Asset, read from its contract (or the chain's profile, for the native asset) the first time. */
 async function quoteAsset(db: Db, c: EvmChainConfig, client: PublicClient, address: Address) {
-  const [known] = await db.select().from(evmQuoteAssets).where(and(eq(evmQuoteAssets.chain, c.chain), eq(evmQuoteAssets.address, address))).limit(1);
+  const key = and(eq(evmQuoteAssets.chain, c.chain), eq(evmQuoteAssets.address, address));
+  const [known] = await db.select().from(evmQuoteAssets).where(key).limit(1);
   if (known) return known;
   let row: typeof evmQuoteAssets.$inferInsert;
   if (address === NATIVE) {
-    // The chain's native asset is the kind the ten categories call `sol` on Solana: the chain's own coin.
-    row = { chain: c.chain, address, symbol: c.profile.native.symbol, name: c.profile.native.name, decimals: c.profile.native.decimals, category: "sol" };
+    row = { chain: c.chain, address, symbol: c.profile.native.symbol, name: c.profile.native.name, decimals: c.profile.native.decimals, category: "native" };
   } else {
-    const [symbol, name, decimals] = await Promise.all([
-      client.readContract({ address, abi: erc20Abi, functionName: "symbol" }).catch(() => null),
-      client.readContract({ address, abi: erc20Abi, functionName: "name" }).catch(() => null),
+    const [symbol, name, decimals, multiplier] = await Promise.all([
+      unlessReverted(client.readContract({ address, abi: erc20Abi, functionName: "symbol" })),
+      unlessReverted(client.readContract({ address, abi: erc20Abi, functionName: "name" })),
+      // An asset without decimals cannot be shown in any amount: its launch is set aside.
       client.readContract({ address, abi: erc20Abi, functionName: "decimals" }),
+      readMultiplier(client, address),
     ]);
-    const multiplier = await readMultiplier(client, address);
     // An asset is a Stock Token by what its contract does (ERC-8056's multiplier), never by its name; anything else waits
     // for the chain's Quote Registry job to classify it (#254).
     row = {
-      chain: c.chain, address, symbol, name, decimals, category: multiplier === null ? "community" : "tokenized_stock",
-      multiplier: multiplier?.toString() ?? null, multiplierAt: multiplier === null ? null : new Date(),
+      chain: c.chain, address, symbol: symbol === null ? null : cleanText(symbol, SYMBOL_MAX), name: name === null ? null : cleanText(name, NAME_MAX), decimals,
+      category: multiplier === null ? "community" : "tokenized_stock", multiplier: multiplier?.toString() ?? null, multiplierAt: multiplier === null ? null : new Date(),
     };
   }
   const [inserted] = await db.insert(evmQuoteAssets).values(row).onConflictDoNothing().returning();
-  return inserted ?? (await db.select().from(evmQuoteAssets).where(and(eq(evmQuoteAssets.chain, c.chain), eq(evmQuoteAssets.address, address))))[0]!;
+  return inserted ?? (await db.select().from(evmQuoteAssets).where(key))[0]!;
 }
 
-const readMultiplier = (client: PublicClient, address: Address) =>
-  client.readContract({ address, abi: scaledUiAbi, functionName: "uiMultiplier" }).catch(() => null);
+/** A Stock Token's multiplier in force; null only when the contract has none (it refuses the call), never on a failed read. */
+const readMultiplier = (client: PublicClient, address: Address) => unlessReverted(client.readContract({ address, abi: scaledUiAbi, functionName: "uiMultiplier" }));
 
 /**
- * Reads every Stock Token's multiplier again, so the one in force is answered beside every raw amount: an issuer's
- * corporate action changes it with no transfer (ADR 0028, story 31). One read per asset in use per run.
+ * Reads every ERC-20 Quote Asset's multiplier again, so the one in force is answered beside every raw amount (an
+ * issuer's corporate action changes it with no transfer; ADR 0028, story 31), and an asset first read without one is
+ * asked again. One read per asset in use per run.
  */
 async function refreshMultipliers(db: Db, c: EvmChainConfig, client: PublicClient) {
-  const scaled = await db.select({ address: evmQuoteAssets.address }).from(evmQuoteAssets).where(and(eq(evmQuoteAssets.chain, c.chain), isNotNull(evmQuoteAssets.multiplier)));
-  for (const { address } of scaled) {
-    const multiplier = await readMultiplier(client, address as Address);
+  const assets = await db
+    .select({ address: evmQuoteAssets.address, category: evmQuoteAssets.category })
+    .from(evmQuoteAssets)
+    .where(and(eq(evmQuoteAssets.chain, c.chain), ne(evmQuoteAssets.address, NATIVE)));
+  for (const a of assets) {
+    const multiplier = await readMultiplier(client, a.address as Address);
     if (multiplier === null) continue;
     await db
       .update(evmQuoteAssets)
-      .set({ multiplier: multiplier.toString(), multiplierAt: sql`now()` })
-      .where(and(eq(evmQuoteAssets.chain, c.chain), eq(evmQuoteAssets.address, address)));
+      .set({ multiplier: multiplier.toString(), multiplierAt: sql`now()`, ...(a.category === "community" ? { category: "tokenized_stock" as const } : {}) })
+      .where(and(eq(evmQuoteAssets.chain, c.chain), eq(evmQuoteAssets.address, a.address)));
   }
 }

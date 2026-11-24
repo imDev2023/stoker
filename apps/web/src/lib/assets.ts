@@ -16,6 +16,7 @@ export const CATEGORY_NOTES: Record<QuoteCategory, string> = {
   collectible: "Tokens backed by collectibles held in reserve.",
   meme: "Meme coins, as Jupiter's token list recognises them.",
   community: "Every other asset Raydium quotes: launchpad coins and the long tail.",
+  native: "An EVM chain's own coin, such as ETH on Robinhood Chain.",
 };
 
 export type AssetsQuery = { category: QuoteCategory | null; issuer: QuoteIssuer | null; q: string; page: number };

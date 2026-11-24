@@ -75,6 +75,8 @@ export async function flywheelPicks(db: Db, n: number) {
     .from(graduations)
     .innerJoin(launches, eq(launches.mint, graduations.mint))
     .leftJoin(quoteAssets, eq(quoteAssets.mint, launches.quoteMint))
+    // Solana's coins alone (#252): an EVM chain's are its own jobs' (#254).
+    .where(eq(launches.chain, "solana"))
     .orderBy(
       desc(sql`coalesce((select sum(${trades.quoteAmount}) from ${trades} where ${trades.mint} = ${launches.mint} and ${trades.blockTime} > now() - interval '24 hours'), 0)
         * coalesce(${quoteAssets.priceSol}, 0) / power(10, ${quoteAssets.decimals})`),

@@ -104,6 +104,8 @@ export async function collectFees({ db, cfg, operations }: CollectorDeps): Promi
     .select({ pool: graduations.pool, quoteMint: launches.quoteMint })
     .from(graduations)
     .innerJoin(launches, eq(launches.mint, graduations.mint))
+    // Solana's coins alone (#252): an EVM chain's are its own jobs' (#254).
+    .where(eq(launches.chain, "solana"))
     .orderBy(graduations.slot, graduations.pool);
   const quoteOf = new Map(graduated.map((g) => [g.pool, g.quoteMint]));
   const pools = await readPoolKeys(connection, graduated.map((g) => new PublicKey(g.pool)));

@@ -2,7 +2,7 @@
 // chain's traffic uses, on the test stack's fork of Robinhood Chain. Nothing here reaches into the API's internals.
 import {
   createPublicClient, createTestClient, createWalletClient, encodeAbiParameters, encodePacked, erc20Abi, http, maxUint160, parseAbi,
-  keccak256, parseAbiParameters, parseEventLogs, publicActions, toHex, walletActions, type Address, type Hex, type TransactionReceipt,
+  keccak256, parseAbiParameters, parseEventLogs, publicActions, toFunctionSelector, toHex, walletActions, type Address, type Hex, type TransactionReceipt,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { quoteRegistryAbi, stokerFactoryAbi, NATIVE, ROBINHOOD_CHAIN } from "@launchpad/evm";
@@ -139,33 +139,48 @@ const exactOutSingle = parseAbiParameters(
 );
 
 /**
- * An exact-out buy in the native asset through the Universal Router, naming a referrer and its Referrer Fee in the
- * trade's `hookData` as a front-end does (ADR 0027): the wallet sends what the V4 Quoter says the coins cost, so it
- * pays exactly that and the router keeps nothing.
+ * An exact-out swap through the Universal Router: a buy of exactly `exact` coins, or a sell for exactly `exact` of the
+ * Quote Asset, optionally naming a referrer and its Referrer Fee in the trade's `hookData` as a front-end does (ADR
+ * 0027). The wallet offers what the V4 Quoter says it costs, so it pays exactly that and the router keeps nothing.
  */
-export async function buyExactOut(trader: { key: Hex; address: Address }, l: EvmLaunch, coins: bigint, referral: { referrer: Address; bps: number }) {
+export async function swapExactOut(
+  trader: { key: Hex; address: Address }, l: EvmLaunch, side: "buy" | "sell", exact: bigint, referral?: { referrer: Address; bps: number },
+) {
   const pub = clients().public;
-  const hookData = encodeAbiParameters(parseAbiParameters("address, uint256"), [referral.referrer, BigInt(referral.bps)]);
-  const zeroForOne = l.key.currency0 === l.quote;
+  const wallet = clients().wallet(trader.key);
+  const hookData = referral ? encodeAbiParameters(parseAbiParameters("address, uint256"), [referral.referrer, BigInt(referral.bps)]) : "0x";
+  const quoteIsCurrency0 = l.key.currency0 === l.quote;
+  const zeroForOne = side === "buy" ? quoteIsCurrency0 : !quoteIsCurrency0;
+  const tokenIn = side === "buy" ? l.quote : l.coin;
+  const tokenOut = side === "buy" ? l.coin : l.quote;
+  const router = ROBINHOOD_CHAIN.uniswap.universalRouter;
+  let gas = 0n;
+  if (tokenIn !== NATIVE) {
+    const approve = await pub.waitForTransactionReceipt({ hash: await wallet.writeContract({ address: tokenIn, abi: erc20Abi, functionName: "approve", args: [ROBINHOOD_CHAIN.uniswap.permit2, 2n ** 256n - 1n] }) });
+    const allow = await pub.waitForTransactionReceipt({
+      hash: await wallet.writeContract({ address: ROBINHOOD_CHAIN.uniswap.permit2, abi: permit2Abi, functionName: "approve", args: [tokenIn, router, maxUint160, 2 ** 47] }),
+    });
+    gas += gasCost(approve) + gasCost(allow);
+  }
   const { result } = await pub.simulateContract({
     address: ROBINHOOD_CHAIN.uniswap.v4Quoter, abi: quoterAbi, functionName: "quoteExactOutputSingle",
-    args: [{ poolKey: l.key, zeroForOne, exactAmount: coins, hookData }],
+    args: [{ poolKey: l.key, zeroForOne, exactAmount: exact, hookData }],
   });
   const amountIn = result[0];
   const actions = encodePacked(["uint8", "uint8", "uint8"], [SWAP_EXACT_OUT_SINGLE, SETTLE_ALL, TAKE_ALL]);
   const params = [
-    encodeAbiParameters(exactOutSingle, [{ poolKey: l.key, zeroForOne, amountOut: coins, amountInMaximum: amountIn, minHopPriceX36: 0n, hookData }]),
-    encodeAbiParameters(parseAbiParameters("address, uint256"), [l.quote, amountIn]),
-    encodeAbiParameters(parseAbiParameters("address, uint256"), [l.coin, coins]),
+    encodeAbiParameters(exactOutSingle, [{ poolKey: l.key, zeroForOne, amountOut: exact, amountInMaximum: amountIn, minHopPriceX36: 0n, hookData }]),
+    encodeAbiParameters(parseAbiParameters("address, uint256"), [tokenIn, amountIn]),
+    encodeAbiParameters(parseAbiParameters("address, uint256"), [tokenOut, exact]),
   ];
-  const hash = await clients().wallet(trader.key).writeContract({
-    address: ROBINHOOD_CHAIN.uniswap.universalRouter, abi: routerAbi, functionName: "execute",
+  const hash = await wallet.writeContract({
+    address: router, abi: routerAbi, functionName: "execute",
     args: [encodePacked(["uint8"], [V4_SWAP]), [encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [actions, params])], BigInt(Math.floor(Date.now() / 1000) + 3600)],
-    value: amountIn,
+    value: tokenIn === NATIVE ? amountIn : 0n,
   });
   const receipt = await pub.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") throw new Error(`swap reverted: ${hash}`);
-  return { receipt, amountIn };
+  return { receipt, amountIn, gas: gas + gasCost(receipt) };
 }
 
 /** What `who` holds of `asset` (the native asset by the zero address). */
@@ -177,9 +192,60 @@ export async function balanceOf(asset: Address, who: Address) {
 /** What a transaction cost its sender in gas, in wei, so a native balance's change can be read as the trade alone. */
 export const gasCost = (r: TransactionReceipt) => r.gasUsed * r.effectiveGasPrice;
 
-/** Runs the Indexer for every chain it polls, as its cron does, and answers with the run's summary. */
-export async function runIndexer() {
-  const res = await fetch(`${env().apiUrl}/v1/operator/jobs/indexer`, { method: "POST", headers: { authorization: `Bearer ${env().operatorToken}` } });
+/**
+ * Runs the Indexer for every chain it polls, as its cron does, and answers with the run's summary. The fork mines a
+ * block per transaction, so it first mines the chain's finality depth, as the chain itself would in half a second, so
+ * what the test just did is deep enough to be read.
+ */
+export async function runIndexer(apiUrl = env().apiUrl) {
+  await clients().test.mine({ blocks: ROBINHOOD_CHAIN.finalityDepth });
+  const res = await fetch(`${apiUrl}/v1/operator/jobs/indexer`, { method: "POST", headers: { authorization: `Bearer ${env().operatorToken}` } });
   if (!res.ok) throw new Error(`indexer run failed: ${res.status} ${await res.text()}`);
   return (await res.json()) as { status: string; summary: unknown };
+}
+
+/**
+ * A JSON-RPC proxy in front of the fork that answers as a stricter provider would: `eth_getLogs` over more than
+ * `maxLogRange` blocks is refused with -32600, as Alchemy's free tier refuses past 10, and while `failMultiplier` is
+ * set every `uiMultiplier()` call fails with HTTP 503, a transport error. `getLogsRanges` keeps every range asked for.
+ */
+export async function strictRpc(maxLogRange: number) {
+  const { createServer } = await import("node:http");
+  const { freePort } = await import("@launchpad/stack");
+  const upstream = evm()!.rpcUrl;
+  const MULTIPLIER = toFunctionSelector("uiMultiplier()");
+  const state = { failMultiplier: false, getLogsRanges: [] as number[] };
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", async () => {
+      const calls = [JSON.parse(body)].flat() as { id: number; method: string; params: { fromBlock?: Hex; toBlock?: Hex; data?: Hex; input?: Hex }[] }[];
+      for (const call of calls) {
+        if (call.method === "eth_getLogs") {
+          const range = Number(BigInt(call.params[0]!.toBlock!) - BigInt(call.params[0]!.fromBlock!)) + 1;
+          state.getLogsRanges.push(range);
+          if (range > maxLogRange) {
+            res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32600, message: `You can make eth_getLogs requests with up to a ${maxLogRange} block range.` } }));
+            return;
+          }
+        }
+        const data = call.params?.[0]?.data ?? call.params?.[0]?.input;
+        if (state.failMultiplier && call.method === "eth_call" && data?.startsWith(MULTIPLIER)) {
+          res.writeHead(503).end("upstream unavailable");
+          return;
+        }
+      }
+      const answer = await fetch(upstream, { method: "POST", headers: { "content-type": "application/json" }, body });
+      res.writeHead(answer.status, { "content-type": "application/json" }).end(await answer.text());
+    });
+  });
+  const port = await freePort();
+  await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+  return { url: `http://127.0.0.1:${port}`, state, stop: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+}
+
+/** The operator's alerts, as the operator view lists them. */
+export async function operatorAlerts(apiUrl = env().apiUrl) {
+  const res = await fetch(`${apiUrl}/v1/operator/alerts`, { headers: { authorization: `Bearer ${env().operatorToken}` } });
+  return ((await res.json()) as { alerts: { kind: string; subject: string; message: string }[] }).alerts;
 }

@@ -53,7 +53,13 @@ export type EvmStackEnv = {
 };
 
 /** The deployment as the API takes it in `EVM_DEPLOYMENTS`. */
-export const deploymentOf = (e: EvmStackEnv) => [{ chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, fromBlock: e.fromBlock }];
+/**
+ * The deployment as the API takes it in `EVM_DEPLOYMENTS`. Anvil serves any `getLogs` range, so the stack starts wide
+ * (2,000 blocks, a paid tier's size); a test behind a stricter RPC sees the range shrink.
+ */
+export const deploymentOf = (e: EvmStackEnv) => [
+  { chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, taxVault: e.taxVault, fromBlock: e.fromBlock, logBlockRange: 2_000 },
+];
 
 /** Finds the salt that gives the hook, made by the factory at `factory`, an address carrying exactly its permission bits. */
 function mineHookSalt(factory: Address, poolManager: Address, keys: Address, taxVault: Address): Hex {

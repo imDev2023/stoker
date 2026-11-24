@@ -16,7 +16,16 @@ function deployment(raw: unknown, i: number): EvmDeployment {
     return checksum(v);
   };
   if (!Number.isSafeInteger(d.fromBlock) || (d.fromBlock as number) < 0) throw fail("fromBlock must be a block number");
-  return { chain: d.chain, factory: addr("factory"), hook: addr("hook"), registry: addr("registry"), keys: addr("keys"), fromBlock: d.fromBlock as number };
+  const positive = (key: string) => {
+    const v = d[key];
+    if (v === undefined) return undefined;
+    if (!Number.isSafeInteger(v) || (v as number) < 1) throw fail(`${key} must be a whole number above zero`);
+    return v as number;
+  };
+  return {
+    chain: d.chain, factory: addr("factory"), hook: addr("hook"), registry: addr("registry"), keys: addr("keys"), taxVault: addr("taxVault"),
+    fromBlock: d.fromBlock as number, logBlockRange: positive("logBlockRange"), maxRangesPerRun: positive("maxRangesPerRun"), maxRunSeconds: positive("maxRunSeconds"),
+  };
 }
 
 /**
@@ -28,7 +37,11 @@ export function evmChains(env: Bindings): EvmChainConfig[] {
   if (!env.EVM_DEPLOYMENTS) return [];
   const list: unknown = JSON.parse(env.EVM_DEPLOYMENTS);
   if (!Array.isArray(list)) throw new Error("EVM_DEPLOYMENTS must be a JSON list of deployments");
-  return list.map(deployment).map((d) => {
+  const deployments = list.map(deployment);
+  // One deployment a chain: two would share the chain's coins and its Indexer's work (the review of #252, item 14).
+  const twice = deployments.find((d, i) => deployments.findIndex((o) => o.chain === d.chain) !== i);
+  if (twice) throw new Error(`EVM_DEPLOYMENTS names ${twice.chain} twice`);
+  return deployments.map((d) => {
     const rpcUrl = (env as unknown as Record<string, string | undefined>)[`${d.chain.toUpperCase()}_RPC_URL`];
     if (!rpcUrl) throw new Error(`EVM_DEPLOYMENTS names ${d.chain}, but ${d.chain.toUpperCase()}_RPC_URL is not set`);
     return { ...d, profile: EVM_CHAINS[d.chain], rpcUrl };
@@ -42,4 +55,13 @@ export function evmChains(env: Bindings): EvmChainConfig[] {
 export function withoutRpcUrl(e: unknown, c: Pick<EvmChainConfig, "chain" | "rpcUrl">): Error {
   const message = String((e as Error)?.message ?? e).replaceAll(c.rpcUrl, `<${c.chain.toUpperCase()}_RPC_URL>`);
   return new Error(message);
+}
+
+/** The platform's own contracts on the EVM chains that buy coins (the Tax Vaults), which are never holders; none when unreadable. */
+export function evmBuyers(env: Bindings): string[] {
+  try {
+    return evmChains(env).map((c) => c.taxVault);
+  } catch {
+    return [];
+  }
 }

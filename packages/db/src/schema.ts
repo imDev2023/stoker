@@ -99,6 +99,7 @@ export const launches = pgTable(
     index("launches_created_slot_idx").on(t.createdSlot),
     // The board lists every chain's coins together, newest first by time, since slots and block numbers are not comparable.
     index("launches_chain_created_at_idx").on(t.chain, t.createdAt),
+    index("launches_chain_created_slot_idx").on(t.chain, t.createdSlot),
     index("launches_creator_idx").on(t.creator),
     index("launches_quote_mint_idx").on(t.quoteMint),
     index("launches_name_key_idx").on(t.nameKey),
@@ -197,6 +198,8 @@ export const trades = pgTable(
     index("trades_mint_slot_idx").on(t.mint, t.slot),
     // The board's trending sort sums the last day's trades.
     index("trades_block_time_idx").on(t.blockTime),
+    // How far each chain's Indexer has written (`GET /v1/chains`): the newest slot or block of a chain.
+    index("trades_chain_slot_idx").on(t.chain, t.slot),
   ],
 ).enableRLS();
 
@@ -233,7 +236,7 @@ export const quoteAssets = pgTable("quote_assets", {
   name: text("name"),
   logo: text("logo"),
   /** What kind of asset it is (ADR 0010), for the board's filters and the assets page: from its mint address and authorities, and Jupiter's tags. */
-  category: text("category", { enum: ["sol", "stablecoin", "tokenized_stock", "rwa", "wrapped", "defi", "leveraged", "collectible", "meme", "community"] }).notNull().default("community"),
+  category: text("category", { enum: ["sol", "stablecoin", "tokenized_stock", "rwa", "wrapped", "defi", "leveraged", "collectible", "meme", "community", "native"] }).notNull().default("community"),
   /** Which issuer a tokenized stock is from, by the authorities on its mint; null for every other kind. */
   issuer: text("issuer", { enum: ["xstocks", "prestocks", "tessera", "backpack"] }),
   /** Null when no source gives a reliable price. */
@@ -309,7 +312,7 @@ export const graduations = pgTable("graduations", {
 export const operatorAlerts = pgTable(
   "operator_alerts",
   {
-    kind: text("kind", { enum: ["graduation_stuck", "reward_tax_unlocked", "job_failed", "reward_round_stalled"] }).notNull(),
+    kind: text("kind", { enum: ["graduation_stuck", "reward_tax_unlocked", "job_failed", "reward_round_stalled", "indexer_skipped"] }).notNull(),
     /** What the alert is about, such as a Launch's mint, a job's name or a round's id. */
     subject: text("subject").notNull(),
     message: text("message").notNull(),
@@ -1094,7 +1097,7 @@ export const evmQuoteAssets = pgTable(
     symbol: text("symbol"),
     name: text("name"),
     decimals: integer("decimals").notNull(),
-    category: text("category", { enum: ["sol", "stablecoin", "tokenized_stock", "rwa", "wrapped", "defi", "leveraged", "collectible", "meme", "community"] }).notNull().default("community"),
+    category: text("category", { enum: ["sol", "stablecoin", "tokenized_stock", "rwa", "wrapped", "defi", "leveraged", "collectible", "meme", "community", "native"] }).notNull().default("community"),
     /** `uiMultiplier()` in force at `multiplierAt`, 18 decimals; null for an asset that has none. */
     multiplier: numeric("multiplier", { precision: 78, scale: 0 }),
     multiplierAt: timestamp("multiplier_at", { withTimezone: true }),
@@ -1105,13 +1108,21 @@ export const evmQuoteAssets = pgTable(
 
 /**
  * How far each polled chain's Indexer has read (#252): the newest block whose events it has written, and the head it saw
- * on its last run. A run starts from the block after `indexed_block`, so a run that dies part way reads that part again.
+ * on its last run, per deployment. A run starts from the block after `indexed_block`, so a run that dies part way reads that part again.
  */
-export const chainCursors = pgTable("chain_cursors", {
-  chain: text("chain").primaryKey(),
+export const chainCursors = pgTable(
+  "chain_cursors",
+  {
+  chain: text("chain").notNull(),
+  /** The deployment's factory: a redeployed factory starts its own cursor from its own block. */
+  factory: text("factory").notNull(),
   indexedBlock: bigint("indexed_block", { mode: "number" }).notNull(),
+  /** The widest `eth_getLogs` block range the chain's RPC last accepted, so a run starts at a size that works. */
+  logBlockRange: integer("log_block_range"),
   indexedBlockTime: timestamp("indexed_block_time", { withTimezone: true }),
   headBlock: bigint("head_block", { mode: "number" }),
   headBlockTime: timestamp("head_block_time", { withTimezone: true }),
   checkedAt: timestamp("checked_at", { withTimezone: true }),
-}).enableRLS();
+  },
+  (t) => [primaryKey({ columns: [t.chain, t.factory] })],
+).enableRLS();

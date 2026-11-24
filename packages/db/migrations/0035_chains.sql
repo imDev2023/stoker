@@ -1,10 +1,13 @@
 CREATE TABLE "chain_cursors" (
-	"chain" text PRIMARY KEY NOT NULL,
+	"chain" text NOT NULL,
+	"factory" text NOT NULL,
 	"indexed_block" bigint NOT NULL,
+	"log_block_range" integer,
 	"indexed_block_time" timestamp with time zone,
 	"head_block" bigint,
 	"head_block_time" timestamp with time zone,
-	"checked_at" timestamp with time zone
+	"checked_at" timestamp with time zone,
+	CONSTRAINT "chain_cursors_chain_factory_pk" PRIMARY KEY("chain","factory")
 );
 --> statement-breakpoint
 ALTER TABLE "chain_cursors" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -51,4 +54,6 @@ ALTER TABLE "reward_payouts" ADD COLUMN "chain" text DEFAULT 'solana' NOT NULL;-
 ALTER TABLE "reward_rounds" ADD COLUMN "chain" text DEFAULT 'solana' NOT NULL;--> statement-breakpoint
 ALTER TABLE "reward_sales" ADD COLUMN "chain" text DEFAULT 'solana' NOT NULL;--> statement-breakpoint
 ALTER TABLE "trades" ADD COLUMN "chain" text DEFAULT 'solana' NOT NULL;--> statement-breakpoint
-CREATE INDEX "launches_chain_created_at_idx" ON "launches" USING btree ("chain","created_at");
+CREATE INDEX "launches_chain_created_at_idx" ON "launches" USING btree ("chain","created_at");--> statement-breakpoint
+CREATE INDEX "launches_chain_created_slot_idx" ON "launches" USING btree ("chain","created_slot");--> statement-breakpoint
+CREATE INDEX "trades_chain_slot_idx" ON "trades" USING btree ("chain","slot");

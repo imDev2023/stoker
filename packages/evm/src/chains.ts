@@ -16,10 +16,15 @@ export type EvmChainProfile = {
    * chain than this. Robinhood Chain is an Arbitrum Orbit chain whose sequencer confirms a block as it makes it (0.1 s);
    * it is reorganized only if the sequencer misbehaves before posting to Ethereum, the issuer treats one block's
    * confirmation as a legal transfer, and Solana's Indexer reads `confirmed` too, so 0: trades show as the sequencer
-   * confirms them (the knowledge base's `14-transaction-finality.md`). A job that pays (#254) waits for `safe` instead.
+   * confirms them (the knowledge base's `14-transaction-finality.md`), a few blocks back: behind a load balancer the
+   * node that answers a `getLogs` may be a block or two behind the one that gave the head (the review of #252, 2026-11-24).
+   * A job that pays (#254) waits for `safe` instead.
    */
   finalityDepth: number;
-  /** The widest block range one `eth_getLogs` asks for, kept small for free RPC tiers. */
+  /**
+   * The widest block range one `eth_getLogs` asks for unless the deployment sets its own: 10, what Alchemy's free tier
+   * accepts (it answers -32600 past that); a run halves it whenever a provider refuses a range, and remembers what worked.
+   */
   logBlockRange: number;
   /**
    * `block.number` on this chain is an estimate of the parent chain's block, so time and the chain's own block numbers
@@ -46,8 +51,8 @@ export const ROBINHOOD_CHAIN: EvmChainProfile = {
   chain: "robinhood",
   name: "Robinhood Chain",
   chainId: 4663,
-  finalityDepth: 0,
-  logBlockRange: 2_000,
+  finalityDepth: 5,
+  logBlockRange: 10,
   blockNumberIsL1Estimate: true,
   explorer: "https://robinhoodchain.blockscout.com",
   native: { symbol: "ETH", name: "Ether", decimals: 18 },
@@ -72,8 +77,15 @@ export type EvmDeployment = {
   hook: Address;
   registry: Address;
   keys: Address;
+  /** The Tax Vault (#245): its buys are its own, never the wallet's that sent the transaction. */
+  taxVault: Address;
   /** The block the factory was deployed in: the Indexer starts there. */
   fromBlock: number;
+  /** The widest `eth_getLogs` block range to start from; the chain's profile's when unset. */
+  logBlockRange?: number;
+  /** How many block ranges one run reads at most, and how many seconds it spends, before it stops and leaves the rest for the next run. */
+  maxRangesPerRun?: number;
+  maxRunSeconds?: number;
 };
 
 /** The native asset's address as a Quote Asset: the zero address, native ETH in the pool key (#242). */

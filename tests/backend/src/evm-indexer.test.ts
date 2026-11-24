@@ -4,9 +4,9 @@
 import { describe, expect, inject, test } from "vitest";
 import { erc20Abi, parseAbi, type Address } from "viem";
 import { CandleList, ChainList, LaunchList, LaunchSummary, TradeList } from "@launchpad/contract";
-import { NATIVE } from "@launchpad/evm";
-import { env, launchedCoin } from "./client";
-import { balanceOf, buyExactOut, clients, evmWallet, launchCoin, listQuote, runIndexer, swapExactIn } from "./evm";
+import { NATIVE, ROBINHOOD_CHAIN } from "@launchpad/evm";
+import { env, fundedWallet, launchedCoin, SOL, trade } from "./client";
+import { balanceOf, clients, evmWallet, launchCoin, listQuote, runIndexer, swapExactIn, swapExactOut } from "./evm";
 
 const hasEvm = inject("harness").evm !== null;
 
@@ -51,9 +51,47 @@ describe("Solana coins name their chain", () => {
     expect(quotes.quotes.every((q) => q.chain === "solana" && q.multiplier === null)).toBe(true);
     expect(((await api("/v1/quotes?chain=robinhood")) as { quotes: unknown[] }).quotes).toEqual([]);
     expect(((await api("/v1/launches/quotes?chain=solana")) as { quotes: { chain: string }[] }).quotes.every((q) => q.chain === "solana")).toBe(true);
-    expect(((await api("/v1/burns?chain=robinhood")) as { burned: unknown[]; liquidity: unknown }).burned).toBeDefined();
-    expect(((await api("/v1/rebates?chain=robinhood")) as { weeks: unknown[] }).weeks).toEqual([]);
+    // The Burn and the rebates are Solana's: asked for an EVM chain, every list and every total is that chain's, none.
+    expect(await api("/v1/burns?chain=robinhood")).toMatchObject({
+      budgets: { revenueLamports: "0", burn: { spent: "0", available: "0" }, flywheel: { spent: "0", available: "0" } }, burned: [], nextFlywheel: [], events: [],
+      liquidity: { lamports: "0", count: 0, additions: [] },
+    });
+    expect(await api("/v1/rebates?chain=robinhood")).toMatchObject({ program: { current: null, paidLamports: "0", waitingLamports: "0" }, weeks: [] });
+    const solanaBurns = (await api("/v1/burns?chain=solana")) as { events: unknown[] };
+    expect(solanaBurns.events).toEqual(((await api("/v1/burns")) as { events: unknown[] }).events);
     for (const path of ["/v1/ledger", "/v1/quotes", "/v1/launches/quotes", "/v1/burns", "/v1/rebates"]) {
+      expect((await fetch(`${env().apiUrl}${path}?chain=nowhere`)).status, path).toBe(400);
+    }
+  });
+
+  test("a list filtered to Solana is the same list with the EVM chains' items taken out", async () => {
+    const all = await launchesOf("");
+    const solana = await launchesOf("&chain=solana");
+    const removed = all.filter((l) => l.chain === "solana");
+    expect(solana.slice(0, removed.length)).toEqual(removed);
+  });
+
+  test("a wallet's and a Creator's lists take the chain filter, totals included", async () => {
+    const { creator, mint } = await launchedCoin();
+    const trader = await fundedWallet();
+    await trade(trader, mint, "buy", SOL(0.2));
+    for (const job of ["fee-collector", "creator-forward"]) {
+      const res = await fetch(`${env().apiUrl}/v1/operator/jobs/${job}`, { method: "POST", headers: { authorization: `Bearer ${env().operatorToken}` } });
+      expect(res.status, job).toBe(200);
+    }
+    const who = creator.publicKey.toBase58();
+    const forwards = (path: string) => api(`/v1/creators/${who}/forwards${path}`) as Promise<{ forwards: { chain: string }[] }>;
+    const mine = await forwards("");
+    expect(mine.forwards.length).toBeGreaterThan(0);
+    expect(await forwards("?chain=solana")).toEqual(mine);
+    expect((await forwards("?chain=robinhood")).forwards).toEqual([]);
+    for (const wallet of [who, trader.publicKey.toBase58()]) {
+      expect(await api(`/v1/wallets/${wallet}/rebates?chain=robinhood`)).toMatchObject({ waitingLamports: "0", paidLamports: "0", current: null, rebates: [] });
+      expect(await api(`/v1/wallets/${wallet}/rebates?chain=solana`)).toEqual(await api(`/v1/wallets/${wallet}/rebates`));
+      expect(await api(`/v1/wallets/${wallet}/rewards?chain=robinhood`)).toMatchObject({ rewards: [] });
+      expect(await api(`/v1/wallets/${wallet}/rewards?chain=solana`)).toEqual(await api(`/v1/wallets/${wallet}/rewards`));
+    }
+    for (const path of [`/v1/creators/${who}/forwards`, `/v1/wallets/${who}/rebates`, `/v1/wallets/${who}/rewards`]) {
       expect((await fetch(`${env().apiUrl}${path}?chain=nowhere`)).status, path).toBe(400);
     }
   });
@@ -77,7 +115,9 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork", () => 
     const all = await launchesOf("");
     const coin = all.find((x) => x.mint === l.coin);
     expect(coin).toMatchObject({ chain: "robinhood", pool: l.poolId, creator: creator.address, createdSignature: l.receipt.transactionHash });
-    expect(coin!.quote).toMatchObject({ chain: "robinhood", mint: NATIVE, symbol: "ETH", decimals: 18, multiplier: null });
+    expect(coin!.quote).toMatchObject({ chain: "robinhood", mint: NATIVE, symbol: "ETH", decimals: 18, multiplier: null, category: "native" });
+    expect((await launchesOf("&chain=robinhood&category=native")).map((x) => x.mint)).toContain(l.coin);
+    expect((await launchesOf("&category=sol")).map((x) => x.mint)).not.toContain(l.coin);
     expect((await launchesOf("&chain=robinhood")).map((x) => x.mint)).toContain(l.coin);
     expect((await launchesOf("&chain=solana")).map((x) => x.mint)).not.toContain(l.coin);
     expect(LaunchSummary.parse(await api(`/v1/launches/${l.coin}`)).chain).toBe("robinhood");
@@ -157,8 +197,8 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork", () => 
     const l = await launchCoin(await evmWallet());
     const coins = 10n ** 27n;
     const before = await balanceOf(NATIVE, trader.address);
-    const { receipt, amountIn } = await buyExactOut(trader, l, coins, { referrer: referrer.address, bps: 50 });
-    expect(before - (await balanceOf(NATIVE, trader.address)) - receipt.gasUsed * receipt.effectiveGasPrice).toBe(amountIn);
+    const { amountIn, gas } = await swapExactOut(trader, l, "buy", coins, { referrer: referrer.address, bps: 50 });
+    expect(before - (await balanceOf(NATIVE, trader.address)) - gas).toBe(amountIn);
     expect(await balanceOf(l.coin, trader.address)).toBe(coins);
 
     await runIndexer();
@@ -170,6 +210,22 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork", () => 
     const referrerFee = BigInt(trades[0]!.referral!.fee);
     expect(Number(fee) / Number(amountIn)).toBeCloseTo(0.01, 6);
     expect(Number(referrerFee) / Number(amountIn)).toBeCloseTo(0.005, 6);
+  });
+
+  test("an exact-out sell appears with exactly what the wallet received and the coins it gave", async () => {
+    const trader = await evmWallet();
+    const l = await launchCoin(await evmWallet());
+    await swapExactIn(trader, l, "buy", 2n * 10n ** 16n);
+    const coinsBefore = await balanceOf(l.coin, trader.address);
+    const ethBefore = await balanceOf(NATIVE, trader.address);
+    const wanted = 5n * 10n ** 15n;
+    const { amountIn, gas } = await swapExactOut(trader, l, "sell", wanted);
+    expect((await balanceOf(NATIVE, trader.address)) - ethBefore + gas).toBe(wanted);
+    expect(coinsBefore - (await balanceOf(l.coin, trader.address))).toBe(amountIn);
+
+    await runIndexer();
+    const { trades } = TradeList.parse(await api(`/v1/launches/${l.coin}/trades`));
+    expect(trades[0]).toMatchObject({ side: "sell", baseAmount: amountIn.toString(), quoteAmount: wanted.toString() });
   });
 
   test("a coin paired with a Stock Token returns raw amounts with the multiplier in force beside them", async () => {
@@ -189,12 +245,25 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork", () => 
     const l = await launchCoin(await evmWallet(), { quote: CRWD });
     const spend = 5n * 10n ** 16n;
     await swapExactIn(trader, l, "buy", spend);
+    // A sell against the ERC-20, measured as the wallet's own balance of it.
+    const coins = (await balanceOf(l.coin, trader.address)) / 3n;
+    const crwdBefore = await balanceOf(CRWD, trader.address);
+    await swapExactIn(trader, l, "sell", coins);
+    const crwdReceived = (await balanceOf(CRWD, trader.address)) - crwdBefore;
     await runIndexer();
 
     const coin = LaunchSummary.parse(await api(`/v1/launches/${l.coin}`));
     expect(coin.quote).toMatchObject({ chain: "robinhood", mint: CRWD, decimals: 18, multiplier: multiplier.toString(), category: "tokenized_stock" });
     const { trades } = TradeList.parse(await api(`/v1/launches/${l.coin}/trades`));
-    expect(trades[0]).toMatchObject({ side: "buy", quoteAmount: spend.toString() });
+    expect(trades.map((t) => [t.side, t.baseAmount, t.quoteAmount])).toEqual([["sell", coins.toString(), crwdReceived.toString()], expect.arrayContaining(["buy", spend.toString()])]);
+    // The price is the pool's, read from the chain: Quote Asset per coin, both with 18 decimals.
+    const [sqrtPriceX96] = await clients().public.readContract({
+      address: ROBINHOOD_CHAIN.uniswap.stateView, abi: parseAbi(["function getSlot0(bytes32) view returns (uint160, int24, uint24, uint24)"]), functionName: "getSlot0", args: [l.poolId],
+    });
+    const raw = (Number(sqrtPriceX96) / 2 ** 96) ** 2;
+    const expected = l.key.currency0 === CRWD ? 1 / raw : raw;
+    expect(trades[0]!.price / expected).toBeCloseTo(1, 9);
+    expect(coin.market.price! / expected).toBeCloseTo(1, 9);
   });
 
   test("an EVM coin's Quote Asset is listed under its chain, and a page that reads Solana alone says so by name", async () => {
@@ -209,19 +278,26 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork", () => 
   });
 
   test("the Indexer reports how far behind the fork's head it is, and catches up on its next run", async () => {
+    const depth = ROBINHOOD_CHAIN.finalityDepth;
+    const chains = async () => {
+      // The answer is kept for three seconds.
+      await new Promise((r) => setTimeout(r, 3_100));
+      return ChainList.parse(await api("/v1/chains")).chains.find((c) => c.chain === "robinhood")!;
+    };
     await runIndexer();
-    const before = ChainList.parse(await api("/v1/chains")).chains.find((c) => c.chain === "robinhood")!;
-    expect(before).toMatchObject({ family: "evm", chainId: 4663, indexer: { mode: "poll", finalityDepth: 0, blocksBehind: 0 } });
+    const before = await chains();
+    // It stops on purpose its finality depth behind the head.
+    expect(before).toMatchObject({ family: "evm", chainId: 4663, indexer: { mode: "poll", finalityDepth: depth, blocksBehind: depth } });
 
     await clients().test.mine({ blocks: 7 });
-    // The head is read on every request, so the gap shows before the next run.
-    const behind = ChainList.parse(await api("/v1/chains")).chains.find((c) => c.chain === "robinhood")!;
-    expect(behind.indexer.blocksBehind).toBe(7);
+    // The head is read on each answer, so the gap shows before the next run.
+    const behind = await chains();
+    expect(behind.indexer.blocksBehind).toBe(depth + 7);
     expect(behind.indexer.head!.block).toBe(before.indexer.head!.block + 7);
 
     await runIndexer();
-    const after = ChainList.parse(await api("/v1/chains")).chains.find((c) => c.chain === "robinhood")!;
-    expect(after.indexer.blocksBehind).toBe(0);
-    expect(after.indexer.secondsBehind).toBe(0);
+    const after = await chains();
+    expect(after.indexer.blocksBehind).toBe(depth);
   });
+
 });

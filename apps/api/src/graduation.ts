@@ -32,7 +32,8 @@ export async function watchGraduations(db: Db, cfg: Config, now = new Date()): P
     .from(curves)
     .innerJoin(launches, eq(launches.mint, curves.mint))
     .leftJoin(graduations, eq(graduations.mint, curves.mint))
-    .where(and(eq(curves.status, "graduating"), isNull(graduations.mint), sql`coalesce(${curves.completedAt}, ${curves.updatedAt}) < ${cutoff.toISOString()}::timestamptz`));
+    // Solana's coins alone (#252): an EVM chain's are its own jobs' (#254).
+    .where(and(eq(launches.chain, "solana"), eq(curves.status, "graduating"), isNull(graduations.mint), sql`coalesce(${curves.completedAt}, ${curves.updatedAt}) < ${cutoff.toISOString()}::timestamptz`));
 
   const result: GraduationWatch = { recovered: [], alerted: [], backfilled: [] };
   const connection = new Connection(cfg.rpcUrl, "confirmed");

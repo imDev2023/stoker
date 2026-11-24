@@ -128,7 +128,8 @@ export async function uploadMetadata({ db, cfg, operations, bucket }: UploadDeps
     .select({ upload: metadataUploads, launch: { signature: launches.createdSignature, slot: launches.createdSlot } })
     .from(metadataUploads)
     .innerJoin(launches, eq(launches.mint, metadataUploads.mint))
-    .where(eq(metadataUploads.status, "signed"))
+    // Solana's coins alone (#252): an EVM coin's metadata comes with launches prepared through the API (#253).
+    .where(and(eq(launches.chain, "solana"), eq(metadataUploads.status, "signed")))
     .orderBy(asc(launches.createdAt), asc(metadataUploads.item));
   let wincPerSol: bigint | null = null;
   let deposit: string | null = null;

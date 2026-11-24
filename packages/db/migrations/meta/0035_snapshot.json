@@ -1,5 +1,5 @@
 {
-  "id": "e368ed3d-a2ef-4272-951e-5df8ecd14863",
+  "id": "753fbb00-70e7-45ac-9cb9-e6043aae7960",
   "prevId": "09a6de75-7366-4ce9-8bf4-37d081c1d368",
   "version": "7",
   "dialect": "postgresql",
@@ -332,7 +332,13 @@
         "chain": {
           "name": "chain",
           "type": "text",
-          "primaryKey": true,
+          "primaryKey": false,
+          "notNull": true
+        },
+        "factory": {
+          "name": "factory",
+          "type": "text",
+          "primaryKey": false,
           "notNull": true
         },
         "indexed_block": {
@@ -340,6 +346,12 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
+        },
+        "log_block_range": {
+          "name": "log_block_range",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
         },
         "indexed_block_time": {
           "name": "indexed_block_time",
@@ -368,7 +380,15 @@
       },
       "indexes": {},
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
+      "compositePrimaryKeys": {
+        "chain_cursors_chain_factory_pk": {
+          "name": "chain_cursors_chain_factory_pk",
+          "columns": [
+            "chain",
+            "factory"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -2337,6 +2357,27 @@
           "method": "btree",
           "with": {}
         },
+        "launches_chain_created_slot_idx": {
+          "name": "launches_chain_created_slot_idx",
+          "columns": [
+            {
+              "expression": "chain",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_slot",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "launches_creator_idx": {
           "name": "launches_creator_idx",
           "columns": [
@@ -3809,6 +3850,27 @@
           "columns": [
             {
               "expression": "block_time",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "trades_chain_slot_idx": {
+          "name": "trades_chain_slot_idx",
+          "columns": [
+            {
+              "expression": "chain",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "slot",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

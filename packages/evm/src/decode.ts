@@ -1,6 +1,6 @@
 import { decodeEventLog, isAddressEqual, type Address, type Hex, type Log } from "viem";
 import { checksum } from "./chains";
-import { iPoolManagerAbi, stokerFactoryAbi, stokerHookAbi } from "./generated/abis";
+import { iPoolManagerAbi, stokerFactoryAbi, stokerHookAbi, taxVaultAbi } from "./generated/abis";
 import { protocolFeeOn } from "./math";
 
 /**
@@ -56,6 +56,8 @@ export type TradeEvent = {
   /** Uniswap's protocol fee, at the rate the swap reports: in the Quote Asset on a buy, in coins on a sell. */
   protocolFee: bigint;
   sqrtPriceX96: bigint;
+  /** Who called the PoolManager: a router for a wallet's trade, the Tax Vault for its own buys, the factory for a First Buy. */
+  sender: Address;
   /** The `Swap` log's index in its block. */
   logIndex: number;
 };
@@ -67,9 +69,13 @@ type Decoded =
   | { kind: "referrer"; logIndex: number; poolId: Hex; referrer: Address; fee: bigint }
   | { kind: "tax"; logIndex: number; poolId: Hex; tax: bigint }
   | { kind: "taxTerms"; logIndex: number; args: { poolId: Hex; launchType: number; taxBps: number; burnShareBps: number; liquidityShareBps: number; payoutAsset: number } }
-  | { kind: "swap"; logIndex: number; poolId: Hex; amount0: bigint; amount1: bigint; sqrtPriceX96: bigint; feePips: number };
+  | { kind: "swap"; logIndex: number; poolId: Hex; sender: Address; amount0: bigint; amount1: bigint; sqrtPriceX96: bigint; feePips: number }
+  | { kind: "burned"; logIndex: number; poolId: Hex; coinsBurned: bigint };
 
-export type ChainContracts = { factory: Address; hook: Address; poolManager: Address };
+/** A receipt the decoder cannot read as our contracts log a swap: it can never be written, whatever the retries. */
+export class EvmDecodeError extends Error {}
+
+export type ChainContracts = { factory: Address; hook: Address; poolManager: Address; taxVault: Address };
 
 /** The events of ours in a receipt's logs, in log order. Another contract's log, or one of theirs we do not read, is passed over. */
 function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
@@ -88,9 +94,12 @@ function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
         else if (e.eventName === "TaxBooked") out.push({ kind: "tax", logIndex, poolId: e.args.poolId, tax: e.args.tax });
         else if (e.eventName === "TaxTermsRegistered") out.push({ kind: "taxTerms", logIndex, args: e.args });
         else if (e.eventName === "ReferrerFeeCredited") out.push({ kind: "referrer", logIndex, poolId: e.args.poolId, referrer: checksum(e.args.referrer), fee: e.args.fee });
+      } else if (isAddressEqual(log.address, c.taxVault)) {
+        const e = decodeEventLog({ abi: taxVaultAbi, data: log.data, topics });
+        if (e.eventName === "RewardBurned") out.push({ kind: "burned", logIndex, poolId: e.args.poolId, coinsBurned: e.args.coinsBurned });
       } else if (isAddressEqual(log.address, c.poolManager)) {
         const e = decodeEventLog({ abi: iPoolManagerAbi, data: log.data, topics });
-        if (e.eventName === "Swap") out.push({ kind: "swap", logIndex, poolId: e.args.id, amount0: e.args.amount0, amount1: e.args.amount1, sqrtPriceX96: e.args.sqrtPriceX96, feePips: e.args.fee });
+        if (e.eventName === "Swap") out.push({ kind: "swap", logIndex, poolId: e.args.id, sender: checksum(e.args.sender), amount0: e.args.amount0, amount1: e.args.amount1, sqrtPriceX96: e.args.sqrtPriceX96, feePips: e.args.fee });
       }
     } catch {
       // An event of that contract this decoder does not read (its ABI has no entry for the topic).
@@ -112,7 +121,7 @@ export function decodeLaunches(logs: readonly Log[], c: ChainContracts): LaunchE
     if (e.kind !== "launched") return [];
     const t = terms.get(e.args.poolId);
     const x = taxes.get(e.args.poolId);
-    if (!t || !x) throw new Error(`launch of ${e.args.coin} has no LaunchRegistered and TaxTermsRegistered in its transaction`);
+    if (!t || !x) throw new EvmDecodeError(`launch of ${e.args.coin} has no LaunchRegistered and TaxTermsRegistered in its transaction`);
     return [{
       ...e.args, quoteIsCurrency0: t.quoteIsCurrency0, platformFeeBps: t.platformFeeBps, creatorShareBps: t.creatorShareBps, referrerFeeCapBps: t.referrerFeeCapBps,
       graduationMultiple: t.graduationMultiple, launchType: LAUNCH_TYPES[x.launchType]!, taxBps: x.taxBps, burnShareBps: x.burnShareBps,
@@ -135,13 +144,13 @@ export function decodeTrades(logs: readonly Log[], c: ChainContracts, pools: Rea
     (e): e is Ours => (e.kind === "swap" || e.kind === "fee" || e.kind === "referrer" || e.kind === "tax") && pools.has(e.poolId),
   );
   type Group = { poolId: Hex; fee: bigint; creatorCredit: bigint; referrer: Address | null; referrerFee: bigint; tax: bigint };
-  type Swap = { poolId: Hex; logIndex: number; quoteDelta: bigint; coinDelta: bigint; sqrtPriceX96: bigint; feePips: number; group: Group | null };
+  type Swap = { poolId: Hex; sender: Address; logIndex: number; quoteDelta: bigint; coinDelta: bigint; sqrtPriceX96: bigint; feePips: number; group: Group | null };
   const swaps: Swap[] = [];
   let waiting: Group | null = null;
   let open: Swap | null = null;
   let last: Group | null = null;
   let pendingReferrer: { poolId: Hex; referrer: Address; fee: bigint } | null = null;
-  const orphan = (what: string, poolId: Hex) => new Error(`${what} in ${poolId} has no ${what.startsWith("swap") ? "fee booked" : "swap"} beside it`);
+  const orphan = (what: string, poolId: Hex) => new EvmDecodeError(`${what} in ${poolId} has no ${what.startsWith("swap") ? "fee booked" : "swap"} beside it`);
 
   for (const e of events) {
     if (e.kind === "referrer") {
@@ -171,7 +180,7 @@ export function decodeTrades(logs: readonly Log[], c: ChainContracts, pools: Rea
     if (open) throw orphan(`swap at log ${open.logIndex}`, open.poolId);
     const info = pools.get(e.poolId)!;
     const swap: Swap = {
-      poolId: e.poolId, logIndex: e.logIndex, sqrtPriceX96: e.sqrtPriceX96, feePips: e.feePips, group: null,
+      poolId: e.poolId, sender: e.sender, logIndex: e.logIndex, sqrtPriceX96: e.sqrtPriceX96, feePips: e.feePips, group: null,
       quoteDelta: info.quoteIsCurrency0 ? e.amount0 : e.amount1, coinDelta: info.quoteIsCurrency0 ? e.amount1 : e.amount0,
     };
     swaps.push(swap);
@@ -196,7 +205,12 @@ export function decodeTrades(logs: readonly Log[], c: ChainContracts, pools: Rea
     return {
       poolId: s.poolId, side: buy ? "buy" : "sell", coinAmount, quoteAmount: buy ? poolQuote + taken : poolQuote - taken,
       platformFee: g?.fee ?? 0n, creatorCredit: g?.creatorCredit ?? 0n, referrer: g?.referrer ?? null, referrerFee: g?.referrerFee ?? 0n, tax: g?.tax ?? 0n,
-      protocolFee: protocolFeeOn(buy ? poolQuote : coinAmount, s.feePips), sqrtPriceX96: s.sqrtPriceX96, logIndex: s.logIndex,
+      protocolFee: protocolFeeOn(buy ? poolQuote : coinAmount, s.feePips), sqrtPriceX96: s.sqrtPriceX96, sender: s.sender, logIndex: s.logIndex,
     };
   });
+}
+
+/** The coins the Tax Vault burned in a receipt (#245's Reward Burn), by pool: each lowers its coin's supply. */
+export function decodeBurns(logs: readonly Log[], c: ChainContracts): { poolId: Hex; coinsBurned: bigint }[] {
+  return decodeLogs(logs, c).flatMap((e) => (e.kind === "burned" ? [{ poolId: e.poolId, coinsBurned: e.coinsBurned }] : []));
 }

@@ -37,7 +37,11 @@ burnRoutes.get("/burns", async (c) => {
   const cfg = c.get("cfg");
   const token = await platformToken(db);
   // The events of one chain, `?chain=` (#252); the budgets and the shares are the platform's, whichever chain is asked.
-  const onChain = chainIs(ledgerEntries.chain, chainFilter(c));
+  const chain = chainFilter(c);
+  const onChain = chainIs(ledgerEntries.chain, chain);
+  // The Burn and the Flywheel are Solana's: an EVM chain's Burn budget builds up at its Admin's address there (ADR 0030),
+  // so asked for one, the page's figures are that chain's, none yet (#254).
+  const elsewhere = chain !== undefined && chain !== "solana";
   const [entries, picks, b, destinations, additions, [added]] = await Promise.all([
     db.select().from(ledgerEntries).where(and(inArray(ledgerEntries.kind, ["burn", "flywheel"]), onChain)).orderBy(desc(ledgerEntries.slot), desc(ledgerEntries.signature), desc(ledgerEntries.eventIndex)).limit(400),
     flywheelPicks(db, cfg.flywheelTopN),
@@ -58,7 +62,7 @@ burnRoutes.get("/burns", async (c) => {
         pools: countDistinct(ledgerEntries.destination),
       })
       .from(ledgerEntries)
-      .where(and(inArray(ledgerEntries.kind, ADDITION_KINDS), eq(ledgerEntries.assetMint, WSOL))),
+      .where(and(inArray(ledgerEntries.kind, ADDITION_KINDS), eq(ledgerEntries.assetMint, WSOL), onChain)),
   ]);
   const shares = { burnBps: b.rows.burn.shareBps, flywheelBps: b.rows.flywheel.shareBps };
   const asset = await revenueAssets(
@@ -96,11 +100,13 @@ burnRoutes.get("/burns", async (c) => {
     shares: { ...shares, flywheelTopN: cfg.flywheelTopN },
     destinations,
     rule: ruleText(shares, cfg.flywheelTopN, destinations),
-    budgets: (({ revenueLamports, burn, flywheel }) => ({
-      revenueLamports, burn: { spent: burn.spent, available: burn.available }, flywheel: { spent: flywheel.spent, available: flywheel.available },
-    }))(budgetsView(b)),
+    budgets: elsewhere
+      ? { revenueLamports: "0", burn: { spent: "0", available: "0" }, flywheel: { spent: "0", available: "0" } }
+      : (({ revenueLamports, burn, flywheel }) => ({
+          revenueLamports, burn: { spent: burn.spent, available: burn.available }, flywheel: { spent: flywheel.spent, available: flywheel.available },
+        }))(budgetsView(b)),
     burned: [...burnedByCoin].map(([mint, amount]) => ({ coin: asset(mint), amount: amount.toString() })),
-    nextFlywheel: picks.map((p) => ({ mint: p.mint, symbol: p.symbol })),
+    nextFlywheel: elsewhere ? [] : picks.map((p) => ({ mint: p.mint, symbol: p.symbol })),
     events,
     liquidity: { lamports: added!.lamports, count: added!.count, pools: added!.pools, additions: [...bySignatureAdded.values()].slice(0, ADDITIONS_SHOWN) },
   };

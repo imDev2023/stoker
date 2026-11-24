@@ -450,12 +450,13 @@ export default {
       }
       // Launches that sold out but that Raydium has not migrated, and graduated Reward Launches whose tax is not locked yet.
       if (run(CRONS.graduationWatch)) {
-        // The EVM chains' Indexer (#252), every minute; a deployment without EVM_DEPLOYMENTS has nothing to poll and skips it.
-        if (env.EVM_DEPLOYMENTS) await job(runJob(db, "indexer", () => runIndexers(env, config(env), db), { exclusive: true }));
         await job(runJob(db, "graduation-watch", () => watchGraduations(db, config(env)), { exclusive: true }));
         await job(runJob(db, "reward-tax-lock", () => lockRewardTaxes(db, config(env), operationsKey(env)), { exclusive: true }));
         // Permanent metadata for any launch the fast path after indexing did not upload (#44).
         await job(runJob(db, "metadata-upload", () => uploadMetadata(uploadDeps(env, db)), { exclusive: true }));
+        // The EVM chains' Indexer (#252), after Solana's jobs and within a budget of ranges and seconds a run; a deployment
+        // without EVM_DEPLOYMENTS has nothing to poll and skips it.
+        if (env.EVM_DEPLOYMENTS) await job(runJob(db, "indexer", () => runIndexers(env, config(env), db), { exclusive: true }));
       }
       // Platform revenue into the operations wallet, and on to the treasury (ADR 0004).
       // Then the Creators' share of what was collected goes on to them (ADR 0009).

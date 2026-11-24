@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { Connection, PublicKey, type ParsedAccountData } from "@solana/web3.js";
 import { alias } from "drizzle-orm/pg-core";
-import { and, asc, count, desc, eq, ilike, like, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, like, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { cpmmPdas, launchlabPdas, programsFor } from "@launchpad/chain";
 import {
   LaunchListQuery, LINK_KINDS, SPARKLINE_POINTS, type CoinCreatorTier, type Holder, type HolderKind, type HolderList, type LaunchLinks, type LaunchList, type LaunchQuoteList,
@@ -10,7 +10,9 @@ import {
 } from "@launchpad/contract";
 import { curves, evmQuoteAssets, graduations, launches, launchMarkets, launchMetadata, quoteAssets, trades, type Db } from "@launchpad/db";
 import { chainFilter } from "../chains/filter";
+import { canonicalAddress } from "../chains/address";
 import { evmQuoteRef } from "../chains/evm/quotes";
+import { evmBuyers } from "../chains/evm/config";
 import { operationsKey, type AppEnv, type Config } from "../env";
 import { coinTiers } from "../fees/ladder";
 import { toQuoteRef } from "../quotes/assets";
@@ -37,7 +39,14 @@ function searchClause(q: string) {
  * price from its latest trade on the curve or in its pool (launch_markets), the volume from its trades, and SOL and USD
  * values from the Quote Registry's prices.
  */
-async function queryLaunches(db: Db, operations: string, filters: Filters, sort: LaunchListQuery["sort"] = "new", limit = 1, offset = 0) {
+async function queryLaunches(db: Db, notHolders: string[], given: Filters, sort: LaunchListQuery["sort"] = "new", limit = 1, offset = 0) {
+  // A caller's EVM address in any case finds the checksummed one the Indexer wrote (#252).
+  const filters: Filters = {
+    ...given,
+    ...(given.mint ? { mint: canonicalAddress(given.mint) } : {}),
+    ...(given.quote ? { quote: canonicalAddress(given.quote) } : {}),
+    ...(given.creator ? { creator: canonicalAddress(given.creator) } : {}),
+  };
   // The protected coin a copy launched against (Copy Protection, #120), for its label.
   const original = alias(launches, "original");
   const volume = db.$with("volume").as(
@@ -55,7 +64,7 @@ async function queryLaunches(db: Db, operations: string, filters: Filters, sort:
     db
       .select({ mint: trades.mint, trader: trades.trader })
       .from(trades)
-      .where(ne(trades.trader, operations))
+      .where(notInArray(trades.trader, notHolders))
       .groupBy(trades.mint, trades.trader)
       .having(sql`sum(case when ${trades.side} = 'buy' then ${trades.baseAmount} else -${trades.baseAmount} end) > 0`),
   );
@@ -144,6 +153,12 @@ async function queryLaunches(db: Db, operations: string, filters: Filters, sort:
 }
 
 type Row = Awaited<ReturnType<typeof queryLaunches>>[number];
+
+/**
+ * Wallets the board never counts as holders: the operations wallet (what it buys for a Creator it burns or locks) and
+ * each EVM chain's Tax Vault (what it buys it burns or hands to the holders, #245).
+ */
+const notHolders = (env: AppEnv["Bindings"]) => [operationsKey(env).publicKey.toBase58(), ...evmBuyers(env)];
 
 /** Postgres returns doubles computed from numerics as numbers or strings depending on the path; normalise to a number. */
 const num = (v: number | string | null) => (v === null ? null : Number(v));
@@ -263,7 +278,7 @@ launchRoutes.get("/launches", async (c) => {
   if (!query.success) return c.json({ error: "invalid launch list query", details: query.error.issues }, 400);
   const { sort, limit, offset, fields = [], ...filters } = query.data;
   const db = c.get("db");
-  const found = await queryLaunches(db, operationsKey(c.env).publicKey.toBase58(), filters, sort, limit + 1, offset);
+  const found = await queryLaunches(db, notHolders(c.env), filters, sort, limit + 1, offset);
   const rows = found.slice(0, limit);
   const lines = fields.includes("sparkline") ? await sparklines(db, rows.map((r) => r.launch.mint)) : null;
   const body: LaunchList = {
@@ -352,7 +367,7 @@ async function evmLaunchQuotes(db: Db, chain: Chain | undefined) {
 }
 
 launchRoutes.get("/launches/:mint", async (c) => {
-  const [row] = await queryLaunches(c.get("db"), operationsKey(c.env).publicKey.toBase58(), { mint: c.req.param("mint") });
+  const [row] = await queryLaunches(c.get("db"), notHolders(c.env), { mint: c.req.param("mint") });
   if (!row) return c.json({ error: "launch not found" }, 404);
   const cfg = c.get("cfg");
   // A graduated coin's place on the Creator Ladder (ADR 0020), which only this answer carries.
