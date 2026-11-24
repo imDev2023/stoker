@@ -178,13 +178,13 @@ contract LaunchTest is LocalBase {
 
     function test_factory_refusesUnboundedSettings() public {
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, registry, 0, CREATOR_SHARE_BPS, bytes32(0));
+        new StokerFactory(pm, registry, 0, CREATOR_SHARE_BPS, bytes32(0), taxVault);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, registry, 1_001, CREATOR_SHARE_BPS, bytes32(0));
+        new StokerFactory(pm, registry, 1_001, CREATOR_SHARE_BPS, bytes32(0), taxVault);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, registry, PLATFORM_FEE_BPS, 10_001, bytes32(0));
+        new StokerFactory(pm, registry, PLATFORM_FEE_BPS, 10_001, bytes32(0), taxVault);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, QuoteRegistry(address(0)), PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, bytes32(0));
+        new StokerFactory(pm, QuoteRegistry(address(0)), PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, bytes32(0), taxVault);
     }
 
     /// The factory takes its tick spacing from the registry and the hook its keys, so a start price is
