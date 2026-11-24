@@ -21,6 +21,11 @@ import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/Pool
 
 import {StokerKeys} from "./StokerKeys.sol";
 
+/// @notice What the hook reads from the Tax Vault at its deployment: where the holders' part goes.
+interface IHoldersPartHolder {
+    function distributor() external view returns (address);
+}
+
 /// @title StokerHook
 /// @notice The Uniswap v4 hook of every Stoker coin's pool on an EVM chain. It keeps the books and does
 ///         nothing else (ADR 0025): on every swap it takes the Platform Fee on the Quote Asset's side and
@@ -37,6 +42,12 @@ import {StokerKeys} from "./StokerKeys.sol";
 ///         A Reward Launch's Reward Tax and a Stoke Launch's Stoke Tax (#245) are taken beside these fees, on
 ///         the same side, and minted as ERC-6909 claims to the Tax Vault, with a running total per pool
 ///         (`taxBooked`); the hook does nothing else with them inside a swap.
+///
+///         The Creator's share of the Platform Fee follows the Creator Ladder (#248, ADR 0027): the first
+///         Creator Tier's share with no key involved, and the ladder key may raise one coin's tier to the
+///         second or the third and can do nothing else. The hook keeps, per coin, a running total of what
+///         its swaps have credited its Creator Earnings Destination (`creatorCreditedOf`), so a Destination
+///         contract that serves many coins can tell their earnings apart.
 ///
 ///         The hook also guards the pool: only the factory opens a pool on it, only the factory and the Tax
 ///         Vault add liquidity to it, no liquidity is ever removed, and donations are refused.
@@ -79,6 +90,15 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         beside the factory that may add liquidity to a pool on this hook (Support Liquidity, #245).
     address public immutable taxVault;
 
+    /// @notice The Distributor the Tax Vault hands the holders' part to (#247), read from the Tax Vault at
+    ///         deployment: with the Tax Vault, an address no trade may name as its referrer (#248).
+    address public immutable distributor;
+
+    /// @notice The Creator Ladder's tiers (ADR 0020, ADR 0027): every coin starts on the first, and the
+    ///         ladder key may raise it to the second or the top.
+    uint8 public constant FIRST_TIER = 1;
+    uint8 public constant TOP_TIER = 3;
+
     /// @notice The three Launch types (#231 story 8). `Liquidity` is the Stoke Launch.
     enum LaunchType {
         Standard,
@@ -97,7 +117,8 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         figure of its Listing is copied here, so no write to the Quote Registry reaches a launched coin.
     /// @param creatorDestination The Creator Earnings Destination credited with the Creator's share.
     /// @param platformFeeBps The Platform Fee, of the Quote Asset's side of every swap.
-    /// @param creatorShareBps The Creator's share of the Platform Fee (the Creator Ladder's tier, ADR 0027).
+    /// @param creatorShareBps The Creator's share of the Platform Fee on the Creator Ladder's first tier, which
+    ///        every coin holds from launch with no key involved (ADR 0027).
     /// @param referrerFeeCapBps The most a trade may name as its Referrer Fee (the Listing's cap at launch).
     /// @param quoteIsCurrency0 Which side of the pool the Quote Asset is.
     /// @param startTick The Listing's start price at launch, as a tick of Quote Asset per coin.
@@ -112,6 +133,8 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @param liquidityShareBps The share of the tax that becomes Support Liquidity: the Reward Liquidity's
     ///        on a Reward Launch, all of it on a Stoke Launch. The rest is the holders' part.
     /// @param payoutAsset A Reward Launch's Payout Asset.
+    /// @param secondTierShareBps The Creator's share on the second Creator Tier (#248).
+    /// @param topTierShareBps The Creator's share on the top Creator Tier.
     struct Terms {
         address creatorDestination;
         uint16 platformFeeBps;
@@ -127,9 +150,23 @@ contract StokerHook is BaseHook, IUnlockCallback {
         uint16 burnShareBps;
         uint16 liquidityShareBps;
         PayoutAsset payoutAsset;
+        uint16 secondTierShareBps;
+        uint16 topTierShareBps;
     }
 
     mapping(PoolId => Terms) internal _terms;
+
+    /// @notice A coin's own state on the Creator Ladder, beside its terms (#248).
+    /// @param raised How many tiers above the first the ladder key has raised the coin: 0, 1 or 2. It only
+    ///        ever grows.
+    /// @param credited Every Credit this pool's swaps have recorded to its Creator Earnings Destination, in
+    ///        its Quote Asset, since launch. It only ever grows, and no call but a swap moves it.
+    struct CreatorBook {
+        uint8 raised;
+        uint248 credited;
+    }
+
+    mapping(PoolId => CreatorBook) internal _creatorBooks;
 
     /// @notice Credits owed, by owner and Quote Asset.
     mapping(address owner => mapping(Currency currency => uint256)) internal _credits;
@@ -174,6 +211,13 @@ contract StokerHook is BaseHook, IUnlockCallback {
         uint16 liquidityShareBps,
         PayoutAsset payoutAsset
     );
+    /// @notice The three shares of a Launch's Creator Ladder, written with the rest of its terms (#248).
+    event CreatorLadderRegistered(
+        PoolId indexed poolId, uint16 firstTierShareBps, uint16 secondTierShareBps, uint16 topTierShareBps
+    );
+    /// @notice The ladder key raised a coin's Creator Tier: from this block the Creator's part of every
+    ///         Platform Fee its swaps pay is `creatorShareBps`.
+    event CreatorTierRaised(PoolId indexed poolId, uint8 fromTier, uint8 toTier, uint16 creatorShareBps);
     /// @notice One swap's Reward Tax or Stoke Tax, minted to the Tax Vault as claims.
     event TaxBooked(PoolId indexed poolId, Currency indexed currency, uint256 tax);
     event CreditPaid(address indexed owner, Currency indexed currency, uint256 amount);
@@ -195,15 +239,20 @@ contract StokerHook is BaseHook, IUnlockCallback {
     error MalformedHookData();
     /// @notice A trade named a Referrer Fee over its Launch's cap.
     error ReferrerFeeOverCap(uint256 feeBps, uint16 capBps);
-    /// @notice A trade named this hook, the factory or the PoolManager as its referrer, none of which can be
-    ///         paid usefully.
+    /// @notice A trade named this hook, the factory, the PoolManager, the Tax Vault or the Distributor as its
+    ///         referrer, none of which can be paid usefully.
     error InvalidReferrer(address referrer);
+    /// @notice A raise by anyone but the ladder key of the moment; a revoked key reads as nobody.
+    error NotLadderKey();
+    /// @notice A raise to the tier the coin holds or to one below it, or past the top.
+    error InvalidTier(uint8 current, uint8 asked);
 
     constructor(IPoolManager poolManager_, StokerKeys keys_, address taxVault_) BaseHook(poolManager_) {
         if (address(keys_) == address(0) || taxVault_ == address(0)) revert ZeroAddress();
         factory = msg.sender;
         keys = keys_;
         taxVault = taxVault_;
+        distributor = IHoldersPartHolder(taxVault_).distributor();
     }
 
     /// @inheritdoc BaseHook
@@ -248,6 +297,35 @@ contract StokerHook is BaseHook, IUnlockCallback {
             t.graduationSqrtPriceX96
         );
         emit TaxTermsRegistered(id, t.launchType, t.taxBps, t.burnShareBps, t.liquidityShareBps, t.payoutAsset);
+        emit CreatorLadderRegistered(id, t.creatorShareBps, t.secondTierShareBps, t.topTierShareBps);
+    }
+
+    // ------------------------------------------------------------------ the Creator Ladder's key (#248)
+
+    /// @notice Raises one coin's Creator Tier to the second or the top, by the ladder key of the moment alone
+    ///         (`keys.holderOf(Role.LadderKey)`, so a replacement or a revoke takes effect at once). From this
+    ///         block the Creator's part of every Platform Fee the coin's swaps pay is the new tier's share,
+    ///         as written in the Launch's terms; what the trader pays does not change, and nothing already
+    ///         credited moves. This is the whole of the key's power: it cannot lower a tier, raise past the
+    ///         top, or touch a pool, a Seed Position, a Credit or a coin's terms.
+    /// @param tier The tier to raise the coin to: 2 or 3, above the one it holds.
+    function raiseTier(PoolId id, uint8 tier) external {
+        // A revoked key reads as nobody, which no caller is.
+        if (msg.sender != keys.holderOf(StokerKeys.Role.LadderKey)) revert NotLadderKey();
+        Terms memory t = _termsOf(id);
+        uint8 current = FIRST_TIER + _creatorBooks[id].raised;
+        if (tier <= current || tier > TOP_TIER) revert InvalidTier(current, tier);
+        _creatorBooks[id].raised = tier - FIRST_TIER;
+        // The call before it is our own keys' view.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit CreatorTierRaised(id, current, tier, _tierShareBps(t, tier - FIRST_TIER));
+    }
+
+    /// @dev The Creator's share of the Platform Fee on a tier, from the Launch's own terms: no share is a
+    ///      constant of this contract.
+    function _tierShareBps(Terms memory t, uint8 raised) internal pure returns (uint16) {
+        if (raised == 0) return t.creatorShareBps;
+        return raised == 1 ? t.secondTierShareBps : t.topTierShareBps;
     }
 
     // ------------------------------------------------------------------ the pool's guards
@@ -395,9 +473,16 @@ contract StokerHook is BaseHook, IUnlockCallback {
         if (taken == 0) return;
         Currency currency = t.quoteIsCurrency0 ? key.currency0 : key.currency1;
         poolManager.mint(address(this), currency.toId(), taken);
-        uint256 creatorCredit = fee * t.creatorShareBps / BPS;
+        // The Creator's share is the share of the tier the coin holds now (#248); the platform's is the rest.
+        CreatorBook memory book = _creatorBooks[id];
+        uint256 creatorCredit = fee * _tierShareBps(t, book.raised) / BPS;
         uint256 platformCredit = fee - creatorCredit;
         _credits[t.creatorDestination][currency] += creatorCredit;
+        if (creatorCredit > 0) {
+            // At most the fee, which fits an int128; the sum is checked.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            _creatorBooks[id].credited = book.credited + uint248(creatorCredit);
+        }
         // The Admin of this moment: a handover changes where later shares are booked, never an earlier one.
         _credits[keys.admin()][currency] += platformCredit;
         totalCredits[currency] += taken;
@@ -432,9 +517,10 @@ contract StokerHook is BaseHook, IUnlockCallback {
         if (feeBps > t.referrerFeeCapBps) revert ReferrerFeeOverCap(feeBps, t.referrerFeeCapBps);
         if (feeBps == 0) return (address(0), 0);
         if (referrer == address(0)) revert MalformedHookData();
-        if (referrer == address(this) || referrer == factory || referrer == address(poolManager)) {
-            revert InvalidReferrer(referrer);
-        }
+        if (
+            referrer == address(this) || referrer == factory || referrer == address(poolManager) || referrer == taxVault
+                || referrer == distributor
+        ) revert InvalidReferrer(referrer);
         return (referrer, feeBps);
     }
 
@@ -665,6 +751,24 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @notice A Launch's terms, by its pool.
     function termsOf(PoolId id) external view returns (Terms memory) {
         return _terms[id];
+    }
+
+    /// @notice A coin's Creator Tier now: 1 from launch, 2 or 3 once the ladder key has raised it (#248).
+    function creatorTierOf(PoolId id) external view returns (uint8) {
+        return FIRST_TIER + _creatorBooks[id].raised;
+    }
+
+    /// @notice The Creator's share of every Platform Fee the coin's swaps pay now, in basis points: its
+    ///         tier's share, from the Launch's terms.
+    function creatorShareOf(PoolId id) external view returns (uint16) {
+        return _tierShareBps(_terms[id], _creatorBooks[id].raised);
+    }
+
+    /// @notice Every Credit this pool's swaps have recorded to its Creator Earnings Destination since launch,
+    ///         in its Quote Asset, paid or not. A Destination that serves several coins reads each coin's
+    ///         earnings here, since a Credit is booked by address and asset and not by pool.
+    function creatorCreditedOf(PoolId id) external view returns (uint256) {
+        return _creatorBooks[id].credited;
     }
 
     /// @notice Where the platform's share of a Platform Fee taken now is booked: the Admin's address.

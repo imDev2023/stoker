@@ -51,6 +51,14 @@ contract StokerFactory is IUnlockCallback {
     /// @notice The Creator's share of the Platform Fee written into every Launch: the Creator Ladder's first
     ///         tier (ADR 0027). Never the launcher's to choose.
     uint16 public immutable creatorShareBps;
+    /// @notice The Creator's share on the Creator Ladder's second and top tiers, written into every Launch
+    ///         beside the first (#248); a coin reaches them only by the ladder key's raise.
+    uint16 public immutable secondTierShareBps;
+    uint16 public immutable topTierShareBps;
+    /// @notice The Tax Vault and the Distributor: with the hook, this factory and the PoolManager, the
+    ///         addresses no Launch may name as its Creator Earnings Destination (#248).
+    address public immutable taxVault;
+    address public immutable distributor;
     /// @notice The tick spacing of every pool this factory opens: the registry's, which every start price
     ///         is a multiple of.
     int24 public immutable tickSpacing;
@@ -142,9 +150,16 @@ contract StokerFactory is IUnlockCallback {
     error InvalidShares(uint16 burnShareBps, uint16 liquidityShareBps);
     /// @notice A Payout Asset of the coin on a Launch that has no holders' part.
     error InvalidPayoutAsset();
+    /// @notice A Creator Earnings Destination that can never be paid usefully: the hook, this factory, the
+    ///         PoolManager, the Tax Vault or the Distributor. None accepts the native asset from the Payout
+    ///         Call, and an ERC-20 paid to one belongs to nobody there.
+    error InvalidDestination(address destination);
 
     /// @param registry_ The chain's Quote Registry; its keys are the hook's (the platform's share is booked
     ///        to their Admin) and its tick spacing is every pool's.
+    /// @param secondTierShareBps_ The Creator's share on the second Creator Tier, at least the first's.
+    /// @param topTierShareBps_ The Creator's share on the top Creator Tier, at least the second's and at most
+    ///        the whole Platform Fee, so a raise never lowers what a Creator is credited.
     /// @param hookSalt The CREATE2 salt that gives the hook an address carrying its permission bits.
     /// @param taxVault_ The Tax Vault, deployed beforehand for this factory's address (#245).
     constructor(
@@ -152,6 +167,8 @@ contract StokerFactory is IUnlockCallback {
         QuoteRegistry registry_,
         uint16 platformFeeBps_,
         uint16 creatorShareBps_,
+        uint16 secondTierShareBps_,
+        uint16 topTierShareBps_,
         bytes32 hookSalt,
         TaxVault taxVault_
     ) {
@@ -162,9 +179,16 @@ contract StokerFactory is IUnlockCallback {
         registry = registry_;
         platformFeeBps = platformFeeBps_;
         creatorShareBps = creatorShareBps_;
+        // The ladder only climbs: a tier's share is never below the one before it, nor above the whole fee.
+        if (secondTierShareBps_ < creatorShareBps_ || topTierShareBps_ < secondTierShareBps_) revert InvalidSettings();
+        if (topTierShareBps_ > 10_000) revert InvalidSettings();
+        secondTierShareBps = secondTierShareBps_;
+        topTierShareBps = topTierShareBps_;
         tickSpacing = registry_.tickSpacing();
         // The Tax Vault reads this factory's hook and Seed Positions, so it must have been made for it.
         if (address(taxVault_) == address(0) || taxVault_.factory() != address(this)) revert InvalidSettings();
+        taxVault = address(taxVault_);
+        distributor = address(taxVault_.distributor());
         hook = new StokerHook{salt: hookSalt}(poolManager_, registry_.keys(), address(taxVault_));
     }
 
@@ -208,6 +232,7 @@ contract StokerFactory is IUnlockCallback {
 
         coin = address(new StokerCoin{salt: keccak256(abi.encode(msg.sender, p.salt))}(p.name, p.symbol));
         address destination = p.creatorDestination == address(0) ? msg.sender : p.creatorDestination;
+        _checkDestination(destination);
 
         Seed memory seed;
         seed.coin = coin;
@@ -251,7 +276,9 @@ contract StokerFactory is IUnlockCallback {
             taxBps: 0,
             burnShareBps: 0,
             liquidityShareBps: 0,
-            payoutAsset: StokerHook.PayoutAsset.QuoteAsset
+            payoutAsset: StokerHook.PayoutAsset.QuoteAsset,
+            secondTierShareBps: secondTierShareBps,
+            topTierShareBps: topTierShareBps
         });
         _writeTaxTerms(terms, p);
         hook.registerLaunch(seed.key, terms);
@@ -304,6 +331,15 @@ contract StokerFactory is IUnlockCallback {
         terms.burnShareBps = p.burnShareBps;
         terms.liquidityShareBps = p.liquidityShareBps;
         terms.payoutAsset = p.payoutAsset;
+    }
+
+    /// @dev A Creator Earnings Destination is any address the launcher names, and the factory knows nothing
+    ///      of what stands behind it (#248); it refuses only our own contracts that can never be paid usefully.
+    function _checkDestination(address destination) internal view {
+        if (
+            destination == address(hook) || destination == address(this) || destination == address(poolManager)
+                || destination == taxVault || destination == distributor
+        ) revert InvalidDestination(destination);
     }
 
     /// @dev Solana's steps for the Reward Burn and the Reward Liquidity: none, a tenth, a quarter or half.
