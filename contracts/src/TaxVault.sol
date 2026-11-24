@@ -341,9 +341,10 @@ contract TaxVault is IUnlockCallback {
 
     function _load(PoolKey calldata key) internal view returns (Pool memory p) {
         StokerHook h = IStokerLaunches(factory).hook();
-        if (address(key.hooks) != address(h)) revert NotAStokerPool();
         p.id = key.toId();
         p.terms = h.termsOf(p.id);
+        // The pool id hashes every field of the key, its hook included, so only a pool our factory opened
+        // has registered terms: any other key, on another hook or with another spacing, is refused here.
         if (!p.terms.registered) revert NotAStokerPool();
         (p.quote, p.coin) = p.terms.quoteIsCurrency0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
         p.booked = h.taxBooked(p.id);
