@@ -47,6 +47,16 @@ abstract contract StokerTestBase is Test {
     uint16 internal constant PIECE_BPS = 50;
     uint32 internal constant PIECE_INTERVAL = 60;
     int24 internal constant SUPPORT_WIDTH_SPACINGS = 10;
+    /// The Opening Fee's settings (#246, ADR 0026): a buy's fees take 99% together at the launch's own
+    /// second, the Opening Fee falling to nothing over 20 seconds.
+    uint16 internal constant OPENING_FEE_START_BPS = 9_900;
+    uint32 internal constant OPENING_FEE_DURATION = 20;
+
+    /// The launch helpers move the clock past the Opening Fee after launching, so a test about anything else
+    /// trades as it did before #246; the Opening Fee's own tests set this to trade inside it.
+    bool internal _tradeInOpening;
+    /// The start figure the fixture deploys with; a test of a lower figure sets it before `setUp`.
+    uint16 internal openingFeeStartBps = OPENING_FEE_START_BPS;
 
     uint160 internal constant HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
         | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_DONATE_FLAG
@@ -95,7 +105,9 @@ abstract contract StokerTestBase is Test {
                 break;
             }
         }
-        factory = new StokerFactory(pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, salt, taxVault);
+        factory = new StokerFactory(
+            pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, salt, taxVault, openingFeeStartBps, OPENING_FEE_DURATION
+        );
         assertEq(address(factory), factoryAddr, "factory address");
         hook = factory.hook();
         assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS, "hook permission bits");
@@ -141,9 +153,15 @@ abstract contract StokerTestBase is Test {
         PoolId id;
         (coin, id) = factory.launch(p);
         vm.stopPrank();
+        _pastOpening();
         key = _keyFor(coin);
         assertEq(PoolId.unwrap(key.toId()), PoolId.unwrap(id), "pool id");
         assertEq(address(quote) < coin, quoteIsCurrency0, "currency order");
+    }
+
+    /// Moves the clock to the end of the Opening Fee just launched, unless the test trades inside it.
+    function _pastOpening() internal {
+        if (!_tradeInOpening) vm.warp(vm.getBlockTimestamp() + OPENING_FEE_DURATION);
     }
 
     function _keyFor(address coin) internal view returns (PoolKey memory) {
@@ -314,6 +332,7 @@ abstract contract StokerTestBase is Test {
         PoolId id;
         vm.prank(creator);
         (coin, id) = factory.launch{value: firstBuy}(p);
+        _pastOpening();
         key = _nativeKey(coin);
         assertEq(PoolId.unwrap(key.toId()), PoolId.unwrap(id), "pool id");
     }

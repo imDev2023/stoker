@@ -54,6 +54,16 @@ contract StokerFactory is IUnlockCallback {
     /// @notice The tick spacing of every pool this factory opens: the registry's, which every start price
     ///         is a multiple of.
     int24 public immutable tickSpacing;
+    /// @notice What a buy's fees take together at a Launch's own second, written into every Launch (#246,
+    ///         ADR 0026): 9,900 is 99.00%. The Opening Fee is the part above the Launch's standing fees.
+    uint16 public immutable openingFeeStartBps;
+    /// @notice The seconds over which every Launch's Opening Fee falls in a straight line to nothing (#246).
+    uint32 public immutable openingFeeDuration;
+
+    /// @notice The highest start figure a deployment may set: a buy always keeps at least 1% of itself.
+    uint16 public constant MAX_OPENING_FEE_START_BPS = 9_900;
+    /// @notice The longest Opening Fee a deployment may set: a fee that never fell would stop a coin trading.
+    uint32 public constant MAX_OPENING_FEE_DURATION = 10 minutes;
 
     /// @notice A Launch's own facts, as the factory recorded them.
     struct Launch {
@@ -147,13 +157,18 @@ contract StokerFactory is IUnlockCallback {
     ///        to their Admin) and its tick spacing is every pool's.
     /// @param hookSalt The CREATE2 salt that gives the hook an address carrying its permission bits.
     /// @param taxVault_ The Tax Vault, deployed beforehand for this factory's address (#245).
+    /// @param openingFeeStartBps_ The Opening Fee's start figure, every buy's fees together at a Launch's own
+    ///        second, at most 99.00% (#246).
+    /// @param openingFeeDuration_ The seconds the Opening Fee runs, at least one and at most ten minutes.
     constructor(
         IPoolManager poolManager_,
         QuoteRegistry registry_,
         uint16 platformFeeBps_,
         uint16 creatorShareBps_,
         bytes32 hookSalt,
-        TaxVault taxVault_
+        TaxVault taxVault_,
+        uint16 openingFeeStartBps_,
+        uint32 openingFeeDuration_
     ) {
         // Bounded so that no deployment can take most of a swap: at most 10% of the Quote Asset's side.
         if (platformFeeBps_ == 0 || platformFeeBps_ > 1_000) revert InvalidSettings();
@@ -163,6 +178,10 @@ contract StokerFactory is IUnlockCallback {
         platformFeeBps = platformFeeBps_;
         creatorShareBps = creatorShareBps_;
         tickSpacing = registry_.tickSpacing();
+        if (openingFeeStartBps_ == 0 || openingFeeStartBps_ > MAX_OPENING_FEE_START_BPS) revert InvalidSettings();
+        if (openingFeeDuration_ == 0 || openingFeeDuration_ > MAX_OPENING_FEE_DURATION) revert InvalidSettings();
+        openingFeeStartBps = openingFeeStartBps_;
+        openingFeeDuration = openingFeeDuration_;
         // The Tax Vault reads this factory's hook and Seed Positions, so it must have been made for it.
         if (address(taxVault_) == address(0) || taxVault_.factory() != address(this)) revert InvalidSettings();
         hook = new StokerHook{salt: hookSalt}(poolManager_, registry_.keys(), address(taxVault_));
@@ -251,7 +270,11 @@ contract StokerFactory is IUnlockCallback {
             taxBps: 0,
             burnShareBps: 0,
             liquidityShareBps: 0,
-            payoutAsset: StokerHook.PayoutAsset.QuoteAsset
+            payoutAsset: StokerHook.PayoutAsset.QuoteAsset,
+            // The hook writes the Launch's own second itself when it registers the terms.
+            launchedAt: 0,
+            openingFeeStartBps: openingFeeStartBps,
+            openingFeeDuration: openingFeeDuration
         });
         _writeTaxTerms(terms, p);
         hook.registerLaunch(seed.key, terms);
@@ -379,7 +402,8 @@ contract StokerFactory is IUnlockCallback {
 
     /// @dev The Creator's First Buy: an exact-in buy of `firstBuy`, paid from the Creator's allowance or,
     ///      in the native asset, from the value the launch was sent; the coins go to the Creator. It passes
-    ///      through the hook and pays the Platform Fee like any buy.
+    ///      through the hook and pays the Platform Fee like any buy, and no Opening Fee: it is the only swap
+    ///      this factory ever makes, in the launch's own unlock, which the hook reads from its `sender` (#246).
     function _firstBuy(Seed memory seed) internal returns (uint256 coinsBought) {
         bool zeroForOne = seed.quoteIsCurrency0;
         BalanceDelta delta = poolManager.swap(

@@ -7,10 +7,11 @@ Nothing here has been deployed to any chain, live or test.
 These contracts have not been audited by an independent firm (the owner's decision of 2026-11-22, ADR 0030).
 What stands in for an audit is listed under "The safety checklist" below, and the gate before any deployment is #251.
 
-## What is built (#241, #242, #243, #245)
+## What is built (#241, #242, #243, #245, #246)
 
 The first path, end to end: a standard coin launched by Direct Seed, with the hook keeping the books (#241), paired with a listed ERC-20 or with the chain's native asset (#242), against the on-chain Quote Registry, with the Admin and the server keys named on-chain and a Referrer Fee a trade may add (#243).
 The three Launch types, with the Reward Tax and the Stoke Tax spent by the Tax Vault (#245).
+The Opening Fee on every Launch's first buys, all of it the coin's Support Liquidity (#246).
 
 
 | File | What it is |
@@ -158,7 +159,37 @@ The rates are Solana's (`REWARD_TAX_RATES` in `packages/contract`).
   A caller can also push the price down before `addSupport`, which only places that piece deeper and costs the caller the same round trip.
 - **No removal, no donation.** The hook admits the vault beside the factory in `_beforeAddLiquidity`, refuses every removal whoever asks, and refuses donations, so no position ever accrues anything and an addition's delta is its principal alone.
 
-Not built yet, each its own slice: Graduation and the Creator Lock (#244), the Opening Fee (#246), the Distributor (#247), the Creator Ladder's key and the Destination contracts (#248), and the deployment and the gate (#251).
+### The Opening Fee (#246)
+
+Every Launch, of every type, opens with an Opening Fee (ADR 0026): an extra fee on buys in its first seconds, read from the block's time alone.
+
+- **The rule.** At the launch's own second a buy's fees together take the start figure, 99.00%; the Opening Fee is the part of that above the buy's standing fees (the Platform Fee, the Referrer Fee it names, the tax it pays), and that part falls in a straight line to nothing at the duration, 20 seconds.
+  As a rate, `ceil((start - standing) x secondsLeft / duration)` basis points, so it never rises with time, the fees together never pass the start figure, and it is exactly zero from the twentieth second on.
+  At ten seconds a buy with no referrer on a standard coin pays 1.00% and 49.00%, 50.00% together.
+- **The terms.** `Terms` ends with `launchedAt` (the Launch's own second, written by the hook itself when it registers the terms, whatever the factory passes), `openingFeeStartBps` and `openingFeeDuration`, both copied from the factory's settings, fixed at its deployment (at most 99.00% and ten minutes, `InvalidSettings`); no constant in the hook's arithmetic, and no setting reaches a coin already launched.
+  The event `OpeningFeeTermsRegistered` carries all three.
+- **In the swap.** On a buy the hook takes the Opening Fee beside the other three fees, in the same callback: in `beforeSwap` on an exact-in buy, in `afterSwap` on an exact-out buy.
+  The standing fees are their rates of the buy exactly as outside the window, and the Opening Fee is what all the rates together take, rounded up once, less the standing fees as each was rounded (never below zero).
+  So a buy inside the window pays its combined rate rounded up to the wei and not a wei more for four roundings; at 99% a buy of 100 wei keeps one wei and trades it, and one of 99 wei is refused (`SwapTooSmall`) before the pool runs.
+  On an exact-out buy each fee is its rate of net plus every fee, the Opening Fee among them, so the Platform Fee is 1.00% of what the buyer pays on either kind of buy, and the same buy costs the same expressed either way.
+  `SwapStoppedEarly` and the exact-in swallow check count it with the other three; a sell never pays it, so the sell's check is unchanged.
+- **No Credit grows by it.** It is minted to the Tax Vault as ERC-6909 claims, with `openingFeeBooked` per pool and the event `OpeningFeeBooked`; the Platform Fee on a buy inside the window is the very figure the same payment pays after it, to the wei (`test_opening_noCreditGrowsByIt`).
+- **The exemption.** The Creator's First Buy is the one swap the factory ever makes, inside the launch's own unlock; the hook exempts a swap whose `sender` is the factory and reads `sender` for nothing else here.
+  The factory's callback answers the PoolManager alone and the PoolManager calls back only the contract that unlocked it, so nothing can make the factory swap later or in another pool; a contract that launches and buys more in the same transaction pays the whole Opening Fee on its second buy, and the Creator's own later buys pay it (`OpeningFeeHostile.t.sol`).
+- **The Tax Vault.** It adds each pool's `openingFeeBooked` to that coin's Support Liquidity part (`_supportPart`), and to nothing else: the burn's and the holders' parts are their shares of the tax alone.
+  A standard coin has no tax, so its only income is its Opening Fee, which `addSupport` places piece by piece exactly as it places a Stoke Launch's tax, under the same cap and interval; the agent's call, since ADR 0026 makes all of it Support Liquidity and a standard coin has no other part to give it to.
+  `addSupport` may run inside the window; the vault's own buys may not (`TooSoon` until the window's end): a burn or holders' buy at 99% would move the burn's or the holders' Quote Asset into Support Liquidity, mixing parts the Launch fixed, and ADR 0026 exempts no buy but the First Buy.
+- **Routes.** A buy reached through another pool or a multi-hop pays the coin's own Opening Fee on what reaches its pool, and the sell leg pays none (`test_opening_aRouteThroughAnotherPoolPaysTheCoinsOwnFee`); a pool someone else opens carries none, as ADR 0025 accepts for the fee and the tax.
+- **Quotes.** The V4 Quoter runs the same hook in the same block, so its figure for a buy inside the window is what the buyer receives or pays to the wei through both Universal Routers; a buy quoted a second early lands paying less than quoted, never more (`ForkOpeningQuote.t.sol`).
+- **The clock.** Every block of one second reads the same fee (five blocks on one timestamp, as on Base, pay the same), a launch whose next block keeps its timestamp is still at its own second, and a clock read before the launch's own second (no chain does this) is held to the start figure.
+- **Gas.** `Terms` takes a third storage slot, so every swap reads one more slot (about 2,100 gas cold); a buy inside the window mints once more to the vault.
+
+| Buy | Quote Asset known | Each standing fee at `x` | The Opening Fee at `o`, with `S` the standing rates |
+| --- | --- | --- | --- |
+| Exact in | what the trader pays, `A` | `ceil(A x x)` | `ceil(A x (S + o)) - sum of the standing fees`, at least 0 |
+| Exact out | what reaches the pool, `N` | `ceil(N x x / (1 - S - o))` | `ceil(N x (S + o) / (1 - S - o)) - sum of the standing fees`, at least 0 |
+
+Not built yet, each its own slice: Graduation and the Creator Lock (#244), the Distributor (#247), the Creator Ladder's key and the Destination contracts (#248), and the deployment and the gate (#251).
 
 ## Run it
 
@@ -246,6 +277,12 @@ Every test proves behaviour from outside: what a wallet receives, what an event 
 | `test/fork/ForkBurn.t.sol` | #245: the burn share spent in pieces never above the cap until drained, the supply falling by exactly what each bought; a trader's swap through the Universal Router holds one swap, the router's, and the vault's buy is its own swap with the vault as sender. |
 | `test/fork/ForkStoke.t.sol` | #245: a Reward Launch's liquidity share becomes Support Liquidity below its Graduation Target, no coin bought and the price unmoved; a Stoke Launch's whole tax becomes Support Liquidity piece by piece, with no holders' part. |
 | `test/fork/ForkCapture.t.sol` | #245: the spike review's capture test as a regression: after twelve rounds of trading a Stoke Launch at 5%, a wallet crossing the Graduation Target and leaving in one transaction loses every fee and tax it paid (11.6% of its buy), and the waiting tax and the Support Liquidity are as they were but for its own tax. |
+| `test/unit/OpeningFee.t.sol` | #246: every exact-in and exact-out buy at the launch's own second (99% together), at ten seconds (the standing fees and half the rest) and from twenty seconds on (none), in all three kinds of pool, on all three types, with no referrer and one at the cap, against the rule kept as a second copy (`test/utils/OpeningFeeHelpers.sol`), and every second of the window; no Credit grows by it; the First Buy pays the standing fees alone; sells, exact in and exact out, pay none; a fuzz over two moments, any buy and any referrer: never rising, never past 99%, zero from twenty seconds; five blocks on one timestamp paying the same; a clock that ran back held to the start; at 99% a buy of 100 wei trades and one of 99 is refused by name, and a fuzz of buys from 100 wei never refused; a buy the standing roundings outweigh paying them alone; an exact-out buy of one coin unit paying 99 times its net; `SwapStoppedEarly` counting it, the same buy with the coin specified paying on what moved; the terms and their event; the fee's event. |
+| `test/unit/OpeningFeeVault.t.sol` | #246: a standard coin's only income waits as Support Liquidity, none for the burn or the holders, and `addSupport` spends it, never past it, inside the window too; on a Reward Launch and a Stoke Launch it is added to the Support Liquidity part alone; one coin's never pays for another; the vault makes no buy at any second of the window, and its first buy at the end pays none. |
+| `test/unit/OpeningFeeHostile.t.sol` | #246: nobody can make the factory swap (its callback, and an unlock of one's own aimed at it); a contract that launches and buys in one transaction pays it on the second buy, the Creator's later buy too; a route through another pool pays the coin's own on what reached it, the sell leg none; the vault's buy is no way in; the factory's settings bounded at their edges; a start figure under the standing fees charges nothing and refuses nothing. |
+| `test/invariant/OpeningFee.invariant.t.sol` | #246: three Launches made in one second (a standard coin and a Reward Launch in the mock Stock Token, a Stoke Launch in the native asset), random buys and sells of all four kinds with and without a limit and a referrer, time in steps of up to three seconds, and Support Liquidity pieces: every buy pays exactly the rule's four fees, no sell and no buy after the window pays an Opening Fee, the fees never pass the start figure, the vault's claims grow by the tax and the Opening Fee alone and are always what waits, and Support Liquidity never spends past its part. |
+| `test/fork/ForkOpeningFee.t.sol` | #246 on the real PoolManager through both Universal Routers, in both orders and in native ETH: a buy at the launch's own second pays the Platform Fee and an Opening Fee taking 99% together, at ten seconds 50%, at twenty the Platform Fee alone; the First Buy inside the launch transaction (a permit in NVDA, value in ETH) pays the Platform Fee alone; a sell inside the window pays none. |
+| `test/fork/ForkOpeningQuote.t.sol` | #246: the V4 Quoter's figure for a buy inside the window, exact in and exact out, on all three types with and without a referrer, is delivered to the wei through both routers and a bound one wei tighter reverts; a buy quoted a second early (among them at 19, landing at 20) pays less than quoted; a standard coin's Opening Fee becomes Support Liquidity in its pool, Quote Asset alone, the price unmoved. |
 | `test/fork/ForkNative.t.sol` | Against native ETH on the real PoolManager: one call with value launches and makes the First Buy with no approval and no permit; through both Universal Routers the four trades deliver the V4 Quoter's figure to the wei, a bound one wei tighter reverts, each credits exactly 1.00% of the native side and pays nobody; the controller's policy leaves a native pool at 0; a route from one coin to another through native ETH books each pool's fee to its own Creator with no ETH reaching anyone; one Payout Call under a Keeper's gas pays an ordinary wallet, a Safe 1.4.1 and the platform while five hostile recipients stay owed; the re-entrants meet the guard and a locked PoolManager. |
 
 ## Chain facts the tests stand on
@@ -267,7 +304,7 @@ Every test proves behaviour from outside: what a wallet receives, what an event 
 | --- | --- |
 | #244, Graduation and the Creator Lock | `StokerHook._afterSwap` (one hold timestamp per pool, `block.timestamp` only), `StokerHook.Terms.graduationSqrtPriceX96` (the Graduation Target, already written at launch as the pool's own sqrt price: above the open price with the coin as currency0, below it with the Quote Asset as currency0, so the comparison flips with `quoteIsCurrency0`), and `StokerFactory._placeSeed` (the Creator Lock is held out of `SUPPLY` before the seed is placed). |
 | #245, the tax and the Tax Vault | Built (above). |
-| #246, the Opening Fee | `_beforeSwap` and `_afterSwap` on buys, from the Launch's start time (`Terms` gains it), with the factory's First Buy exempt by its `sender`; counted with the fee and the tax in `SwapStoppedEarly` and the swallowed-swap checks. It reaches the vault as #245's tax does: minted as claims with a running total of its own per pool, which `TaxVault` adds to the Support Liquidity part (the Opening Fee is Support Liquidity alone, ADR 0026), so the per-pool books stay exact. |
+| #246, the Opening Fee | Built (above). A slice that changes `TaxVault`'s Support Liquidity (#271) keeps `_supportPart`, the Opening Fee's intake, as the amount it places; a slice that adds a buy of the vault's keeps `_checkOpeningOver` in front of it. |
 | #247, the Distributor | `StokerKeys`: the round key is `holderOf(Role.RoundKey)` and the Guard is the Admin (`admin()`), each read at the moment of the call, so a replacement takes effect at once. `src/interfaces/IHoldersPart.sol`, exactly `deposit(address coin, Currency asset, uint256 amount) external payable`: the vault calls it with the PoolManager locked; the native asset arrives as value, an ERC-20 (the Quote Asset, or the coin a Payout Asset of the coin bought) is approved for exactly `amount` and must be pulled with `transferFrom` inside the call, or the vault reverts (`DepositShort`); the Distributor's address is fixed at the vault's deployment (`test/utils/HoldersPartStandIn.sol` is the stand-in the tests use). A round in the native asset pays holders as `StokerHook._payoutNative` pays Credits: never a call to a holder with the PoolManager unlocked, a gas-capped call that copies no return data, a refusal kept owed, and a guard on re-entry. |
 | #248, the Creator Ladder's key and the Destinations | `StokerKeys.holderOf(Role.LadderKey)`, read at the moment of the call. `Terms.creatorShareBps` (the three tiers' shares written at launch, the ladder key raising only), and `LaunchParams.creatorDestination`, which already takes any address: the Destination contracts are addresses to the launch core. The factory should refuse the hook, itself and the PoolManager as a Destination: none of them accepts the native asset, so a native Credit to one is refused for good, and an ERC-20 paid to one is stranded. A Destination contract that receives the native asset must not act on `creditOf` from inside its payment, where the Credits of the same Payout Call's unpaid owners read zero. |
 | #254, the Keeper's Payout Calls | `payout(currency, owners)` and the events `CreditPaid` and `CreditRefused`. In the native asset a refusing owner costs the batch up to `NATIVE_PAYOUT_GAS` and its call's overhead every time it is named, so the Keeper backs off an owner that refused (the event says who) and does not name them in every run. It sets a batch's gas from the owners' count (the cap and the overhead each, plus the two unlocks) and not from a simulation alone, since a recipient may accept in the simulation and burn its allowance in the block; a batch given too little reverts whole (`PayoutGasTooLow`) and loses nothing. |
@@ -275,27 +312,28 @@ Every test proves behaviour from outside: what a wallet receives, what an event 
 
 ## The safety checklist
 
-Scored against the v4 hooks knowledge base's `research/notes/05-safety-checklist.md`, for the hook as each slice builds it, rounding up where unsure as it asks; last on 2026-11-24 for #243.
+Scored against the v4 hooks knowledge base's `research/notes/05-safety-checklist.md`, for the hook as each slice builds it, rounding up where unsure as it asks; last on 2026-11-24 for #246.
 
 ### The score
 
-| Dimension | Range | #243 | #242 | #241 | Spike | Grilling's aim | Why |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Complexity | 0-5 | 3 | 3 | 2 | 4 | 3 | Six callbacks and both returns-delta flags, four fee branches; #242 adds a second payout mode, two unlocks around a gas-capped call with a transient guard, so it rounds up to 3. #243 reads a referrer from `hookData` and takes a second fee in the same four branches, by the same rule; still no Graduation, tax or nested work, so it stays 3. |
-| Custom math | 0-5 | 1 | 1 | 1 | 1 | 1 | Basis-point fees rounded up, a net amount's fee over the combined rate, and v4's own `LiquidityAmounts` for the seed; no curve. |
-| External dependencies | 0-3 | 1 | 1 | 1 | 1 | 1 | No oracle; an ERC-20 Quote Asset's issuer can block, pause, burn from the PoolManager and upgrade; the native asset has no issuer. The keys it reads the Admin from are ours. |
-| External liquidity exposure | 0-3 | 2 | 2 | 2 | 3 | 1 | The hook holds every unpaid Credit as ERC-6909 claims, so it holds funds owed to others, referrers' among them; it holds no ERC-20 and no liquidity position, forwards nothing to another protocol, and holds native ETH only inside a Payout Call, on its way to its owners. |
-| TVL potential | 0-5 | 2 | 2 | 2 | 2 | 2 | Assumed $1M to $5M across all pools; re-scored at $1M. |
-| Team maturity | 0-3 | 3 | 3 | 3 | 3 | 3 | No prior audited production deployment. |
-| Upgradeability | 0-3 | 0 | 0 | 0 | 0 | 0 | No proxy, no owner, no setter; terms fixed at launch. |
-| Autonomous parameter updates | 0-3 | 1 | 0 | 0 | 0 | 0 | #243: where the platform's share of later fees is booked follows the Admin's two-step handover, the one live input to the hook a key can change; a launched coin's terms stay fixed. Rounded up to 1; #248's raise-only ladder key keeps it at 1. |
-| Price impacting behaviour | 0-3 | 2 | 2 | 2 | 3 | 2 | A hook fee on every swap, and a Referrer Fee on top when a trade names one; no buys or liquidity added inside a swap. |
-| **Total** | 0-33 | **15** | **14** | **13** | **17** | **13** | **Medium (7 to 17).** |
+| Dimension | Range | #246 | #243 | #242 | #241 | Spike | Grilling's aim | Why |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Complexity | 0-5 | 3 | 3 | 3 | 2 | 4 | 3 | Six callbacks and both returns-delta flags, four fee branches; #242 adds a second payout mode, two unlocks around a gas-capped call with a transient guard, so it rounds up to 3. #243 reads a referrer from `hookData` and takes a second fee in the same four branches, by the same rule; still no Graduation, tax or nested work, so it stays 3. |
+| Custom math | 0-5 | 2 | 1 | 1 | 1 | 1 | 1 | Basis-point fees rounded up, a net amount's fee over the combined rate, and v4's own `LiquidityAmounts` for the seed; no curve. #246 adds a time schedule, a straight line rounded up to the basis point, and the Opening Fee as the combined rate rounded once less the standing fees, so it rounds up to 2. |
+| External dependencies | 0-3 | 1 | 1 | 1 | 1 | 1 | 1 | No oracle; an ERC-20 Quote Asset's issuer can block, pause, burn from the PoolManager and upgrade; the native asset has no issuer. The keys it reads the Admin from are ours. |
+| External liquidity exposure | 0-3 | 2 | 2 | 2 | 2 | 3 | 1 | The hook holds every unpaid Credit as ERC-6909 claims, so it holds funds owed to others, referrers' among them; it holds no ERC-20 and no liquidity position, forwards nothing to another protocol, and holds native ETH only inside a Payout Call, on its way to its owners. |
+| TVL potential | 0-5 | 2 | 2 | 2 | 2 | 2 | 2 | Assumed $1M to $5M across all pools; re-scored at $1M. |
+| Team maturity | 0-3 | 3 | 3 | 3 | 3 | 3 | 3 | No prior audited production deployment. |
+| Upgradeability | 0-3 | 0 | 0 | 0 | 0 | 0 | 0 | No proxy, no owner, no setter; terms fixed at launch. |
+| Autonomous parameter updates | 0-3 | 1 | 1 | 0 | 0 | 0 | 0 | #243: where the platform's share of later fees is booked follows the Admin's two-step handover, the one live input to the hook a key can change; a launched coin's terms stay fixed. Rounded up to 1; #248's raise-only ladder key keeps it at 1. |
+| Price impacting behaviour | 0-3 | 3 | 2 | 2 | 2 | 3 | 2 | A hook fee on every swap, and a Referrer Fee on top when a trade names one; no buys or liquidity added inside a swap. #246: in a Launch's first 20 seconds a buy's fees reach 99%, so it rounds up to 3. |
+| **Total** | 0-33 | **17** | **15** | **14** | **13** | **17** | **13** | **Medium (7 to 17).** |
 
+Scored again for #246 on 2026-11-24: 17, two above #243's 15 and the top of Medium: custom math 2 for the schedule and its rounding, and price impacting behaviour 3 for fees that reach 99% of a buy in a Launch's first seconds; complexity stays 3 (the fourth fee rides the four branches that take the other three, with one time read and one exemption by `sender`), and the hook still holds no liquidity and buys nothing.
 Scored again for #243 on 2026-11-24: 15, one above #242's 14, for the Admin-driven recipient of the platform's share (autonomous parameter updates 1, rounded up).
 The Referrer Fee itself adds no dimension: it is a second rate on the branches that already took one, read from data every swap already carried.
 Scored again for #242 on 2026-11-23: 14, one above #241's 13, for the native Payout Call's added mode (complexity 3, rounded up as the checklist asks).
-Scored again for #245 on 2026-11-24: the hook stays at 14; the tax is a second rate beside the fee in the same four branches, minted to the Tax Vault, and adds no new mode, buy or liquidity inside a swap.
+Scored again for #245 on 2026-11-24: the hook stays at #243's 15; the tax is a second rate beside the fee in the same four branches, minted to the Tax Vault, and adds no new mode, buy or liquidity inside a swap.
 #241's total met the grilling's 13 by a different route: exposure 2, not 1, because the Credits are held as the hook's claims, and complexity 2, not 3, before this slice.
 Expect the finished hook to score 15 or more (#251 scores it again): Graduation, the tax and the Opening Fee keep complexity at 3 or raise it; the ladder key now adds nothing beyond #243's 1.
 
@@ -305,7 +343,7 @@ What they guard is the start price of every future Launch: a stolen Admin key ca
 Hard stops, by the checklist's own wording:
 
 - Custom curve or price-affecting math: no.
-- NoOp swaps: no. The fee is at most 10% of the specified amount by the factory's bound (1.00% as set), and a swap whose fee would equal its whole specified amount reverts (`SwapTooSmall`, `test_fee_tinySwapCannotBeSwallowed`).
+- NoOp swaps: no. Outside a Launch's opening seconds the Platform Fee is at most 10% of the specified amount by the factory's bound (1.00% as set); inside them a buy's fees take up to the start figure, at most 99.00% by the factory's bound, so a buy always keeps at least 1% of itself, and a swap whose fees would equal its whole specified amount reverts (`SwapTooSmall`, `test_fee_tinySwapCannotBeSwallowed`, `test_opening_at99PercentABuyStillTradesAndASwallowedOneIsRefused`).
 - Holds or rehypothecates user liquidity: not liquidity, but the hook holds every unpaid Credit (fees owed to Creators and the platform) as claims in the PoolManager; it rehypothecates nothing. Said plainly so nobody reads "no" as "holds nothing".
 - Reads an oracle or an external price: no.
 - Upgradeable: no.
@@ -331,7 +369,7 @@ Access control:
 
 - [x] Every callback is `onlyPoolManager` (the library's non-virtual entry points), and so is `unlockCallback` (`test_unlockCallback_onlyThePoolManager`).
 - [x] No external function takes a caller-supplied `PoolKey` but `registerLaunch`, which only the factory may call; `beforeInitialize` admits only pools the factory opens with registered terms (`test_lock_nobodyElseInitializesAPoolOnTheHook`).
-- [x] `sender` is never taken for the end user: it is compared only with the factory's address and, since #245, the Tax Vault's (its liquidity admitted, its own buys untaxed).
+- [x] `sender` is never taken for the end user: it is compared only with the factory's address (its liquidity admitted and, since #246, its First Buy exempt from the Opening Fee) and, since #245, the Tax Vault's (its liquidity admitted, its own buys untaxed).
 - [x] `hookData` is read defensively (#243): empty names nobody; otherwise exactly two words, a clean address and a fee up to the Launch's cap, or the swap reverts by name before the pool runs; our own three contracts are refused as referrers; a malformed `hookData` never credits anyone (`test_referrer_malformedHookData_revertsByName`).
 - [x] Every privileged call is the Admin's (`QuoteRegistry`, `StokerKeys`), and none reaches a pool, a Seed Position, a Credit or a launched coin's terms (`invariant_noPrivilegedCallTouchesAPoolASeedOrACredit`, under every Admin and server-key call in both campaigns).
 - [x] No callback rule is relied on for an operation the hook starts: the hook starts no swap, liquidity change or donation; its PoolManager calls are `mint`, `take`, `burn` and `unlock`.
@@ -343,6 +381,7 @@ Fees:
 - [x] A fee taken before the pool runs is never kept for an amount the pool did not trade: a swap with the Quote Asset specified that stops early reverts (`test_fee_quoteSpecifiedSwapStoppedByItsLimit_reverts`), counting the Referrer Fee beside the Platform Fee in both directions for an ERC-20 and the native asset (`test_referrer_quoteSpecifiedSwapStoppedByItsLimit_reverts`), which #246's Opening Fee, taken the same way, relies on.
 - [x] A Referrer Fee is on top and capped per Launch: the Platform Fee and its split are unchanged by it, and a swap naming no referrer costs exactly what it did before #243, to the wei, locally and through both Universal Routers (`NoReferrer.t.sol`, `ForkNoReferrer.t.sol`); the V4 Quoter, given the same `hookData`, includes it to the wei (`ForkReferrer.t.sol`).
 - [x] The tax (#245) is taken with the fee on the same side and counted with it in `SwapStoppedEarly` and both swallowed-swap checks (`test_tax_quoteSpecifiedStoppedEarly_comparesFeeAndTaxTogether`, `test_tax_buyTheFeeAndTaxWouldSwallow_reverts`, `test_tax_sellTheFeeAndTaxWouldOutweigh_reverts`).
+- [x] The Opening Fee (#246) is taken on buys alone, in the same callback as the other three, counted with them in `SwapStoppedEarly` and the exact-in swallow check (`test_opening_aBuyStoppedEarlyIsRefusedAndExactOutPaysOnWhatMoved`, `test_opening_at99PercentABuyStillTradesAndASwallowedOneIsRefused`); it falls with time to exactly zero and never passes the start figure (`testFuzz_opening_neverRisesNeverAboveTheStartZeroAtTheEnd`, the invariant campaign), and no Credit grows by it.
 
 Token review: the Listing is the allowlist (ADR 0028), and an issuer's powers are Quote Risk Labels, never a bar, by the owner's decision.
 
@@ -397,7 +436,7 @@ The pre-deployment checklist for the vault, item by item:
 - [x] Hostile callers: one buy and one addition per pool per interval, a capped piece, sandwiches shown to lose (above); what remains is a lift held for several intervals, written above.
 - [x] Static analysis: `forge lint src` reports nothing for it, each finding fixed or annotated (below).
 - [x] Invariants: `test/invariant/Tax.invariant.t.sol`.
-- [x] No block number: `test/unit/Clock.t.sol` scans its runtime.
+- [x] No block number: `test/unit/Clock.t.sol` scans its runtime, and finds the timestamp there (the interval, and since #246 the Opening Fee's end before a buy).
 
 ### Static analysis triage
 
@@ -445,3 +484,5 @@ Running Slither and the security standards' gate in CI is #251's.
 14. `vm.expectEmit` matches the next event emitted, and a launch with an ERC-20 First Buy emits the Creator's `Approval` first; the terms' event is read back from `vm.recordLogs` instead.
 15. Removing a guard to show its test fails can leave a parameter or a local unused, and with `deny = "warnings"` the build fails, which proves nothing; write the removal so it still compiles (`sender == taxVault ? t.taxBps : t.taxBps`, `taxTaken * 0`), as #245's guard-removal run did.
 16. A pool id hashes every field of its key, its hook included, so a key on another hook can never read registered terms: the Tax Vault's separate comparison of `key.hooks` with our hook caught nothing when removed, and was dropped as redundant.
+17. Every Launch opens with a 99% Opening Fee (#246), so a test that launches and trades in the same second pays it: the fixture's launch helpers (`_launch`, `_launchNative`, `_launchWith`) move the clock to the window's end after launching, and a test of the window sets `_tradeInOpening` first (`OpeningFeeHelpers._launchOpen` does).
+    A test that calls `factory.launch` itself and then trades must warp past `OPENING_FEE_DURATION` the same way.

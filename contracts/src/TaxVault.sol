@@ -46,6 +46,12 @@ interface IStokerLaunches {
 ///         part is never touched by the burn or the liquidity. Liquidity and buys are settled by burning
 ///         claims, the native asset included; only the holders' part leaves the PoolManager, and only to the
 ///         Distributor.
+///
+///         Every Launch's Opening Fee (#246, ADR 0026) reaches this vault the same way, as claims with a running
+///         total of its own per pool (`openingFeeBooked`), and all of it is added to that coin's Support
+///         Liquidity part, whatever the Launch's type: a standard coin's only income is its Opening Fee, which
+///         `addSupport` places as it places a Stoke Launch's tax. While a Launch's Opening Fee runs, this vault
+///         makes no buy in its pool, so neither the burn's nor the holders' part pays it.
 /// @dev No owner, no setter, no proxy, no pause; the settings are fixed at deployment. It holds every
 ///      Support Liquidity position and has no code that removes liquidity; the hook refuses every removal in
 ///      any case. It reads time only, never `block.number`.
@@ -96,6 +102,7 @@ contract TaxVault is IUnlockCallback {
         Currency quote;
         Currency coin;
         uint256 booked;
+        uint256 openingBooked;
     }
 
     enum Action {
@@ -170,9 +177,7 @@ contract TaxVault is IUnlockCallback {
         Pool memory p = _load(key);
         Books storage b = _books[p.id];
         _checkInterval(b.lastSupportAt);
-        uint256 amount = _min(
-            _part(p.booked, p.terms.liquidityShareBps) - b.supportSpent, _pieceCap(p.id, p.terms.quoteIsCurrency0)
-        );
+        uint256 amount = _min(_supportPart(p) - b.supportSpent, _pieceCap(p.id, p.terms.quoteIsCurrency0));
         if (amount == 0) revert NothingToSpend();
 
         (int24 lower, int24 upper) = _supportRange(key, p.id, p.terms.quoteIsCurrency0);
@@ -348,6 +353,22 @@ contract TaxVault is IUnlockCallback {
         if (!p.terms.registered) revert NotAStokerPool();
         (p.quote, p.coin) = p.terms.quoteIsCurrency0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
         p.booked = h.taxBooked(p.id);
+        p.openingBooked = h.openingFeeBooked(p.id);
+    }
+
+    /// @dev The coin's Support Liquidity part so far: its share of the tax, rounded down, and every Opening Fee
+    ///      its buys paid (#246), which is Support Liquidity alone. It only ever grows.
+    function _supportPart(Pool memory p) internal pure returns (uint256) {
+        return _part(p.booked, p.terms.liquidityShareBps) + p.openingBooked;
+    }
+
+    /// @dev No buy of this vault's runs while the Launch's Opening Fee does: it would pay up to the start figure,
+    ///      moving the burn's or the holders' Quote Asset into Support Liquidity, mixing parts the Launch fixed,
+    ///      and no buy but the Creator's First Buy is exempt from it (ADR 0026). The first may come at the end.
+    function _checkOpeningOver(StokerHook.Terms memory t) internal view {
+        uint256 openAt = uint256(t.launchedAt) + t.openingFeeDuration;
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp < openAt) revert TooSoon(openAt);
     }
 
     /// @dev A part of a coin's tax so far, rounded down: each part only ever grows as the tax does, and the
@@ -363,6 +384,7 @@ contract TaxVault is IUnlockCallback {
     }
 
     function _buy(PoolKey calldata key, Pool memory p, uint256 amount) internal returns (uint256 coins) {
+        _checkOpeningOver(p.terms);
         // The PoolManager calls back only this vault, and runs only our hook inside; the guard holds.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         bytes memory result =
@@ -463,8 +485,8 @@ contract TaxVault is IUnlockCallback {
         return _pieceCap(p.id, p.terms.quoteIsCurrency0);
     }
 
-    /// @notice What waits for each path of one coin's tax: the Reward Burn's, the Support Liquidity's and the
-    ///         holders' Quote Asset, and the coins bought for the holders.
+    /// @notice What waits for each path of one coin's tax: the Reward Burn's, the Support Liquidity's (every
+    ///         Opening Fee among it, #246) and the holders' Quote Asset, and the coins bought for the holders.
     function waiting(PoolKey calldata key)
         external
         view
@@ -473,7 +495,7 @@ contract TaxVault is IUnlockCallback {
         Pool memory p = _load(key);
         Books storage b = _books[p.id];
         burnPart = _part(p.booked, p.terms.burnShareBps) - b.burnSpent;
-        supportPart = _part(p.booked, p.terms.liquidityShareBps) - b.supportSpent;
+        supportPart = _supportPart(p) - b.supportSpent;
         holdersPart = _part(p.booked, _holdersShare(p.terms)) - b.holdersSpent;
         holdersCoins = b.holdersCoins;
     }
