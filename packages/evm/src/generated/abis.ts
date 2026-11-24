@@ -33,6 +33,16 @@ export const stokerFactoryAbi = [
         "name": "taxVault_",
         "type": "address",
         "internalType": "contract TaxVault"
+      },
+      {
+        "name": "openingFeeStartBps_",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "openingFeeDuration_",
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ],
     "stateMutability": "nonpayable"
@@ -59,6 +69,32 @@ export const stokerFactoryAbi = [
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_OPENING_FEE_DURATION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_OPENING_FEE_START_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
       }
     ],
     "stateMutability": "view"
@@ -385,6 +421,32 @@ export const stokerFactoryAbi = [
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "openingFeeDuration",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "openingFeeStartBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1809,6 +1871,25 @@ export const stokerHookAbi = [
   },
   {
     "type": "function",
+    "name": "openingFeeBooked",
+    "inputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "payout",
     "inputs": [
       {
@@ -1980,6 +2061,26 @@ export const stokerHookAbi = [
             "name": "payoutAsset",
             "type": "uint8",
             "internalType": "enum StokerHook.PayoutAsset"
+          },
+          {
+            "name": "launchedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "openingFeeStartBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "openingFeeDuration",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "openingFeeTaken",
+            "type": "bool",
+            "internalType": "bool"
           }
         ]
       }
@@ -2104,6 +2205,26 @@ export const stokerHookAbi = [
             "name": "payoutAsset",
             "type": "uint8",
             "internalType": "enum StokerHook.PayoutAsset"
+          },
+          {
+            "name": "launchedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "openingFeeStartBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "openingFeeDuration",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "openingFeeTaken",
+            "type": "bool",
+            "internalType": "bool"
           }
         ]
       }
@@ -2361,6 +2482,62 @@ export const stokerHookAbi = [
         "type": "uint160",
         "indexed": false,
         "internalType": "uint160"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "OpeningFeeBooked",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "currency",
+        "type": "address",
+        "indexed": true,
+        "internalType": "Currency"
+      },
+      {
+        "name": "fee",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "OpeningFeeTermsRegistered",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "launchedAt",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      },
+      {
+        "name": "startBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "duration",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
       }
     ],
     "anonymous": false

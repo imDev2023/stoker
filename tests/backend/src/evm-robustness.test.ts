@@ -92,6 +92,9 @@ describe.skipIf(!hasEvm)("EVM chain: the Indexer stays up", () => {
     const trader = await evmWallet();
     const stranger = await evmWallet();
     const l = await launchCoin(await evmWallet(), { reward: { taxBps: 500, burnShareBps: 5000, liquidityShareBps: 0 } });
+    // The vault buys nothing while the Launch's Opening Fee runs (#246): its 20 seconds pass in real time, since moving
+    // the shared fork's clock would date every later coin in the future.
+    await new Promise((r) => setTimeout(r, 21_000));
     await swapExactIn(trader, l, "buy", 5n * 10n ** 16n);
     // A burn waits while the price stands above the Reference Price (#271) by more than the stack's band: the trader sells
     // it all back, which returns the pool to its opening price, where the reference stands. Both trades paid the tax.
@@ -276,7 +279,10 @@ describe.skipIf(!hasEvm || !process.env.ROBINHOOD_RPC_URL)("EVM chain: Graduatio
     await onFork(fork, async () => {
       const trader = await evmWallet(1_000n);
       const l = await launchCoin(await evmWallet());
-      // Well past twenty times the start price: the whole supply opens worth about 1.7 ETH.
+      // Past the Opening Fee's 20 seconds (#246) on this fork's own clock, then well past twenty times the start price:
+      // the whole supply opens worth about 1.7 ETH.
+      await clients().test.increaseTime({ seconds: 21 });
+      await clients().test.mine({ blocks: 1 });
       await swapExactIn(trader, l, "buy", 50n * 10n ** 18n);
       await runIndexer(api3.url);
       expect(LaunchSummary.parse(await api(`/v1/launches/${l.coin}`, api3.url)).graduation).toBeNull();

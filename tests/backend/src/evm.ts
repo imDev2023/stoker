@@ -160,6 +160,9 @@ const quoterAbi = parseAbi([
   "function quoteExactOutputSingle(((address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, bool zeroForOne, uint128 exactAmount, bytes hookData) params) returns (uint256 amountIn, uint256 gasEstimate)",
 ]);
 const SWAP_EXACT_OUT_SINGLE = 0x08;
+/** The Universal Router's SWEEP, and its stand-in for "the caller" as a recipient (Commands.sol, Constants.sol). */
+const SWEEP = 0x04;
+const MSG_SENDER: Address = "0x0000000000000000000000000000000000000001";
 const exactOutSingle = parseAbiParameters(
   "(( address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks ) poolKey, bool zeroForOne, uint128 amountOut, uint128 amountInMaximum, uint256 minHopPriceX36, bytes hookData)",
 );
@@ -167,7 +170,9 @@ const exactOutSingle = parseAbiParameters(
 /**
  * An exact-out swap through the Universal Router: a buy of exactly `exact` coins, or a sell for exactly `exact` of the
  * Quote Asset, optionally naming a referrer and its Referrer Fee in the trade's `hookData` as a front-end does (ADR
- * 0027). The wallet offers what the V4 Quoter says it costs, so it pays exactly that and the router keeps nothing.
+ * 0027). The wallet offers what the V4 Quoter says it costs; a native buy also sweeps back what the swap did not take,
+ * as a front-end must: the Opening Fee (#246) falls every second, so a quote made a second before over-asks, and
+ * without the sweep the rest would stay in the router for anyone to take.
  */
 export async function swapExactOut(
   trader: { key: Hex; address: Address }, l: EvmLaunch, side: "buy" | "sell", exact: bigint, referral?: { referrer: Address; bps: number },
@@ -199,9 +204,11 @@ export async function swapExactOut(
     encodeAbiParameters(parseAbiParameters("address, uint256"), [tokenIn, amountIn]),
     encodeAbiParameters(parseAbiParameters("address, uint256"), [tokenOut, exact]),
   ];
+  const swap = encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [actions, params]);
+  const sweep = tokenIn === NATIVE ? [encodeAbiParameters(parseAbiParameters("address, address, uint256"), [NATIVE, MSG_SENDER, 0n])] : [];
   const hash = await wallet.writeContract({
     address: router, abi: routerAbi, functionName: "execute",
-    args: [encodePacked(["uint8"], [V4_SWAP]), [encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [actions, params])], await deadline()],
+    args: [sweep.length ? encodePacked(["uint8", "uint8"], [V4_SWAP, SWEEP]) : encodePacked(["uint8"], [V4_SWAP]), [swap, ...sweep], await deadline()],
     value: tokenIn === NATIVE ? amountIn : 0n,
     gas: SWAP_GAS,
   });

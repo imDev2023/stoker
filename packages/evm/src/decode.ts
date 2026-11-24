@@ -55,6 +55,8 @@ export type TradeEvent = {
   referrerFee: bigint;
   /** The coin's Reward Tax or Stoke Tax the swap paid, in the Quote Asset, to the Tax Vault (#245). */
   tax: bigint;
+  /** The Opening Fee a buy in a Launch's first seconds paid, in the Quote Asset, to the Tax Vault (#246). */
+  openingFee: bigint;
   /** Uniswap's protocol fee, at the rate the swap reports: in the Quote Asset on a buy, in coins on a sell. */
   protocolFee: bigint;
   sqrtPriceX96: bigint;
@@ -70,6 +72,7 @@ type Decoded =
   | { kind: "fee"; logIndex: number; poolId: Hex; fee: bigint; creatorCredit: bigint }
   | { kind: "referrer"; logIndex: number; poolId: Hex; referrer: Address; fee: bigint }
   | { kind: "tax"; logIndex: number; poolId: Hex; tax: bigint }
+  | { kind: "opening"; logIndex: number; poolId: Hex; fee: bigint }
   | { kind: "taxTerms"; logIndex: number; args: { poolId: Hex; launchType: number; taxBps: number; burnShareBps: number; liquidityShareBps: number; payoutAsset: number } }
   | { kind: "swap"; logIndex: number; poolId: Hex; sender: Address; amount0: bigint; amount1: bigint; sqrtPriceX96: bigint; feePips: number }
   | { kind: "burned"; logIndex: number; poolId: Hex; coinsBurned: bigint }
@@ -97,6 +100,7 @@ function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
         if (e.eventName === "Graduated") out.push({ kind: "graduated", logIndex, poolId: e.args.poolId, graduatedAt: e.args.graduatedAt });
         else if (e.eventName === "LaunchRegistered") out.push({ kind: "registered", logIndex, args: e.args });
         else if (e.eventName === "FeeCredited") out.push({ kind: "fee", logIndex, poolId: e.args.poolId, fee: e.args.fee, creatorCredit: e.args.creatorCredit });
+        else if (e.eventName === "OpeningFeeBooked") out.push({ kind: "opening", logIndex, poolId: e.args.poolId, fee: e.args.fee });
         else if (e.eventName === "TaxBooked") out.push({ kind: "tax", logIndex, poolId: e.args.poolId, tax: e.args.tax });
         else if (e.eventName === "TaxTermsRegistered") out.push({ kind: "taxTerms", logIndex, args: e.args });
         else if (e.eventName === "ReferrerFeeCredited") out.push({ kind: "referrer", logIndex, poolId: e.args.poolId, referrer: checksum(e.args.referrer), fee: e.args.fee });
@@ -147,11 +151,11 @@ export function decodeLaunches(logs: readonly Log[], c: ChainContracts): LaunchE
  * fee and is the only swap with no group.
  */
 export function decodeTrades(logs: readonly Log[], c: ChainContracts, pools: ReadonlyMap<Hex, PoolInfo>): TradeEvent[] {
-  type Ours = Extract<Decoded, { kind: "swap" | "fee" | "referrer" | "tax" }>;
+  type Ours = Extract<Decoded, { kind: "swap" | "fee" | "referrer" | "tax" | "opening" }>;
   const events = decodeLogs(logs, c).filter(
-    (e): e is Ours => (e.kind === "swap" || e.kind === "fee" || e.kind === "referrer" || e.kind === "tax") && pools.has(e.poolId),
+    (e): e is Ours => (e.kind === "swap" || e.kind === "fee" || e.kind === "referrer" || e.kind === "tax" || e.kind === "opening") && pools.has(e.poolId),
   );
-  type Group = { poolId: Hex; fee: bigint; creatorCredit: bigint; referrer: Address | null; referrerFee: bigint; tax: bigint };
+  type Group = { poolId: Hex; fee: bigint; creatorCredit: bigint; referrer: Address | null; referrerFee: bigint; tax: bigint; openingFee: bigint };
   type Swap = { poolId: Hex; sender: Address; logIndex: number; quoteDelta: bigint; coinDelta: bigint; sqrtPriceX96: bigint; feePips: number; group: Group | null };
   const swaps: Swap[] = [];
   let waiting: Group | null = null;
@@ -165,16 +169,17 @@ export function decodeTrades(logs: readonly Log[], c: ChainContracts, pools: Rea
       pendingReferrer = { poolId: e.poolId, referrer: e.referrer, fee: e.fee };
       continue;
     }
-    if (e.kind === "tax") {
-      // `_bookTax` runs right after `_book` in the same callback, so the tax belongs to the group just booked.
-      if (!last || last.poolId !== e.poolId) throw orphan("tax", e.poolId);
-      last.tax += e.tax;
+    if (e.kind === "tax" || e.kind === "opening") {
+      // The tax and the Opening Fee are booked right after `_book` in the same callback: they belong to the group just booked.
+      if (!last || last.poolId !== e.poolId) throw orphan(e.kind === "tax" ? "tax" : "Opening Fee", e.poolId);
+      if (e.kind === "tax") last.tax += e.tax;
+      else last.openingFee += e.fee;
       continue;
     }
     if (e.kind === "fee") {
       const referrer = pendingReferrer?.poolId === e.poolId ? pendingReferrer : null;
       pendingReferrer = null;
-      const group: Group = { poolId: e.poolId, fee: e.fee, creatorCredit: e.creatorCredit, referrer: referrer?.referrer ?? null, referrerFee: referrer?.fee ?? 0n, tax: 0n };
+      const group: Group = { poolId: e.poolId, fee: e.fee, creatorCredit: e.creatorCredit, referrer: referrer?.referrer ?? null, referrerFee: referrer?.fee ?? 0n, tax: 0n, openingFee: 0n };
       last = group;
       if (open && open.poolId === e.poolId) {
         open.group = group;
@@ -208,11 +213,11 @@ export function decodeTrades(logs: readonly Log[], c: ChainContracts, pools: Rea
     const buy = s.coinDelta > 0n;
     const poolQuote = buy ? -s.quoteDelta : s.quoteDelta;
     const g = s.group;
-    const taken = (g?.fee ?? 0n) + (g?.referrerFee ?? 0n) + (g?.tax ?? 0n);
+    const taken = (g?.fee ?? 0n) + (g?.referrerFee ?? 0n) + (g?.tax ?? 0n) + (g?.openingFee ?? 0n);
     const coinAmount = buy ? s.coinDelta : -s.coinDelta;
     return {
       poolId: s.poolId, side: buy ? "buy" : "sell", coinAmount, quoteAmount: buy ? poolQuote + taken : poolQuote - taken,
-      platformFee: g?.fee ?? 0n, creatorCredit: g?.creatorCredit ?? 0n, referrer: g?.referrer ?? null, referrerFee: g?.referrerFee ?? 0n, tax: g?.tax ?? 0n,
+      platformFee: g?.fee ?? 0n, creatorCredit: g?.creatorCredit ?? 0n, referrer: g?.referrer ?? null, referrerFee: g?.referrerFee ?? 0n, tax: g?.tax ?? 0n, openingFee: g?.openingFee ?? 0n,
       protocolFee: protocolFeeOn(buy ? poolQuote : coinAmount, s.feePips), sqrtPriceX96: s.sqrtPriceX96, sender: s.sender, logIndex: s.logIndex,
     };
   });

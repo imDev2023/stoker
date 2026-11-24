@@ -196,21 +196,41 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork", () => 
     const trader = await evmWallet();
     const referrer = await evmWallet(0n);
     const l = await launchCoin(await evmWallet());
+    // After the Opening Fee's 20 seconds (#246), inside which a Referrer Fee takes only the room under the start figure.
+    await new Promise((r) => setTimeout(r, 21_000));
     const coins = 10n ** 27n;
     const before = await balanceOf(NATIVE, trader.address);
     const { amountIn, gas } = await swapExactOut(trader, l, "buy", coins, { referrer: referrer.address, bps: 50 });
-    expect(before - (await balanceOf(NATIVE, trader.address)) - gas).toBe(amountIn);
+    // What left the wallet: no more than the quote offered, the rest swept back (inside the Opening Fee's window it falls).
+    const paid = before - (await balanceOf(NATIVE, trader.address)) - gas;
+    expect(paid).toBeLessThanOrEqual(amountIn);
     expect(await balanceOf(l.coin, trader.address)).toBe(coins);
 
     await runIndexer();
     const { trades } = TradeList.parse(await api(`/v1/launches/${l.coin}/trades`));
-    expect(trades[0]).toMatchObject({ side: "buy", trader: trader.address, baseAmount: coins.toString(), quoteAmount: amountIn.toString() });
+    expect(trades[0]).toMatchObject({ side: "buy", trader: trader.address, baseAmount: coins.toString(), quoteAmount: paid.toString() });
     expect(trades[0]!.referral?.referrer).toBe(referrer.address);
     // The two fees on top of what the pool took: 1.00% and 0.50% of the whole the trader paid, each rounded up.
     const fee = BigInt(trades[0]!.fees.platform);
     const referrerFee = BigInt(trades[0]!.referral!.fee);
-    expect(Number(fee) / Number(amountIn)).toBeCloseTo(0.01, 6);
-    expect(Number(referrerFee) / Number(amountIn)).toBeCloseTo(0.005, 6);
+    expect(Number(fee) / Number(paid)).toBeCloseTo(0.01, 6);
+    expect(Number(referrerFee) / Number(paid)).toBeCloseTo(0.005, 6);
+  });
+
+  test("an exact-out buy inside a Launch's first seconds pays the Opening Fee, and the trade is what left the wallet", async () => {
+    const trader = await evmWallet();
+    const l = await launchCoin(await evmWallet());
+    const coins = 10n ** 27n;
+    const before = await balanceOf(NATIVE, trader.address);
+    const { amountIn, gas } = await swapExactOut(trader, l, "buy", coins);
+    const paid = before - (await balanceOf(NATIVE, trader.address)) - gas;
+    await runIndexer();
+    const { trades } = TradeList.parse(await api(`/v1/launches/${l.coin}/trades`));
+    // The trade is what left the wallet, the Opening Fee in it: a decoder that missed `OpeningFeeBooked` reads less.
+    expect(trades[0]).toMatchObject({ side: "buy", baseAmount: coins.toString(), quoteAmount: paid.toString() });
+    expect(paid).toBeLessThanOrEqual(amountIn);
+    // Every fee is a share of the whole the buy paid, the Opening Fee's too, so the Platform Fee stays 1.00% of it.
+    expect(Number(BigInt(trades[0]!.fees.platform)) / Number(paid)).toBeCloseTo(0.01, 4);
   });
 
   test("a Creator Lock is on the coin as the factory held it out of the Seed Position", async () => {
@@ -228,7 +248,8 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork", () => 
     await swapExactIn(trader, l, "buy", 2n * 10n ** 16n);
     const coinsBefore = await balanceOf(l.coin, trader.address);
     const ethBefore = await balanceOf(NATIVE, trader.address);
-    const wanted = 5n * 10n ** 15n;
+    // Little: inside the Opening Fee's window (#246) most of that buy went to Support Liquidity, not into the pool's price range.
+    const wanted = 10n ** 13n;
     const { amountIn, gas } = await swapExactOut(trader, l, "sell", wanted);
     expect((await balanceOf(NATIVE, trader.address)) - ethBefore + gas).toBe(wanted);
     expect(coinsBefore - (await balanceOf(l.coin, trader.address))).toBe(amountIn);
