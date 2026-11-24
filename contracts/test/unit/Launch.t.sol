@@ -174,13 +174,15 @@ contract LaunchTest is LocalBase {
 
     function test_factory_refusesUnboundedSettings() public {
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, listings, platform, 0, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0));
+        new StokerFactory(pm, listings, platform, 0, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0), taxVault);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, listings, platform, 1_001, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0));
+        new StokerFactory(pm, listings, platform, 1_001, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0), taxVault);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, listings, platform, PLATFORM_FEE_BPS, 10_001, TICK_SPACING, bytes32(0));
+        new StokerFactory(pm, listings, platform, PLATFORM_FEE_BPS, 10_001, TICK_SPACING, bytes32(0), taxVault);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, listings, address(0), PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0));
+        new StokerFactory(
+            pm, listings, address(0), PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0), taxVault
+        );
     }
 
     function _tick(PoolKey memory key) internal view returns (int24 tick) {

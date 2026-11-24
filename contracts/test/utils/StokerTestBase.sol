@@ -21,6 +21,8 @@ import {StokerFactory} from "../../src/StokerFactory.sol";
 import {StokerHook} from "../../src/StokerHook.sol";
 import {StokerCoin} from "../../src/StokerCoin.sol";
 import {ListingStandIn} from "../../src/ListingStandIn.sol";
+import {TaxVault} from "../../src/TaxVault.sol";
+import {HoldersPartStandIn} from "./HoldersPartStandIn.sol";
 
 /// @notice What the local tests and the fork tests share: deploying our contracts against a PoolManager,
 ///         launching, swapping, and reading the books from outside.
@@ -34,6 +36,12 @@ abstract contract StokerTestBase is Test {
     uint16 internal constant PLATFORM_FEE_BPS = 100; // 1.00% (ADR 0027)
     uint16 internal constant CREATOR_SHARE_BPS = 5_000; // the Creator Ladder's first tier (ADR 0020, ADR 0027)
     uint256 internal constant SUPPLY = 1e12 * 1e18;
+    /// The Tax Vault's settings (#245): a piece is at most 0.5% of the pool's Quote Asset depth (ADR 0025),
+    /// a pool takes one buy and one Support Liquidity piece a minute, and Support Liquidity reaches ten tick
+    /// spacings below the price.
+    uint16 internal constant PIECE_BPS = 50;
+    uint32 internal constant PIECE_INTERVAL = 60;
+    int24 internal constant SUPPORT_WIDTH_SPACINGS = 10;
 
     uint160 internal constant HOOK_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
         | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_DONATE_FLAG
@@ -45,6 +53,9 @@ abstract contract StokerTestBase is Test {
     StokerHook internal hook;
     ListingStandIn internal listings;
     PoolSwapTest internal swapRouter;
+    TaxVault internal taxVault;
+    /// Stands in for the Distributor (#247) behind `IHoldersPart`.
+    HoldersPartStandIn internal holdersPart;
 
     address internal platform = makeAddr("platform");
     address internal listingWriter = makeAddr("listingWriter");
@@ -58,11 +69,16 @@ abstract contract StokerTestBase is Test {
     function _deployStoker() internal {
         (creator, creatorKey) = makeAddrAndKey("creator");
         listings = new ListingStandIn(listingWriter);
+        holdersPart = new HoldersPartStandIn();
+
+        // The Tax Vault first, made for the factory's future address (the next deployment after it).
+        address factoryAddr = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        taxVault = new TaxVault(pm, factoryAddr, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS);
 
         // Mine the hook's salt for the factory's future address with plain arithmetic: HookMiner also
         // reads each candidate's code, which on a fork is one RPC call per salt.
-        address factoryAddr = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
-        bytes32 initHash = keccak256(abi.encodePacked(type(StokerHook).creationCode, abi.encode(pm, platform)));
+        bytes32 initHash =
+            keccak256(abi.encodePacked(type(StokerHook).creationCode, abi.encode(pm, platform, address(taxVault))));
         bytes32 salt;
         for (uint256 i;; i++) {
             address a = vm.computeCreate2Address(bytes32(i), initHash, factoryAddr);
@@ -71,7 +87,9 @@ abstract contract StokerTestBase is Test {
                 break;
             }
         }
-        factory = new StokerFactory(pm, listings, platform, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, TICK_SPACING, salt);
+        factory = new StokerFactory(
+            pm, listings, platform, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, TICK_SPACING, salt, taxVault
+        );
         assertEq(address(factory), factoryAddr, "factory address");
         hook = factory.hook();
         assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS, "hook permission bits");

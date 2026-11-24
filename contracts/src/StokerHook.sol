@@ -29,8 +29,12 @@ import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/Pool
 ///         for one; the hook never holds an ERC-20. A Payout Call, which anyone can make, pays Credits to
 ///         their owners, and a Credit owed to an address the Quote Asset refuses stays owed to it.
 ///
-///         The hook also guards the pool: only the factory opens a pool on it and adds liquidity to it,
-///         no liquidity is ever removed, and donations are refused.
+///         A Reward Launch's Reward Tax and a Stoke Launch's Stoke Tax (#245) are taken beside the Platform
+///         Fee, on the same side, and minted as ERC-6909 claims to the Tax Vault, with a running total per
+///         pool (`taxBooked`); the hook does nothing else with them inside a swap.
+///
+///         The hook also guards the pool: only the factory opens a pool on it, only the factory and the Tax
+///         Vault add liquidity to it, no liquidity is ever removed, and donations are refused.
 /// @dev Reads no clock in this slice; Graduation (#244) will read `block.timestamp` only, never
 ///      `block.number`, which is an estimate of the L1 block on Robinhood Chain and Arbitrum.
 contract StokerHook is BaseHook, IUnlockCallback {
@@ -66,17 +70,47 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         its two-step replacement is #243's).
     address public immutable platform;
 
+    /// @notice The Tax Vault: it receives every Reward Tax and Stoke Tax as claims, and is the only address
+    ///         beside the factory that may add liquidity to a pool on this hook (Support Liquidity, #245).
+    address public immutable taxVault;
+
+    /// @notice The three Launch types (#231 story 8). `Liquidity` is the Stoke Launch.
+    enum LaunchType {
+        Standard,
+        Reward,
+        Liquidity
+    }
+
+    /// @notice What a Reward Launch's holders are paid in (ADR 0029): the Quote Asset as it was collected,
+    ///         or the coin, bought with the holders' part by the Tax Vault's capped buy.
+    enum PayoutAsset {
+        QuoteAsset,
+        Coin
+    }
+
     /// @notice A Launch's terms, written once by the factory before its pool opens and never changed.
     /// @param creatorDestination The Creator Earnings Destination credited with the Creator's share.
     /// @param platformFeeBps The Platform Fee, of the Quote Asset's side of every swap.
     /// @param creatorShareBps The Creator's share of the Platform Fee (the Creator Ladder's tier, ADR 0027).
     /// @param quoteIsCurrency0 Which side of the pool the Quote Asset is.
+    /// @param launchType Standard, Reward or Liquidity (the Stoke Launch).
+    /// @param taxBps The Reward Tax or the Stoke Tax, of the Quote Asset's side of every swap; 0 on a
+    ///        standard Launch.
+    /// @param burnShareBps The Reward Burn's share of the tax.
+    /// @param liquidityShareBps The share of the tax that becomes Support Liquidity: the Reward Liquidity's
+    ///        on a Reward Launch, all of it on a Stoke Launch. The rest is the holders' part.
+    /// @param payoutAsset A Reward Launch's Payout Asset.
     struct Terms {
         address creatorDestination;
         uint16 platformFeeBps;
         uint16 creatorShareBps;
         bool quoteIsCurrency0;
         bool registered;
+        LaunchType launchType;
+        uint16 taxBps;
+        uint16 burnShareBps;
+        uint16 liquidityShareBps;
+        PayoutAsset payoutAsset;
     }
 
     mapping(PoolId => Terms) internal _terms;
@@ -86,6 +120,11 @@ contract StokerHook is BaseHook, IUnlockCallback {
 
     /// @notice The sum of every Credit owed in a currency, equal to this hook's claims on it.
     mapping(Currency currency => uint256) public totalCredits;
+
+    /// @notice Every Reward Tax or Stoke Tax a pool's swaps have paid, in its Quote Asset, since launch. Each
+    ///         one was minted to the Tax Vault as claims in the same swap, so it is the Tax Vault's exact book
+    ///         of what that coin's tax gave it.
+    mapping(PoolId => uint256) public taxBooked;
 
     event LaunchRegistered(
         PoolId indexed poolId,
@@ -103,6 +142,17 @@ contract StokerHook is BaseHook, IUnlockCallback {
         uint256 creatorCredit,
         uint256 platformCredit
     );
+    /// @notice A Launch's tax terms, written with the rest of its terms.
+    event TaxTermsRegistered(
+        PoolId indexed poolId,
+        LaunchType launchType,
+        uint16 taxBps,
+        uint16 burnShareBps,
+        uint16 liquidityShareBps,
+        PayoutAsset payoutAsset
+    );
+    /// @notice One swap's Reward Tax or Stoke Tax, minted to the Tax Vault as claims.
+    event TaxBooked(PoolId indexed poolId, Currency indexed currency, uint256 tax);
     event CreditPaid(address indexed owner, Currency indexed currency, uint256 amount);
     /// @notice The Quote Asset refused to pay `owner` (a blocklist, a pause); the Credit stays owed to it.
     event CreditRefused(address indexed owner, Currency indexed currency, uint256 amount);
@@ -119,10 +169,11 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @notice The Payout Call was given too little gas to carry a native payment's full allowance.
     error PayoutGasTooLow();
 
-    constructor(IPoolManager poolManager_, address platform_) BaseHook(poolManager_) {
-        if (platform_ == address(0)) revert ZeroAddress();
+    constructor(IPoolManager poolManager_, address platform_, address taxVault_) BaseHook(poolManager_) {
+        if (platform_ == address(0) || taxVault_ == address(0)) revert ZeroAddress();
         factory = msg.sender;
         platform = platform_;
+        taxVault = taxVault_;
     }
 
     /// @inheritdoc BaseHook
@@ -156,6 +207,7 @@ contract StokerHook is BaseHook, IUnlockCallback {
         t.registered = true;
         _terms[id] = t;
         emit LaunchRegistered(id, t.creatorDestination, t.platformFeeBps, t.creatorShareBps, t.quoteIsCurrency0);
+        emit TaxTermsRegistered(id, t.launchType, t.taxBps, t.burnShareBps, t.liquidityShareBps, t.payoutAsset);
     }
 
     // ------------------------------------------------------------------ the pool's guards
@@ -172,7 +224,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
         override
         returns (bytes4)
     {
-        if (sender != factory) revert OnlyFactory();
+        // The factory places the Seed Position; the Tax Vault adds Support Liquidity (#245). Neither has code
+        // that removes liquidity, and the hook refuses every removal below in any case.
+        if (sender != factory && sender != taxVault) revert OnlyFactory();
         return this.beforeAddLiquidity.selector;
     }
 
@@ -199,10 +253,10 @@ contract StokerHook is BaseHook, IUnlockCallback {
 
     // ------------------------------------------------------------------ the fee
 
-    /// @dev When the Quote Asset is the swap's specified currency the fee is taken here, on the specified
-    ///      amount: an exact-in buy (the trader pays the amount, fee included) or an exact-out sell (the
-    ///      trader receives the amount, the pool pays the fee on top).
-    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+    /// @dev When the Quote Asset is the swap's specified currency the fee and the tax are taken here, on the
+    ///      specified amount: an exact-in buy (the trader pays the amount, both included) or an exact-out sell
+    ///      (the trader receives the amount, the pool pays both on top).
+    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
@@ -214,48 +268,67 @@ contract StokerHook is BaseHook, IUnlockCallback {
         if (specifiedIsCurrency0 != t.quoteIsCurrency0) {
             return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
-        uint256 fee = _feeOnSpecified(params.amountSpecified, t.platformFeeBps);
+        (uint256 fee, uint256 tax) = _feesOnSpecified(params.amountSpecified, t.platformFeeBps, _taxBps(sender, t));
+        uint256 taken = fee + tax;
         // Never consume the whole specified amount: a swap the hook swallowed would be a NoOp swap.
-        if (exactIn && fee >= OZSafeCast.toUint256(-params.amountSpecified)) revert SwapTooSmall();
+        if (exactIn && taken >= OZSafeCast.toUint256(-params.amountSpecified)) revert SwapTooSmall();
         _book(id, key, t, fee);
-        return (this.beforeSwap.selector, toBeforeSwapDelta(fee.toInt128(), 0), 0);
+        _bookTax(id, key, t, tax);
+        return (this.beforeSwap.selector, toBeforeSwapDelta(taken.toInt128(), 0), 0);
     }
 
-    /// @dev When the Quote Asset is the unspecified currency the fee is taken here, once the pool's Quote
-    ///      Asset amount is known: an exact-in sell (the pool's output, the fee taken from it) or an exact-out
-    ///      buy (the pool's input, the trader pays the fee on top). When it is the specified currency this
-    ///      only checks that the pool traded the whole amount the fee was taken on.
-    function _afterSwap(address, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata)
-        internal
-        override
-        returns (bytes4, int128)
-    {
+    /// @dev When the Quote Asset is the unspecified currency the fee and the tax are taken here, once the
+    ///      pool's Quote Asset amount is known: an exact-in sell (the pool's output, both taken from it) or an
+    ///      exact-out buy (the pool's input, the trader pays both on top). When it is the specified currency
+    ///      this only checks that the pool traded the whole amount they were taken on.
+    function _afterSwap(
+        address sender,
+        PoolKey calldata key,
+        SwapParams calldata params,
+        BalanceDelta delta,
+        bytes calldata
+    ) internal override returns (bytes4, int128) {
         PoolId id = key.toId();
         Terms memory t = _termsOf(id);
+        uint256 taxBps = _taxBps(sender, t);
         bool exactIn = params.amountSpecified < 0;
         bool specifiedIsCurrency0 = exactIn == params.zeroForOne;
         int128 quoteDelta = t.quoteIsCurrency0 ? delta.amount0() : delta.amount1();
         if (specifiedIsCurrency0 == t.quoteIsCurrency0) {
-            // The fee was taken in `_beforeSwap`, on the whole specified amount, so the pool must have
-            // traded all of it. A swap its own price limit stopped early would have paid the fee on
+            // The fee and the tax were taken in `_beforeSwap`, on the whole specified amount, so the pool
+            // must have traded all of it. A swap its own price limit stopped early would have paid them on
             // Quote Asset it never traded, so it is refused; the same trade with the coin as the specified
-            // side goes through, since its fee is taken below on what really moved.
-            int256 feeTaken = OZSafeCast.toInt256(_feeOnSpecified(params.amountSpecified, t.platformFeeBps));
-            if (int256(quoteDelta) != params.amountSpecified + feeTaken) revert SwapStoppedEarly();
+            // side goes through, since its fee and tax are taken below on what really moved.
+            (uint256 feeTaken, uint256 taxTaken) = _feesOnSpecified(params.amountSpecified, t.platformFeeBps, taxBps);
+            if (int256(quoteDelta) != params.amountSpecified + OZSafeCast.toInt256(feeTaken + taxTaken)) {
+                revert SwapStoppedEarly();
+            }
             return (this.afterSwap.selector, 0);
         }
 
-        uint256 fee;
+        uint256 fee = 0;
+        uint256 tax = 0;
         if (exactIn) {
-            // A sell: the pool owes the trader `quoteDelta` (positive), the gross, before the fee.
-            fee = quoteDelta > 0 ? _feeOnGross(OZSafeCast.toUint256(quoteDelta), t.platformFeeBps) : 0;
-        } else {
-            // A buy: the trader owes the pool `-quoteDelta`, the net, before the fee.
-            fee = quoteDelta < 0 ? _feeOnNet(OZSafeCast.toUint256(-int256(quoteDelta)), t.platformFeeBps) : 0;
+            // A sell: the pool owes the trader `quoteDelta` (positive), the gross, before the fee and the tax.
+            if (quoteDelta > 0) {
+                uint256 gross = OZSafeCast.toUint256(quoteDelta);
+                fee = _feeOnGross(gross, t.platformFeeBps);
+                tax = _feeOnGross(gross, taxBps);
+                // Never more than the pool pays out: the trader would pay to sell.
+                if (fee + tax > gross) revert SwapTooSmall();
+            }
+        } else if (quoteDelta < 0) {
+            // A buy: the trader owes the pool `-quoteDelta`, the net, before the fee and the tax.
+            uint256 net = OZSafeCast.toUint256(-int256(quoteDelta));
+            uint256 totalBps = uint256(t.platformFeeBps) + taxBps;
+            fee = _feeOnNet(net, t.platformFeeBps, totalBps);
+            tax = _feeOnNet(net, taxBps, totalBps);
         }
-        if (fee == 0) return (this.afterSwap.selector, 0);
+        uint256 taken = fee + tax;
+        if (taken == 0) return (this.afterSwap.selector, 0);
         _book(id, key, t, fee);
-        return (this.afterSwap.selector, fee.toInt128());
+        _bookTax(id, key, t, tax);
+        return (this.afterSwap.selector, taken.toInt128());
     }
 
     /// @dev Takes `fee` of the Quote Asset as this hook's claims and records it as two Credits.
@@ -274,22 +347,53 @@ contract StokerHook is BaseHook, IUnlockCallback {
         emit FeeCredited(id, currency, t.creatorDestination, fee, creatorCredit, platformCredit);
     }
 
-    /// @dev The fee when the Quote Asset is the swap's specified currency: on the gross for an exact-in buy
-    ///      (a negative amount), on the net for an exact-out sell (a positive one).
-    function _feeOnSpecified(int256 amountSpecified, uint16 feeBps) internal pure returns (uint256) {
-        return amountSpecified < 0
-            ? _feeOnGross(OZSafeCast.toUint256(-amountSpecified), feeBps)
-            : _feeOnNet(OZSafeCast.toUint256(amountSpecified), feeBps);
+    /// @dev Mints `tax` of the Quote Asset to the Tax Vault as claims, against the delta the hook is owed by
+    ///      the swap, and adds it to the pool's running total. Nothing is transferred and nothing is called
+    ///      but the PoolManager's own `mint`, which cannot fail here.
+    function _bookTax(PoolId id, PoolKey calldata key, Terms memory t, uint256 tax) internal {
+        if (tax == 0) return;
+        Currency currency = t.quoteIsCurrency0 ? key.currency0 : key.currency1;
+        poolManager.mint(taxVault, currency.toId(), tax);
+        taxBooked[id] += tax;
+        // The only call before it is the PoolManager's own `mint`.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit TaxBooked(id, currency, tax);
     }
 
-    /// @dev 1.00% (or the Launch's rate) of a known gross amount, rounded up in the platform's favour.
-    function _feeOnGross(uint256 gross, uint16 feeBps) internal pure returns (uint256) {
+    /// @dev The tax a swap pays: the Launch's rate, except on the Tax Vault's own buys (the Reward Burn's
+    ///      and a Payout Asset of the coin's), which pay the Platform Fee like any buy but no tax: taxing
+    ///      the tax would send part of the burn's share back to the holders and the liquidity, mixing parts
+    ///      the Launch fixed. `sender` is compared with the Tax Vault's address and never read otherwise.
+    function _taxBps(address sender, Terms memory t) internal view returns (uint256) {
+        return sender == taxVault ? 0 : t.taxBps;
+    }
+
+    /// @dev The fee and the tax when the Quote Asset is the swap's specified currency: of the gross for an
+    ///      exact-in buy (a negative amount), on the net for an exact-out sell (a positive one).
+    function _feesOnSpecified(int256 amountSpecified, uint16 feeBps, uint256 taxBps)
+        internal
+        pure
+        returns (uint256 fee, uint256 tax)
+    {
+        if (amountSpecified < 0) {
+            uint256 gross = OZSafeCast.toUint256(-amountSpecified);
+            return (_feeOnGross(gross, feeBps), _feeOnGross(gross, taxBps));
+        }
+        uint256 net = OZSafeCast.toUint256(amountSpecified);
+        uint256 totalBps = uint256(feeBps) + taxBps;
+        return (_feeOnNet(net, feeBps, totalBps), _feeOnNet(net, taxBps, totalBps));
+    }
+
+    /// @dev A rate of a known gross amount, rounded up in the platform's favour.
+    function _feeOnGross(uint256 gross, uint256 feeBps) internal pure returns (uint256) {
         return FullMath.mulDivRoundingUp(gross, feeBps, BPS);
     }
 
-    /// @dev The fee on a known net amount, so that it is the rate of net plus fee, rounded up.
-    function _feeOnNet(uint256 net, uint16 feeBps) internal pure returns (uint256) {
-        return FullMath.mulDivRoundingUp(net, feeBps, BPS - feeBps);
+    /// @dev A rate of a gross amount known only as its net, when the rates taken from it together are
+    ///      `totalBps`: so that each is its rate of net plus everything taken, rounded up. With no tax
+    ///      `totalBps` is the Platform Fee alone, as before #245.
+    function _feeOnNet(uint256 net, uint256 feeBps, uint256 totalBps) internal pure returns (uint256) {
+        return FullMath.mulDivRoundingUp(net, feeBps, BPS - totalBps);
     }
 
     function _termsOf(PoolId id) internal view returns (Terms memory t) {
