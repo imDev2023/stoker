@@ -22,6 +22,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {StokerCoin} from "./StokerCoin.sol";
 import {StokerHook} from "./StokerHook.sol";
+import {StokerCreatorLock} from "./StokerCreatorLock.sol";
 import {TaxVault} from "./TaxVault.sol";
 import {IQuoteListings} from "./interfaces/IQuoteListings.sol";
 import {QuoteRegistry} from "./QuoteRegistry.sol";
@@ -41,6 +42,13 @@ contract StokerFactory is IUnlockCallback {
 
     uint256 internal constant SUPPLY = 1e12 * 1e18;
     uint256 internal constant BPS = 10_000;
+
+    /// @notice The largest Creator Lock: a fifth of the supply (ADR 0024, as on Solana, ADR 0023).
+    uint16 public constant MAX_CREATOR_LOCK_BPS = 2_000;
+    /// @notice The shortest Creator Lock, cliff and unlock time together, counted from Graduation.
+    uint256 public constant MIN_CREATOR_LOCK_TIME = 7 days;
+    /// @notice The longest cliff, and the longest unlock time, a Creator Lock may have (Solana's four years).
+    uint256 public constant MAX_CREATOR_LOCK_PART = 4 * 365 days;
 
     IPoolManager public immutable poolManager;
     StokerHook public immutable hook;
@@ -79,6 +87,11 @@ contract StokerFactory is IUnlockCallback {
     /// @param liquidityShareBps A Reward Launch's Reward Liquidity share, on the same steps, the two together
     ///        at most half. Zero on a Stoke Launch, whose whole tax becomes Support Liquidity by its type.
     /// @param payoutAsset A Reward Launch's Payout Asset; the Quote Asset on the other two types.
+    /// @param creatorLockBps The Creator Lock: the share of the supply held out of the Seed Position for the
+    ///        Creator, in basis points, at most a fifth; zero for none (#244).
+    /// @param creatorLockCliff Seconds from Graduation before any of the lock is released.
+    /// @param creatorLockUnlock Seconds after the cliff over which the lock is released in a straight line;
+    ///        zero releases it all at the cliff's end. With the cliff, at least seven days.
     struct LaunchParams {
         string name;
         string symbol;
@@ -91,6 +104,9 @@ contract StokerFactory is IUnlockCallback {
         uint16 burnShareBps;
         uint16 liquidityShareBps;
         StokerHook.PayoutAsset payoutAsset;
+        uint16 creatorLockBps;
+        uint32 creatorLockCliff;
+        uint32 creatorLockUnlock;
     }
 
     /// @notice An ERC-2612 permit by the Creator for the factory, for the First Buy's amount.
@@ -110,9 +126,13 @@ contract StokerFactory is IUnlockCallback {
         int24 tickLower;
         int24 tickUpper;
         uint256 firstBuy;
+        uint256 seedCoins;
     }
 
     mapping(PoolId => Launch) internal _launches;
+
+    /// @notice A Launch's Creator Lock contract, by its pool; zero for a Launch with none (#244).
+    mapping(PoolId => address) public creatorLockOf;
 
     event Launched(
         PoolId indexed poolId,
@@ -125,6 +145,16 @@ contract StokerFactory is IUnlockCallback {
         uint256 firstBuy,
         uint256 firstBuyCoins
     );
+    /// @notice A Launch's Creator Lock: `amount` coins held by `lock` for `creator`, released from Graduation
+    ///         after `cliff` seconds and then over `unlock` seconds.
+    event CreatorLocked(
+        PoolId indexed poolId,
+        address indexed lock,
+        address indexed creator,
+        uint256 amount,
+        uint32 cliff,
+        uint32 unlock
+    );
 
     error InvalidSettings();
     error NotListed(address quote);
@@ -132,6 +162,9 @@ contract StokerFactory is IUnlockCallback {
     /// @notice The Listing's Graduation multiple gives no Graduation Target the pool can reach.
     error InvalidGraduationMultiple(uint16 graduationMultiple);
     error NotPoolManager();
+    /// @notice A Creator Lock over a fifth of the supply, shorter than seven days, with a part over four
+    ///         years, or a cliff or unlock time with no lock.
+    error InvalidCreatorLock(uint16 bps, uint32 cliff, uint32 unlock);
     /// @notice The launch was sent value other than its native First Buy: any value with an ERC-20 Quote
     ///         Asset, or value that differs from `firstBuy` with the native asset.
     error ValueMismatch(uint256 expected, uint256 sent);
@@ -223,6 +256,8 @@ contract StokerFactory is IUnlockCallback {
             hooks: IHooks(address(hook))
         });
         poolId = seed.key.toId();
+        // The Creator Lock, when the launch asks for one, is held out of the Seed Position (#244).
+        seed.seedCoins = SUPPLY - _lockForCreator(p, coin, poolId);
 
         // The pool's price is currency1 per currency0. With the coin as currency0 that is the start price
         // itself, and the seed spans from it upward; with the coin as currency1 it is the inverse, and the
@@ -311,6 +346,27 @@ contract StokerFactory is IUnlockCallback {
         return shareBps == 0 || shareBps == 1_000 || shareBps == 2_500 || shareBps == 5_000;
     }
 
+    /// @dev Checks the launch's Creator Lock against the limits, and for a lock deploys its own contract and
+    ///      sends it the locked coins. Returns how many it holds, zero for a launch with none.
+    function _lockForCreator(LaunchParams calldata p, address coin, PoolId poolId) internal returns (uint256 locked) {
+        (uint16 bps, uint32 cliff, uint32 unlock) = (p.creatorLockBps, p.creatorLockCliff, p.creatorLockUnlock);
+        if (bps == 0) {
+            if (cliff != 0 || unlock != 0) revert InvalidCreatorLock(bps, cliff, unlock);
+            return 0;
+        }
+        if (
+            bps > MAX_CREATOR_LOCK_BPS || uint256(cliff) + unlock < MIN_CREATOR_LOCK_TIME
+                || cliff > MAX_CREATOR_LOCK_PART || unlock > MAX_CREATOR_LOCK_PART
+        ) revert InvalidCreatorLock(bps, cliff, unlock);
+        locked = SUPPLY * bps / 10_000;
+        address lock = address(new StokerCreatorLock(IERC20(coin), hook, poolId, msg.sender, locked, cliff, unlock));
+        creatorLockOf[poolId] = lock;
+        IERC20(coin).safeTransfer(lock, locked);
+        // The calls before it create our own lock and move our own new coin, which has no hooks.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit CreatorLocked(poolId, lock, msg.sender, locked, cliff, unlock);
+    }
+
     /// @dev The Graduation Target as the pool's sqrt price: the start price times the multiple. The pool's
     ///      price is Quote Asset per coin with the coin as currency0, so the target is above the open price;
     ///      with the Quote Asset as currency0 it is coin per Quote Asset, and the target is below. Rounded so
@@ -341,14 +397,15 @@ contract StokerFactory is IUnlockCallback {
         return abi.encode(liquidity, coinsBought);
     }
 
-    /// @dev Places the whole supply as one single-sided position and burns the rounding dust left over, so
-    ///      every coin is in the pool or, after the First Buy, with the Creator.
+    /// @dev Places the seed's coins, the supply less any Creator Lock, as one single-sided position and burns
+    ///      the rounding dust left over, so every coin is in the pool, in the lock or, after the First Buy,
+    ///      with the Creator.
     function _placeSeed(Seed memory seed) internal returns (uint128 liquidity) {
         uint160 sqrtLower = TickMath.getSqrtPriceAtTick(seed.tickLower);
         uint160 sqrtUpper = TickMath.getSqrtPriceAtTick(seed.tickUpper);
         liquidity = seed.quoteIsCurrency0
-            ? LiquidityAmounts.getLiquidityForAmount1(sqrtLower, sqrtUpper, SUPPLY)
-            : LiquidityAmounts.getLiquidityForAmount0(sqrtLower, sqrtUpper, SUPPLY);
+            ? LiquidityAmounts.getLiquidityForAmount1(sqrtLower, sqrtUpper, seed.seedCoins)
+            : LiquidityAmounts.getLiquidityForAmount0(sqrtLower, sqrtUpper, seed.seedCoins);
 
         // A new position has accrued no fees, so the second value is zero.
         // forge-lint: disable-start(unused-return)
@@ -373,7 +430,7 @@ contract StokerFactory is IUnlockCallback {
         // forge-lint: disable-next-line(unused-return)
         poolManager.settle();
 
-        uint256 dust = SUPPLY - owed;
+        uint256 dust = seed.seedCoins - owed;
         if (dust > 0) StokerCoin(seed.coin).burn(dust);
     }
 

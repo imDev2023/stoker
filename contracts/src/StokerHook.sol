@@ -46,6 +46,12 @@ import {IReferenceSettings} from "./interfaces/IReferenceSettings.sol";
 ///
 ///         The hook also guards the pool: only the factory opens a pool on it, only the factory and the Tax
 ///         Vault add liquidity to it, no liquidity is ever removed, and donations are refused.
+///
+///         It keeps each coin's Graduation Hold (#244, ADR 0024): the time the price its transactions have
+///         left has stood at or above the Graduation Target, unbroken; an hour of it graduates the coin, once
+///         and for good. A swap inside a transaction is never judged on its own, only the price the whole
+///         transaction leaves, so a round trip inside one transaction, in either direction, neither forces
+///         nor resets the hold.
 /// @dev Reads the clock through `block.timestamp` only, never `block.number`, which is an estimate of the
 ///      L1 block on Robinhood Chain and Arbitrum.
 contract StokerHook is BaseHook, IUnlockCallback {
@@ -169,6 +175,31 @@ contract StokerHook is BaseHook, IUnlockCallback {
 
     mapping(PoolId => Reference) internal _references;
 
+    /// @notice How long a coin's price must stay at or above its Graduation Target, without a break, before
+    ///         the coin graduates: the Graduation Hold (ADR 0024, the owner's hour).
+    uint64 public constant GRADUATION_HOLD = 1 hours;
+
+    /// @notice A coin's Graduation Hold and its Graduation (#244), as last judged. The hook judges the price a
+    ///         transaction left when the next transaction first swaps the pool, or when `graduate` is called,
+    ///         so `holdSince` here can lag the price by one transaction; `graduationNow` judges it now.
+    /// @param holdSince When the transaction that left the price at or above the target was made, if the
+    ///        price has stood there since; zero while it stands under. Kept once the coin has graduated: the
+    ///        hold that graduated it.
+    /// @param graduatedAt When the coin graduated, `holdSince` plus the hour, whoever recorded it and
+    ///        however late; zero until then, and never changed after.
+    /// @param lastSwapAt When a transaction last swapped the pool: since then the price it left has stood.
+    struct Graduation {
+        uint64 holdSince;
+        uint64 graduatedAt;
+        uint64 lastSwapAt;
+    }
+
+    mapping(PoolId => Graduation) internal _graduations;
+
+    /// @dev Whether a pool has been swapped in this transaction, in transient storage (EIP-1153): the base of
+    ///      each pool's slot, keccak256("stoker.hook.swappedThisTransaction") - 1.
+    bytes32 internal constant SWAPPED_SLOT = bytes32(uint256(keccak256("stoker.hook.swappedThisTransaction")) - 1);
+
     event LaunchRegistered(
         PoolId indexed poolId,
         address indexed creatorDestination,
@@ -206,6 +237,15 @@ contract StokerHook is BaseHook, IUnlockCallback {
     event CreditPaid(address indexed owner, Currency indexed currency, uint256 amount);
     /// @notice The Quote Asset refused to pay `owner` (a blocklist, a pause); the Credit stays owed to it.
     event CreditRefused(address indexed owner, Currency indexed currency, uint256 amount);
+    /// @notice A swap left the price at or above the Graduation Target with no hold running: the hour runs
+    ///         from `since`.
+    event GraduationHoldStarted(PoolId indexed poolId, uint256 since);
+    /// @notice A swap left the price under the Graduation Target: the hold that ran from `since` is over, and
+    ///         the next one starts the hour again.
+    event GraduationHoldCleared(PoolId indexed poolId, uint256 since);
+    /// @notice The coin graduated at `graduatedAt`, an hour after the hold that began at `holdSince`. Emitted
+    ///         once per coin, by the first swap or public call after the hour.
+    event Graduated(PoolId indexed poolId, uint256 graduatedAt, uint256 holdSince);
 
     error OnlyFactory();
     error AlreadyRegistered();
@@ -225,6 +265,14 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @notice A trade named this hook, the factory or the PoolManager as its referrer, none of which can be
     ///         paid usefully.
     error InvalidReferrer(address referrer);
+    /// @notice The coin has graduated already; Graduation is recorded once.
+    error AlreadyGraduated();
+    /// @notice The price has not stood at or above the target for the hour; `holdSince` is zero when no hold
+    ///         is running.
+    error GraduationHoldNotComplete(uint256 holdSince);
+    /// @notice `graduate` was called in a transaction that has swapped the pool, whose price is not yet one a
+    ///         transaction has left.
+    error SwappedThisTransaction();
 
     constructor(IPoolManager poolManager_, StokerKeys keys_, address taxVault_) BaseHook(poolManager_) {
         if (address(keys_) == address(0) || taxVault_ == address(0)) revert ZeroAddress();
@@ -335,8 +383,12 @@ contract StokerHook is BaseHook, IUnlockCallback {
     {
         PoolId id = key.toId();
         Terms memory t = _termsOf(id);
-        // Before the pool moves: the price it reads is the one that has stood since the last swap.
+        // Before the pool moves, and ahead of every return below. The Reference Price (#271) and the Graduation
+        // Hold (#244) each read the price that has stood since the last swap and write only their own record,
+        // so their order changes nothing: the reference credits the time since the last swap to that price,
+        // and a pool's first swap in a transaction judges the hold by the price the last transaction left.
         if (_keepsReference(t)) _followReference(id, t.quoteIsCurrency0);
+        _judgeHold(id, t);
         (address referrer, uint256 referrerBps) = _referral(hookData, t);
         bool exactIn = params.amountSpecified < 0;
         bool specifiedIsCurrency0 = exactIn == params.zeroForOne;
@@ -524,6 +576,99 @@ contract StokerHook is BaseHook, IUnlockCallback {
     function _termsOf(PoolId id) internal view returns (Terms memory t) {
         t = _terms[id];
         if (!t.registered) revert NotRegistered();
+    }
+
+    // ------------------------------------------------------------------ the Graduation Hold
+
+    /// @notice Records the coin's Graduation once the price its transactions have left has stood at or above
+    ///         the Graduation Target for the hour, when no swap has come to record it. Anyone may call it; the
+    ///         Keeper does. It reverts for a pool that is not a Launch's, a coin already graduated, a hold
+    ///         short of the hour or not running (a price left under the target never graduates, whatever was
+    ///         judged before), and inside a transaction that has swapped the pool.
+    function graduate(PoolId id) external {
+        Terms memory t = _termsOf(id);
+        if (_swappedThisTransaction(id)) revert SwappedThisTransaction();
+        Graduation memory g = _graduations[id];
+        if (g.graduatedAt != 0) revert AlreadyGraduated();
+        Graduation memory judged = _judged(g, _atOrAbove(id, t));
+        if (judged.graduatedAt == 0) revert GraduationHoldNotComplete(judged.holdSince);
+        _graduations[id] = judged;
+        _emitJudgement(id, g, judged);
+    }
+
+    /// @dev Called by every swap in a Launch's pool, before the pool moves. Only a pool's first swap in a
+    ///      transaction judges: the price standing then is the one the last transaction to swap the pool left,
+    ///      at `lastSwapAt` (only a swap moves a v4 pool's price; added liquidity never does, and removals and
+    ///      donations are refused). The swaps after it in the same transaction are not judged, so a flash
+    ///      round trip, across the target and back or under it and back, leaves the hold exactly where the
+    ///      price it ends at says, as if it had never been made.
+    function _judgeHold(PoolId id, Terms memory t) internal {
+        if (_swappedThisTransaction(id)) return;
+        bytes32 slot = _swappedSlot(id);
+        assembly ("memory-safe") {
+            tstore(slot, 1)
+        }
+        Graduation memory g = _graduations[id];
+        Graduation memory judged = _judged(g, _atOrAbove(id, t));
+        // A timestamp, which fits 64 bits for 584 billion years.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        judged.lastSwapAt = uint64(block.timestamp);
+        _graduations[id] = judged;
+        _emitJudgement(id, g, judged);
+    }
+
+    /// @dev The record judged against the price standing now, which has stood since `g.lastSwapAt`: under the
+    ///      target, no hold; at or above it, the hold that runs, or one from `lastSwapAt`; and a hold that has
+    ///      run the hour graduates the coin at the hour's end, so the same hold graduates it at the same moment
+    ///      whoever records it and however late. The hour is the clock's: a sequencer's few seconds move it by
+    ///      as much and no more.
+    function _judged(Graduation memory g, bool atOrAbove) internal view returns (Graduation memory j) {
+        j = _copy(g);
+        if (j.graduatedAt != 0) return j;
+        if (!atOrAbove) {
+            j.holdSince = 0;
+            return j;
+        }
+        if (j.holdSince == 0) j.holdSince = j.lastSwapAt;
+        // forge-lint: disable-next-line(block-timestamp)
+        if (j.holdSince != 0 && block.timestamp >= j.holdSince + GRADUATION_HOLD) {
+            j.graduatedAt = j.holdSince + GRADUATION_HOLD;
+        }
+    }
+
+    function _emitJudgement(PoolId id, Graduation memory before, Graduation memory j) internal {
+        // The only call before these events is the PoolManager's `extsload` view of the price.
+        if (before.holdSince != j.holdSince) {
+            // forge-lint: disable-next-line(reentrancy-events)
+            if (before.holdSince != 0) emit GraduationHoldCleared(id, before.holdSince);
+            // forge-lint: disable-next-line(reentrancy-events)
+            if (j.holdSince != 0) emit GraduationHoldStarted(id, j.holdSince);
+        }
+        // forge-lint: disable-next-line(reentrancy-events)
+        if (before.graduatedAt == 0 && j.graduatedAt != 0) emit Graduated(id, j.graduatedAt, j.holdSince);
+    }
+
+    /// @dev Whether the pool's price now stands at or above its Graduation Target. The pool's price is currency1
+    ///      per currency0: with the coin as currency0 a dearer coin is a higher price; with the Quote Asset as
+    ///      currency0 (the native asset always is) it is a lower one.
+    function _atOrAbove(PoolId id, Terms memory t) internal view returns (bool) {
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(poolManager, id);
+        return t.quoteIsCurrency0 ? sqrtPriceX96 <= t.graduationSqrtPriceX96 : sqrtPriceX96 >= t.graduationSqrtPriceX96;
+    }
+
+    function _swappedSlot(PoolId id) internal pure returns (bytes32) {
+        return keccak256(abi.encode(SWAPPED_SLOT, id));
+    }
+
+    function _swappedThisTransaction(PoolId id) internal view returns (bool swapped) {
+        bytes32 slot = _swappedSlot(id);
+        assembly ("memory-safe") {
+            swapped := tload(slot)
+        }
+    }
+
+    function _copy(Graduation memory g) internal pure returns (Graduation memory) {
+        return Graduation({holdSince: g.holdSince, graduatedAt: g.graduatedAt, lastSwapAt: g.lastSwapAt});
     }
 
     // ------------------------------------------------------------------ the Reference Price (#271)
@@ -758,6 +903,23 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @notice A Launch's terms, by its pool.
     function termsOf(PoolId id) external view returns (Terms memory) {
         return _terms[id];
+    }
+
+    /// @notice A Launch's Graduation Hold and its Graduation as last judged, by its pool (#244). The hold
+    ///         can lag the price by one transaction, and a hold that has run the hour reads as running until a
+    ///         swap or a call records Graduation; `graduatedAt` here is the recorded one, which a Creator Lock
+    ///         reads.
+    function graduationOf(PoolId id) external view returns (Graduation memory) {
+        return _graduations[id];
+    }
+
+    /// @notice The same record judged against the price standing now, as the next transaction to swap the
+    ///         pool or a call to `graduate` would leave it: the hold the price has kept, and the Graduation
+    ///         such a call would record. Read inside a transaction that has swapped the pool, it judges a price
+    ///         that transaction has not yet left.
+    function graduationNow(PoolId id) external view returns (Graduation memory) {
+        Terms memory t = _termsOf(id);
+        return _judged(_graduations[id], _atOrAbove(id, t));
     }
 
     /// @notice Where the platform's share of a Platform Fee taken now is booked: the Admin's address.
