@@ -95,6 +95,25 @@ contract ForkCreatorLockTest is ForkGraduationBase {
         _aFifthSeedsFourFifths(2);
     }
 
+    /// What a Creator Lock adds to a launch's gas (the launch form shows the cost before signing, story 13).
+    function test_fork_lock_launchGas() public {
+        for (uint256 pairing; pairing < 3; pairing++) {
+            StokerFactory.LaunchParams memory plain = _lockedParams(pairing, 0, 0, 0);
+            StokerFactory.LaunchParams memory locked = _lockedParams(pairing, A_FIFTH, 7 days, 23 days);
+            vm.prank(creator);
+            uint256 g = gasleft();
+            factory.launch(plain);
+            uint256 plainGas = g - gasleft();
+            vm.prank(creator);
+            g = gasleft();
+            factory.launch(locked);
+            uint256 lockedGas = g - gasleft();
+            emit log_named_uint(string.concat("pairing ", vm.toString(pairing), ": launch, no lock"), plainGas);
+            emit log_named_uint(string.concat("pairing ", vm.toString(pairing), ": launch, a fifth locked"), lockedGas);
+            assertGt(lockedGas, plainGas);
+        }
+    }
+
     function test_fork_lock_overAFifthOrUnderSevenDays_reverts() public {
         _outOfBounds(0);
         _outOfBounds(1);

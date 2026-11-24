@@ -121,7 +121,8 @@ The Graduation Target is #243's: the Listing's start price times the Listing's G
 - **The hold.** The hook keeps one record per pool beside its terms: when the hold began (`holdSince`) and when the coin graduated (`graduatedAt`).
   Every swap in the pool passes through `_keepHold`, called at the top of `_afterSwap` (v4 calls `afterSwap` with the pool's price already final, and no fee moves it, so the fee branches below are untouched and every path through them is covered).
   A swap that leaves the price at or above the target starts the hold if none runs; one that leaves it under clears it.
-- **The direction.** The pool's price is currency1 per currency0. With the coin as currency0 a dearer coin is a higher sqrt price, and the hold needs `sqrtPrice >= target`; with the Quote Asset as currency0 (the native asset always is) it is a lower one, and the hold needs `sqrtPrice <= target`. #243 rounds the target so it is never a cheaper coin than the multiple says.
+- **The direction.** The pool's price is currency1 per currency0.
+  With the coin as currency0 a dearer coin is a higher sqrt price, and the hold needs `sqrtPrice >= target`; with the Quote Asset as currency0 (the native asset always is) it is a lower one, and the hold needs `sqrtPrice <= target`. #243 rounds the target so it is never a cheaper coin than the multiple says.
 - **Graduation.** A hold that has run the hour graduates the coin, recorded by the first swap after the hour or by `graduate(poolId)`, a call anyone can make (the Keeper will).
   It is checked before the swap's own price: a hold that ran unbroken for the hour before a swap has graduated the coin, whatever that swap does, so the outcome never depends on who comes first after the hour, a trader or the public call.
   Its time is `holdSince + 1 hour`, the hour's end, the same whoever records it and however late.
@@ -137,16 +138,22 @@ The Creator Lock: a Launch may hold up to a fifth of the supply out of the Seed 
 - Nothing is released before the hook records Graduation; from Graduation the cliff runs, then the rest is released in a straight line over the unlock time, rounded down, all at once at the cliff's end when there is none (Solana's LaunchLab schedule, ADR 0023).
 - `claim()` pays the Creator (the address that launched the coin, not the Creator Earnings Destination) what has been released and not claimed, and only the Creator may call it.
   The lock has no owner, no setter and no other way out for its coins; no key of ours reaches them.
-- With the target a price, a lock held out of the seed means the coin reaches its target on less net buying than a coin without one (a fifth less seed, a fifth less Quote Asset to cross it), at the same price and the same value of the whole supply. On Solana the lock came out of the curve's sale and the raise stayed the same (ADR 0023); here the ticket asks for "a lock of a fifth seeds four fifths".
+- With the target a price, a lock held out of the seed means the coin reaches its target on less net buying than a coin without one (a fifth less seed, a fifth less Quote Asset to cross it), at the same price and the same value of the whole supply.
+  On Solana the lock came out of the curve's sale and the raise stayed the same (ADR 0023); here the ticket asks for "a lock of a fifth seeds four fifths".
 
 Thought through as an attacker, each case tested in all three pairings:
 
-- **Across and back in one call or one block** (the spike review's forced Graduation): the buy starts the hold and the sell clears it, so an hour later nothing graduates. Locally inside one unlock as a flash loan (`HoldAttacker`); on the fork in the same block and in one Universal Router call that sells its open credit in the coin straight back (`ForkGraduationRoundTripTest`, the review's 115 NVDA losing the same 2.2885 NVDA, 1.14425 of it credited to the Creator).
+- **Across and back in one call or one block** (the spike review's forced Graduation): the buy starts the hold and the sell clears it, so an hour later nothing graduates.
+  Locally inside one unlock as a flash loan (`HoldAttacker`); on the fork in the same block and in one Universal Router call that sells its open credit in the coin straight back (`ForkGraduationRoundTripTest`, the review's 115 NVDA losing the same 2.2885 NVDA, 1.14425 of it credited to the Creator).
 - **A dust swap** moves the price next to nothing: above the target it neither restarts nor clears a running hold, and it cannot start one, since only a swap that leaves the price at or above the target does.
-- **A swap its own price limit stops at once** is judged by where it left the price: a wei of sqrt price under the target clears the hold, a wei back to it starts one. A swap with the Quote Asset specified that its limit stops early is refused whole (#241's review), so it changes nothing.
+- **A swap its own price limit stops at once** is judged by where it left the price: a wei of sqrt price under the target clears the hold, a wei back to it starts one.
+  A swap with the Quote Asset specified that its limit stops early is refused whole (#241's review), so it changes nothing.
 - **The public call** made early (no hold, or under the hour) reverts by name with the hold's start; made late, it records the hour's end, not its own time; made twice, the second reverts; for a pool not ours, it reverts.
-- **A First Buy across the target** starts the hold inside the launch; the coin graduates only if the price then stands there for the hour, open to every holder selling into it. ADR 0024 accepts that a Creator with capital can hold a quiet coin's price for an hour.
-- **Restarting the hour** is open to anyone with coins: a sell that takes the price under the target, then a buy back, costs the round trip's fees on what it takes to move the price across. On a coin standing just above its target that is cheap, so a hostile holder can delay its Graduation for as long as they keep paying; on a coin well above it, it is not. This is the rule ADR 0024 chose ("a swap that leaves the price below resets the hold"), written here for the owner.
+- **A First Buy across the target** starts the hold inside the launch; the coin graduates only if the price then stands there for the hour, open to every holder selling into it.
+  ADR 0024 accepts that a Creator with capital can hold a quiet coin's price for an hour.
+- **Restarting the hour** is open to anyone with coins: a sell that takes the price under the target, then a buy back, costs the round trip's fees on what it takes to move the price across.
+  On a coin standing just above its target that is cheap, so a hostile holder can delay its Graduation for as long as they keep paying; on a coin well above it, it is not.
+  This is the rule ADR 0024 chose ("a swap that leaves the price below resets the hold"), written here for the owner.
 - **Only a swap moves the price:** v4 never moves a pool's price on an added position, the hook refuses removals and donations, and every swap passes through `_keepHold`, so the hold the hook keeps is the price's own history. #245's Support Liquidity, added below the price, keeps this true.
 - **The clock** is the block's timestamp; a sequencer's few seconds move the hour by as much and no more.
 
@@ -161,7 +168,8 @@ What the hold adds to a swap's gas, every address the swap touches made cold fir
 | records Graduation | 198,087 | 208,163 | 10,076 |
 | trades after Graduation | 198,101 | 203,119 | 5,018 |
 
-Starting a hold writes a zero slot (20,000 gas); writing a marker into the slot at launch would make every later start a few thousand, at 20,000 more per launch and a change to `registerLaunch`, which the other slices share. Holds start rarely (a coin crossing its target), so it is left as it is.
+Starting a hold writes a zero slot (20,000 gas); writing a marker into the slot at launch would make every later start a few thousand, at 20,000 more per launch and a change to `registerLaunch`, which the other slices share.
+Holds start rarely (a coin crossing its target), so it is left as it is.
 
 Not in this slice, by the ticket: the tax and the Tax Vault (#245), the Opening Fee (#246), the Distributor (#247), the Creator Ladder's key and the Destination contracts (#248), and the deployment and the gate (#251).
 
@@ -191,23 +199,30 @@ REGISTRY=0x... ACTION=list QUOTE=0x... OPENING_VALUE=5000000000 MULTIPLE=20 CAP_
   The first run reads the chain; later runs read Foundry's cache under `~/.foundry/cache/rpc/4663/`.
 - CI (`.github/workflows/ci.yml`, job `contracts`) checks the format, builds with sizes, lints `src`, and runs every test that needs no RPC on every push, with deeper fuzz and invariant campaigns (`FOUNDRY_PROFILE=ci`); it runs the fork tests only where the repository has the `ROBINHOOD_RPC_URL` secret.
 
-Results on 2026-11-24, with #243 after its two reviews and the registry's model test: 126 local tests (unit, fuzz, and five invariants in two campaigns, one per kind of Quote Asset, plus one for native leftovers) and 27 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
+Results on 2026-11-24, with #244 on `main` after #243 landed: 229 local tests (unit, fuzz, and the invariants of #241 to #243 in their campaigns, plus three invariants of Graduation and the Creator Lock in three campaigns, one per pairing) and 53 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
+Each of the 15 guards #244 adds, removed in turn, fails a named test (the PR lists them); one was first missed and its test added.
+#243 after its two reviews and the registry's model test: 126 local tests (unit, fuzz, and five invariants in two campaigns, one per kind of Quote Asset, plus one for native leftovers) and 27 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
 Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test (the PR lists them); the review added two more, each shown failing before its fix.
 #243 as its lane pushed it: 122 local and 27 fork tests.
 #242 after the main session's review: 70 local and 18 fork tests.
 #242 as its lane pushed it: 68 local and 17 fork tests, all passing; the review found no defect in the contracts and added two local tests, one fork test and the own-pull action in the invariant campaigns.
 #241 alone, after the main session's review: 40 local and 11 fork tests.
 
-| Contract | Runtime | Initcode | #242 | #241 |
-| --- | ---: | ---: | ---: | ---: |
-| `StokerFactory` | 11,267 | 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
-| `StokerHook` | 9,979 | 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
-| `QuoteRegistry` | 3,740 | 3,965 | new | new |
-| `StokerKeys` | 1,291 | 1,483 | new | new |
-| `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged |
+| Contract | Runtime | Initcode | #243 | #242 | #241 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `StokerFactory` | 14,360 | 27,051 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
+| `StokerHook` | 11,070 | 11,978 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
+| `StokerCreatorLock` | 1,939 | 2,272 | new | new | new |
+| `QuoteRegistry` | 3,740 | 3,965 | unchanged | new | new |
+| `StokerKeys` | 1,291 | 1,483 | unchanged | new | new |
+| `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged | unchanged |
+
+The factory grew by the lock's creation code, which it carries to deploy a lock; it stays 10,216 bytes under the 24,576 limit.
 
 Launch gas on the fork: about 1.22M with a permit First Buy in NVDA, about 1.06M with a native First Buy (#242: 1.18M and 1.03M; the Listing's three figures and the Graduation Target are read and written into the terms).
 A swap costs about 8,000 gas more than in #242: the terms take a second slot and the Admin is read from the keys.
+A launch with a Creator Lock costs about 470,000 gas more than one without (877k against 1.35M with no First Buy, the coin as currency0; the same in the other pairings), almost all of it the lock's own code; a minimal-proxy clone would cost about a quarter of that, at the price of terms read from storage or code rather than immutables, which this slice does not take for a few cents on Robinhood Chain (`test_fork_lock_launchGas`).
+#244's hold adds 3,756 gas to a swap with no hold running, and more on the swaps that start, clear or record it (the table under "Graduation and the Creator Lock").
 A native Payout Call to eight owners, five of them refusing (each spending its whole 50,000), took 321,867 gas on the fork.
 
 ## The tests
@@ -243,7 +258,7 @@ Every test proves behaviour from outside: what a wallet receives, what an event 
 | `test/fork/ForkReferrer.t.sol` | Through both Universal Routers, the four trades in NVDA in both orders and in native ETH naming a referrer at 0.75%: the V4 Quoter given the same hookData quotes each to the wei, the referrer is credited the fee on top of the 1.00%, and nothing reaches it inside the swap; a fee over the cap reverts by name through both routers. |
 | `test/fork/ForkNoReferrer.t.sol` | Through both Universal Routers, the same four trades naming no referrer: the Quoter's figure, what the trader paid and received and what the hook took, to the wei against figures recorded from `main` before the hook changed. |
 | `test/fork/ForkGraduation.t.sol` | The spike review's forced Graduation kept as a regression that now fails to graduate, in all three pairings: across the target and back through the Universal Router in the same block, and in one router call; then, through both Universal Routers, 59 minutes not graduating and the hour graduating by the next swap, the hour by anyone's public call, a sell under the target restarting the hour, and Graduation surviving the price's fall back to the start with its time unchanged. |
-| `test/fork/ForkCreatorLock.t.sol` | In all three pairings: a lock of a fifth seeds four fifths; no claim before Graduation; the Admin refused; half the unlock time releasing half the lock and the end all of it, to the Creator; over a fifth and under seven days refused by name. |
+| `test/fork/ForkCreatorLock.t.sol` | In all three pairings: a lock of a fifth seeds four fifths; no claim before Graduation; the Admin refused; half the unlock time releasing half the lock and the end all of it, to the Creator; over a fifth and under seven days refused by name; what a lock adds to a launch's gas. |
 | `test/fork/ForkHoldGas.t.sol` | What the hold adds to a swap's gas, every path, cold, through the Universal Router; each step asserted to take its path. |
 | `test/fork/ForkGraduationBase.sol` | The three pairings, trades through either router, a round trip in one router call, and the price read against the target. |
 | `test/fork/ForkRouteBase.sol` | One trade through either router in a coin paired with NVDA or native ETH, carrying the hookData a front-end puts in it; a small base so the contracts over it stay clear of the stack limit. |
@@ -295,7 +310,9 @@ Scored against the v4 hooks knowledge base's `research/notes/05-safety-checklist
 | Price impacting behaviour | 0-3 | 2 | 2 | 2 | 2 | 3 | 2 | A hook fee on every swap, and a Referrer Fee on top when a trade names one; no buys or liquidity added inside a swap. |
 | **Total** | 0-33 | **15** | **15** | **14** | **13** | **17** | **13** | **Medium (7 to 17).** |
 
-Scored again for #244 on 2026-11-24: 15, unchanged. The hold adds a timestamp per pool and a public call, but no branch of the fee, no payment and no external input: the price it reads is the pool's own, after the swap. The Creator Lock is not part of the hook; scored on the same scale it totals 5 (Low): complexity 1 (a cliff and a straight line), custom math 1, external dependencies 0 (the hook's own record), external liquidity exposure 1 (it holds a Creator's coins), TVL potential 0 (a coin's value, not a pool's), team maturity 3, upgradeability 0, autonomous parameter updates 0, price impacting behaviour 0 (a claim moves coins to the Creator, who may sell them, as any holder may).
+Scored again for #244 on 2026-11-24: 15, unchanged.
+The hold adds a timestamp per pool and a public call, but no branch of the fee, no payment and no external input: the price it reads is the pool's own, after the swap.
+The Creator Lock is not part of the hook; scored on the same scale it totals 5 (Low): complexity 1 (a cliff and a straight line), custom math 1, external dependencies 0 (the hook's own record), external liquidity exposure 1 (it holds a Creator's coins), TVL potential 0 (a coin's value, not a pool's), team maturity 3, upgradeability 0, autonomous parameter updates 0, price impacting behaviour 0 (a claim moves coins to the Creator, who may sell them, as any holder may).
 Scored again for #243 on 2026-11-24: 15, one above #242's 14, for the Admin-driven recipient of the platform's share (autonomous parameter updates 1, rounded up).
 The Referrer Fee itself adds no dimension: it is a second rate on the branches that already took one, read from data every swap already carried.
 Scored again for #242 on 2026-11-23: 14, one above #241's 13, for the native Payout Call's added mode (complexity 3, rounded up as the checklist asks).
@@ -391,7 +408,8 @@ Operational (for #251):
 Slither 0.11.3 (`slither . --config-file <security standards>/tooling/slither.config.json --filter-paths "lib/|test/|script/"`) reports the same classes, and two more that are its own limits: it cannot generate IR for `StokerFactory._placeSeed` and `_firstBuy` (memory structs under via IR), and so reports `SUPPLY` as unused and the launch's `seed` as uninitialized, both of which those two functions use.
 For #242 it adds three: the factory "locks ether" (the same IR gap: `_firstBuy` settles exactly the value sent into the PoolManager or the launch reverts, and the tests and the native invariant hold the factory's balance at 0), the native Payout Call's reentrancy pattern (guarded, and the only writes after the calls add back refused Credits), and the assembly of the gas-capped call (on purpose, so no return data is copied).
 For #243 it adds four, each expected: the registry's timestamp comparisons (its clocks), the zero-address `proposeAdmin` (a withdrawal), `_book`'s writes after the PoolManager's `mint` (the only call before them, with our own keys' view), and the assembly in `_referral` (two `calldataload`s, so a malformed `hookData` reverts by name rather than inside `abi.decode`).
-It reports 31 results in all, every one a class triaged here.
+For #244 it adds eight, each expected: `claim`'s `paid == 0` as a strict equality (an amount, never a balance); `_keepHold` ignoring `getSlot0`'s other returns (only the price is needed); the lock's Creator without a zero check (the factory passes the launch's own caller); reentrancy in `_lockForCreator` (it creates our own lock and moves our own new coin, which has no hooks) and in `claim` (its event after the transfer of that plain coin, `claimed` written before it); timestamp comparisons in `released`, `claim` (through `released`) and `_holdComplete` (the hour and the schedule); and `_keepHold` "never used", Slither's own limit, since it does not follow the call from the `_afterSwap` override that every swap's test proves.
+It reports 39 results in all, every one a class triaged here.
 Running Slither and the security standards' gate in CI is #251's.
 
 ## Gotchas met here
@@ -411,7 +429,11 @@ Running Slither and the security standards' gate in CI is #251's.
 11. Gotcha 2's general form: `vm.expectRevert` binds to the next external call, and reading the pool's price for a limit (`getSlot0` is an `extsload`) inside the swap's own arguments is one; read the limit into a local first.
 12. Every handler function added to an invariant campaign dilutes the trades in a run: with #243's five, a run of 64 calls once held four trades, all stopped by their own limits, and `afterInvariant`'s "no swap went through" failed; the campaign now has four trade entry points.
     A failing sequence persists under `cache/invariant/failures/` and replays on the next run even after the fix, so delete the file once the cause is gone.
-13. A buy of half the seed takes a Direct Seed's coin to only four times its start price (a single-sided position to the top of the range: the price is the start over the square of what is left), so a helper meant to reach the 20-times target with "all the coins" stopped short; 95% of the seed reaches 400 times.
-14. A gas figure read with `gasleft()` in a test is flattered by every slot an earlier call in the same test warmed; `vm.cool` on each address the swap touches makes it what a transaction of its own pays (`ForkHoldGas.t.sol`).
-15. The Universal Router can sell what it just bought in the same call: an `amountIn` of zero is `OPEN_DELTA`, the router's whole credit in that currency, so one `V4_SWAP` buys, sells it all back and settles only the cost; with native ETH, a `SWEEP` returns the value left over (`_roundTripInOneCall`).
-16. Removing a guard that only repeats a write with the same value passes every test that reads the value; `_keepHold`'s early return for a graduated coin was caught only by counting its events (`test_graduation_isEmittedOnce_andNothingAfterIt`).
+13.
+    A buy of half the seed takes a Direct Seed's coin to only four times its start price (a single-sided position to the top of the range: the price is the start over the square of what is left), so a helper meant to reach the 20-times target with "all the coins" stopped short; 95% of the seed reaches 400 times.
+14.
+    A gas figure read with `gasleft()` in a test is flattered by every slot an earlier call in the same test warmed; `vm.cool` on each address the swap touches makes it what a transaction of its own pays (`ForkHoldGas.t.sol`).
+15.
+    The Universal Router can sell what it just bought in the same call: an `amountIn` of zero is `OPEN_DELTA`, the router's whole credit in that currency, so one `V4_SWAP` buys, sells it all back and settles only the cost; with native ETH, a `SWEEP` returns the value left over (`_roundTripInOneCall`).
+16.
+    Removing a guard that only repeats a write with the same value passes every test that reads the value; `_keepHold`'s early return for a graduated coin was caught only by counting its events (`test_graduation_isEmittedOnce_andNothingAfterIt`).
