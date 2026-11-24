@@ -3,6 +3,8 @@ pragma solidity 0.8.26;
 
 import {LocalBase} from "../utils/LocalBase.sol";
 import {OpcodeScan} from "../utils/OpcodeScan.sol";
+import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {StokerFactory} from "../../src/StokerFactory.sol";
 import {Distributor} from "../../src/Distributor.sol";
 
 /// The contracts read time only, never `block.number`, which on Robinhood Chain and Arbitrum is an
@@ -21,6 +23,18 @@ contract ClockTest is LocalBase {
         // The Opening Fee (#246) reads the timestamp, in the hook's swap and in the vault's buys.
         assertTrue(OpcodeScan.contains(address(hook).code, OpcodeScan.TIMESTAMP), "the hook reads the time");
         assertTrue(OpcodeScan.contains(address(taxVault).code, OpcodeScan.TIMESTAMP), "the vault reads the time");
+    }
+
+    /// A Creator Lock's runtime (#244) reads the time and never the block number.
+    function test_clock_theCreatorLockReadsTimeOnly() public {
+        StokerFactory.LaunchParams memory p = _params(true, 0);
+        p.creatorLockBps = 2_000;
+        p.creatorLockCliff = 7 days;
+        vm.prank(creator);
+        (, PoolId id) = factory.launch(p);
+        address lock = factory.creatorLockOf(id);
+        assertFalse(OpcodeScan.contains(lock.code, OpcodeScan.NUMBER), "lock");
+        assertTrue(OpcodeScan.contains(lock.code, OpcodeScan.TIMESTAMP), "the lock reads the time");
     }
 
     /// The Distributor's Round Delay reads the timestamp, never the block number (#247).

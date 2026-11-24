@@ -60,3 +60,18 @@ The spike also measured what #231's Graduation was worth.
 - A Creator Lock cannot be dated at launch, as on Solana: the page says "from Graduation" until the coin has graduated.
 - An ERC-20 First Buy is two signatures, so the launch form must say so before the Creator signs; #231's user story 3 becomes "one transaction".
 - The spike's figures (a start of about 24.8 NVDA for the whole supply, tick spacing 200, a target 30,000 ticks above the start) are evidence for the shape, not the Listings' values.
+
+## Amended on 2026-11-24 (#244, the review of PR #269): the hold judges the price a transaction leaves
+
+The decision above says "a swap that leaves the price below resets the hold".
+Built that way, swap by swap, the independent review of PR #269 showed that anyone with no coins and no capital could reset the hour: inside one PoolManager unlock a contract sells coins it does not own, taking the price under the target, and buys the same coins back, and flash accounting closes its coin delta at zero, so it pays only the round trip's fees.
+Five resets at 59-minute intervals kept a coin almost five hours above its target and never graduated, for about 0.07 ETH a day, which would hold Graduation, and with it a Creator Lock's clock, off for good.
+
+So the build judges the hold by the price each transaction leaves, never by a swap inside one (the agent's call, the owner's to overrule):
+
+- A pool's first swap in a transaction (a transient flag per pool, EIP-1153) judges the price standing before it, which is the price the last transaction to swap the pool left, standing since that transaction; the swaps after it in the same transaction are not judged.
+- A price left at or above the target starts the hold from the transaction that left it; a price left under it ends the hold; an unbroken hour graduates the coin at the hour's end, recorded by the next transaction to swap the pool or by the public call.
+- The public call refuses inside a transaction that has swapped the pool, and otherwise judges the record against the price standing now, so a price left under the target never graduates.
+
+A reset now needs the price left under the target across a transaction boundary, which takes real coins held across it and real exposure, and forcing Graduation (across the target and back in one transaction or one block) stays impossible.
+"A swap that leaves the price below" now reads "a transaction that leaves the price below".

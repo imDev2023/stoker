@@ -146,6 +146,26 @@ contract TaxHandler is Test {
     function trade(uint256 poolSeed, uint256 actorSeed, bool buy, bool exactIn, uint256 amount, uint256 limitSeed)
         external
     {
+        _trade(poolSeed, actorSeed, buy, exactIn, amount, limitSeed);
+    }
+
+    /// The same trade with no price limit of its own. With one trade among eight entry points a run of 64
+    /// calls made about five swaps, and some runs none, which failed `afterInvariant` at random (#276); three
+    /// of eleven now trade (the Books campaign's remedy, the README's gotcha 12).
+    function tradeNoLimit(uint256 poolSeed, uint256 actorSeed, bool buy, bool exactIn, uint256 amount) external {
+        _trade(poolSeed, actorSeed, buy, exactIn, amount, 1);
+    }
+
+    /// The same trade, a third of the time with a price limit of its own.
+    function tradeAgain(uint256 poolSeed, uint256 actorSeed, bool buy, bool exactIn, uint256 amount, uint256 limitSeed)
+        external
+    {
+        _trade(poolSeed, actorSeed, buy, exactIn, amount, limitSeed);
+    }
+
+    function _trade(uint256 poolSeed, uint256 actorSeed, bool buy, bool exactIn, uint256 amount, uint256 limitSeed)
+        internal
+    {
         uint256 k = poolSeed % _keys.length;
         address who = actors[actorSeed % actors.length];
         uint256 unit = _native(k) ? 0.05 ether : 1 ether;

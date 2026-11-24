@@ -141,7 +141,7 @@ abstract contract StokerTestBase is Test {
     /// Deploys `initCode` from this contract through an external call, so `vm.expectRevert` sees the
     /// creation revert one call deep. A `new` in the test's own frame is a cheatcode deployment at the test's
     /// depth: an expected revert there ends the whole test as a pass, and every case after the first is never
-    /// run (gotcha 24).
+    /// run (gotcha 31).
     function create(bytes memory initCode) external returns (address a) {
         assembly ("memory-safe") {
             a := create(0, add(initCode, 0x20), mload(initCode))
