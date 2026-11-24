@@ -67,12 +67,21 @@ contract StokerKeys {
 
     /// @notice The proposed address takes the Admin's place. From this call on the platform's share of every
     ///         fee is booked to it; whatever was booked to the previous Admin stays owed to that address.
+    ///         Every server-key proposal still waiting is voided: it was the previous Admin's choice, and a
+    ///         handover may be made because that Admin's device is no longer trusted. Keys already held stay.
     function acceptAdmin() external {
         address proposed = pendingAdmin;
         if (msg.sender != proposed || proposed == address(0)) revert NotProposed();
         address previous = admin;
         admin = proposed;
         pendingAdmin = address(0);
+        for (uint8 r; r <= uint8(type(Role).max); r++) {
+            Role role = Role(r);
+            if (_pendingHolders[role] != address(0)) {
+                _pendingHolders[role] = address(0);
+                emit KeyProposed(role, address(0));
+            }
+        }
         emit AdminHandedOver(previous, proposed);
     }
 

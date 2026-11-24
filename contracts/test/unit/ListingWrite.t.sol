@@ -4,6 +4,7 @@ pragma solidity 0.8.26;
 import {LocalBase} from "../utils/LocalBase.sol";
 import {ListingMath, ListingWrite} from "../../script/ListingWrite.s.sol";
 import {QuoteRegistry} from "../../src/QuoteRegistry.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 /// The tool that prepares the Admin's registry writes (ADR 0028): the start tick for an Opening Value, and
 /// calldata the registry takes when the Admin sends it.
@@ -42,6 +43,16 @@ contract ListingWriteTest is LocalBase {
         (ok,) = to.call(data);
         assertTrue(ok);
         assertEq(registry.listingOf(usdg).startTick, ListingMath.startTickFor(6e9, 200));
+
+        // A figure too large for its field is refused, never wrapped into another valid Listing
+        // (65,636 would wrap to a cap of 100; 65,556 to a multiple of 20).
+        vm.setEnv("CAP_BPS", "65636");
+        vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 16, 65_636));
+        tool.prepare(registry, "schedule", usdg);
+        vm.setEnv("CAP_BPS", "100");
+        vm.setEnv("MULTIPLE", "65556");
+        vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 16, 65_556));
+        tool.prepare(registry, "schedule", usdg);
 
         (, data) = tool.prepare(registry, "delist", usdg);
         assertEq(data, abi.encodeCall(QuoteRegistry.delist, (usdg)));
