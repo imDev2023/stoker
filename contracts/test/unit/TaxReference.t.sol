@@ -341,13 +341,19 @@ contract TaxReferenceTest is TaxLocalBase {
         IHoldersPart d = holdersPart;
         IPoolManager m = pm;
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 60, 10, 0, 60_000, 200);
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 10, 0, 60_000, 200))
+        );
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 60, 10, 1_001, 60_000, 200);
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 10, 1_001, 60_000, 200))
+        );
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 60, 10, 2, 1, 200);
+        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 10, 2, 1, 200)));
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 60, 10, 2, 60_000, 2_001);
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 10, 2, 60_000, 2_001))
+        );
         new TaxVault(m, stranger, d, 50, 60, 10, 1_000, 1_000, 2_000);
         new TaxVault(m, stranger, d, 50, 60, 10, 1, type(uint24).max, 0);
     }

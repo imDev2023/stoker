@@ -70,6 +70,7 @@ abstract contract TaxHelpers is StokerTestBase {
         if (p.quote != address(0)) quote.approve(address(factory), p.firstBuy);
         (coin,) = factory.launch{value: p.quote == address(0) ? p.firstBuy : 0}(p);
         vm.stopPrank();
+        _pastOpening();
         key = p.quote == address(0) ? _nativeKey(coin) : _keyFor(coin);
     }
 
