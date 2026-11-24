@@ -130,6 +130,27 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork", () => 
     expect(coin.market.volume24h.raw).toBe(volume.toString());
   });
 
+  test("a Reward Launch's tax is in what its trades paid and received, and its terms are on the coin", async () => {
+    const trader = await evmWallet();
+    const l = await launchCoin(await evmWallet(), { reward: { taxBps: 300, burnShareBps: 1000, liquidityShareBps: 0 } });
+    const buyIn = 10n ** 16n;
+    await swapExactIn(trader, l, "buy", buyIn);
+    const coins = await balanceOf(l.coin, trader.address);
+    const before = await balanceOf(NATIVE, trader.address);
+    const { gas } = await swapExactIn(trader, l, "sell", coins);
+    const received = (await balanceOf(NATIVE, trader.address)) - before + gas;
+
+    await runIndexer();
+    const coin = LaunchSummary.parse(await api(`/v1/launches/${l.coin}`));
+    expect(coin.rewardTax).toEqual({ bps: 300, payout: "quote", burnBps: 1000, liquidityBps: 0, locked: null });
+    expect(coin.liquidityTax).toBeNull();
+    const { trades } = TradeList.parse(await api(`/v1/launches/${l.coin}/trades`));
+    expect(trades.map((t) => [t.side, t.baseAmount, t.quoteAmount])).toEqual([
+      ["sell", coins.toString(), received.toString()],
+      ["buy", coins.toString(), buyIn.toString()],
+    ]);
+  });
+
   test("an exact-out buy naming a referrer appears with what the wallet paid and the Referrer Fee credited", async () => {
     const trader = await evmWallet();
     const referrer = await evmWallet(0n);

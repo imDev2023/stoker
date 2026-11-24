@@ -119,6 +119,8 @@ async function writeLaunch(db: Db, c: EvmChainConfig, client: PublicClient, e: L
       totalBaseSell: supply.toString(),
       // On an EVM chain the Graduation Target is a price (ADR 0024), written into the Launch's terms; Graduation is #244.
       graduationTarget: "0",
+      // The tax terms the hook registered (#245): a Reward Launch's tax and shares, or a Stoke Launch's tax alone.
+      ...taxColumns(e),
       createdSignature: receipt.transactionHash,
       createdSlot: Number(receipt.blockNumber),
       createdAt: blockTime,
@@ -131,6 +133,13 @@ async function writeLaunch(db: Db, c: EvmChainConfig, client: PublicClient, e: L
     pools.set(e.poolId, { poolId: e.poolId, coin: e.coin, quote: e.quote, quoteIsCurrency0: e.quoteIsCurrency0, coinDecimals: decimals, quoteDecimals: quote.decimals, price: start });
   }
   return inserted.length;
+}
+
+/** A Launch's tax terms as Solana's columns hold them (ADR 0006): none for a standard coin. */
+function taxColumns(e: LaunchEvent): Partial<typeof launches.$inferInsert> {
+  if (e.launchType === "standard") return {};
+  if (e.launchType === "liquidity") return { taxKind: "liquidity", rewardTaxBps: e.taxBps };
+  return { taxKind: "reward", rewardTaxBps: e.taxBps, rewardPayout: e.payoutAsset, rewardBurnBps: e.burnShareBps, rewardLiquidityBps: e.liquidityShareBps };
 }
 
 /** Writes every trade in our pools the receipt records, each moving its coin's market (`insertTrade`). */

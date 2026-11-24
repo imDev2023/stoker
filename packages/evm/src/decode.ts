@@ -24,6 +24,12 @@ export type LaunchEvent = {
   creatorShareBps: number;
   referrerFeeCapBps: number;
   graduationMultiple: number;
+  /** The tax terms the hook's `TaxTermsRegistered` wrote (#245): the launch type and its shares, fixed at launch. */
+  launchType: "standard" | "reward" | "liquidity";
+  taxBps: number;
+  burnShareBps: number;
+  liquidityShareBps: number;
+  payoutAsset: "quote" | "coin";
   logIndex: number;
 };
 
@@ -45,6 +51,8 @@ export type TradeEvent = {
   creatorCredit: bigint;
   referrer: Address | null;
   referrerFee: bigint;
+  /** The coin's Reward Tax or Stoke Tax the swap paid, in the Quote Asset, to the Tax Vault (#245). */
+  tax: bigint;
   /** Uniswap's protocol fee, at the rate the swap reports: in the Quote Asset on a buy, in coins on a sell. */
   protocolFee: bigint;
   sqrtPriceX96: bigint;
@@ -57,6 +65,8 @@ type Decoded =
   | { kind: "registered"; logIndex: number; args: { poolId: Hex; platformFeeBps: number; creatorShareBps: number; referrerFeeCapBps: number; quoteIsCurrency0: boolean; graduationMultiple: number } }
   | { kind: "fee"; logIndex: number; poolId: Hex; fee: bigint; creatorCredit: bigint }
   | { kind: "referrer"; logIndex: number; poolId: Hex; referrer: Address; fee: bigint }
+  | { kind: "tax"; logIndex: number; poolId: Hex; tax: bigint }
+  | { kind: "taxTerms"; logIndex: number; args: { poolId: Hex; launchType: number; taxBps: number; burnShareBps: number; liquidityShareBps: number; payoutAsset: number } }
   | { kind: "swap"; logIndex: number; poolId: Hex; amount0: bigint; amount1: bigint; sqrtPriceX96: bigint; feePips: number };
 
 export type ChainContracts = { factory: Address; hook: Address; poolManager: Address };
@@ -75,6 +85,8 @@ function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
         const e = decodeEventLog({ abi: stokerHookAbi, data: log.data, topics });
         if (e.eventName === "LaunchRegistered") out.push({ kind: "registered", logIndex, args: e.args });
         else if (e.eventName === "FeeCredited") out.push({ kind: "fee", logIndex, poolId: e.args.poolId, fee: e.args.fee, creatorCredit: e.args.creatorCredit });
+        else if (e.eventName === "TaxBooked") out.push({ kind: "tax", logIndex, poolId: e.args.poolId, tax: e.args.tax });
+        else if (e.eventName === "TaxTermsRegistered") out.push({ kind: "taxTerms", logIndex, args: e.args });
         else if (e.eventName === "ReferrerFeeCredited") out.push({ kind: "referrer", logIndex, poolId: e.args.poolId, referrer: checksum(e.args.referrer), fee: e.args.fee });
       } else if (isAddressEqual(log.address, c.poolManager)) {
         const e = decodeEventLog({ abi: iPoolManagerAbi, data: log.data, topics });
@@ -87,89 +99,104 @@ function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
   return out.sort((a, b) => a.logIndex - b.logIndex);
 }
 
+/** `StokerHook.LaunchType` and `StokerHook.PayoutAsset`, in their declared order. */
+const LAUNCH_TYPES = ["standard", "reward", "liquidity"] as const;
+const PAYOUT_ASSETS = ["quote", "coin"] as const;
+
 /** The Launches a receipt's logs record: each factory `Launched` with its hook `LaunchRegistered`. */
 export function decodeLaunches(logs: readonly Log[], c: ChainContracts): LaunchEvent[] {
   const events = decodeLogs(logs, c);
   const terms = new Map(events.flatMap((e) => (e.kind === "registered" ? [[e.args.poolId, e.args] as const] : [])));
+  const taxes = new Map(events.flatMap((e) => (e.kind === "taxTerms" ? [[e.args.poolId, e.args] as const] : [])));
   return events.flatMap((e) => {
     if (e.kind !== "launched") return [];
     const t = terms.get(e.args.poolId);
-    if (!t) throw new Error(`launch of ${e.args.coin} has no LaunchRegistered in its transaction`);
-    return [{ ...e.args, quoteIsCurrency0: t.quoteIsCurrency0, platformFeeBps: t.platformFeeBps, creatorShareBps: t.creatorShareBps, referrerFeeCapBps: t.referrerFeeCapBps, graduationMultiple: t.graduationMultiple, logIndex: e.logIndex }];
+    const x = taxes.get(e.args.poolId);
+    if (!t || !x) throw new Error(`launch of ${e.args.coin} has no LaunchRegistered and TaxTermsRegistered in its transaction`);
+    return [{
+      ...e.args, quoteIsCurrency0: t.quoteIsCurrency0, platformFeeBps: t.platformFeeBps, creatorShareBps: t.creatorShareBps, referrerFeeCapBps: t.referrerFeeCapBps,
+      graduationMultiple: t.graduationMultiple, launchType: LAUNCH_TYPES[x.launchType]!, taxBps: x.taxBps, burnShareBps: x.burnShareBps,
+      liquidityShareBps: x.liquidityShareBps, payoutAsset: PAYOUT_ASSETS[x.payoutAsset]!, logIndex: e.logIndex,
+    }];
   });
 }
 
 /**
  * The trades in our pools a receipt's logs record. Within one `PoolManager.swap` the hook books its fees either before
- * the pool runs (an exact-in buy, an exact-out sell: `[ReferrerFeeCredited] FeeCredited Swap`) or after it (an exact-in
- * sell, an exact-out buy: `Swap [ReferrerFeeCredited] FeeCredited`), and nothing of ours is logged in between, so read in
- * order each `Swap` takes the fee group just before it if one is waiting, and otherwise the one just after it. A swap
- * that moved no Quote Asset at all (selling dust worth less than one raw unit) books no fee and is the only swap with
- * no group.
+ * the pool runs (an exact-in buy, an exact-out sell: `[ReferrerFeeCredited] FeeCredited [TaxBooked] Swap`) or after it
+ * (an exact-in sell, an exact-out buy: `Swap [ReferrerFeeCredited] FeeCredited [TaxBooked]`), and nothing of ours is
+ * logged in between, so read in order each `Swap` takes the fee group just before it if one is waiting, and otherwise
+ * the one just after it. A swap that moved no Quote Asset at all (selling dust worth less than one raw unit) books no
+ * fee and is the only swap with no group.
  */
 export function decodeTrades(logs: readonly Log[], c: ChainContracts, pools: ReadonlyMap<Hex, PoolInfo>): TradeEvent[] {
-  type Ours = Extract<Decoded, { kind: "swap" | "fee" | "referrer" }>;
-  const events = decodeLogs(logs, c).filter((e): e is Ours => (e.kind === "swap" || e.kind === "fee" || e.kind === "referrer") && pools.has(e.poolId));
-  type Group = { poolId: Hex; fee: bigint; creatorCredit: bigint; referrer: Address | null; referrerFee: bigint };
-  const trades: TradeEvent[] = [];
+  type Ours = Extract<Decoded, { kind: "swap" | "fee" | "referrer" | "tax" }>;
+  const events = decodeLogs(logs, c).filter(
+    (e): e is Ours => (e.kind === "swap" || e.kind === "fee" || e.kind === "referrer" || e.kind === "tax") && pools.has(e.poolId),
+  );
+  type Group = { poolId: Hex; fee: bigint; creatorCredit: bigint; referrer: Address | null; referrerFee: bigint; tax: bigint };
+  type Swap = { poolId: Hex; logIndex: number; quoteDelta: bigint; coinDelta: bigint; sqrtPriceX96: bigint; feePips: number; group: Group | null };
+  const swaps: Swap[] = [];
   let waiting: Group | null = null;
+  let open: Swap | null = null;
+  let last: Group | null = null;
   let pendingReferrer: { poolId: Hex; referrer: Address; fee: bigint } | null = null;
-  let open: { trade: TradeEvent; info: PoolInfo; quoteDelta: bigint; coinDelta: bigint; feePips: number } | null = null;
-
-  const settle = (o: NonNullable<typeof open>, g: Group | null) => {
-    const buy = o.coinDelta > 0n;
-    const poolQuote = buy ? -o.quoteDelta : o.quoteDelta;
-    const taken = (g?.fee ?? 0n) + (g?.referrerFee ?? 0n);
-    o.trade.side = buy ? "buy" : "sell";
-    o.trade.coinAmount = buy ? o.coinDelta : -o.coinDelta;
-    o.trade.quoteAmount = buy ? poolQuote + taken : poolQuote - taken;
-    o.trade.platformFee = g?.fee ?? 0n;
-    o.trade.creatorCredit = g?.creatorCredit ?? 0n;
-    o.trade.referrer = g?.referrer ?? null;
-    o.trade.referrerFee = g?.referrerFee ?? 0n;
-    o.trade.protocolFee = protocolFeeOn(buy ? poolQuote : o.trade.coinAmount, o.feePips);
-    trades.push(o.trade);
-  };
+  const orphan = (what: string, poolId: Hex) => new Error(`${what} in ${poolId} has no ${what.startsWith("swap") ? "fee booked" : "swap"} beside it`);
 
   for (const e of events) {
     if (e.kind === "referrer") {
       pendingReferrer = { poolId: e.poolId, referrer: e.referrer, fee: e.fee };
       continue;
     }
+    if (e.kind === "tax") {
+      // `_bookTax` runs right after `_book` in the same callback, so the tax belongs to the group just booked.
+      if (!last || last.poolId !== e.poolId) throw orphan("tax", e.poolId);
+      last.tax += e.tax;
+      continue;
+    }
     if (e.kind === "fee") {
       const referrer = pendingReferrer?.poolId === e.poolId ? pendingReferrer : null;
       pendingReferrer = null;
-      const group: Group = { poolId: e.poolId, fee: e.fee, creatorCredit: e.creatorCredit, referrer: referrer?.referrer ?? null, referrerFee: referrer?.fee ?? 0n };
-      if (open && open.trade.poolId === e.poolId) {
-        settle(open, group);
+      const group: Group = { poolId: e.poolId, fee: e.fee, creatorCredit: e.creatorCredit, referrer: referrer?.referrer ?? null, referrerFee: referrer?.fee ?? 0n, tax: 0n };
+      last = group;
+      if (open && open.poolId === e.poolId) {
+        open.group = group;
         open = null;
       } else {
-        if (open) throw new Error(`swap in ${open.trade.poolId} at log ${open.trade.logIndex} has no fee booked beside it`);
+        if (open) throw orphan(`swap at log ${open.logIndex}`, open.poolId);
         waiting = group;
       }
       continue;
     }
-    // A Swap.
-    if (open) throw new Error(`swap in ${open.trade.poolId} at log ${open.trade.logIndex} has no fee booked beside it`);
+    if (open) throw orphan(`swap at log ${open.logIndex}`, open.poolId);
     const info = pools.get(e.poolId)!;
-    const quoteDelta = info.quoteIsCurrency0 ? e.amount0 : e.amount1;
-    const coinDelta = info.quoteIsCurrency0 ? e.amount1 : e.amount0;
-    const trade: TradeEvent = {
-      poolId: e.poolId, side: "buy", coinAmount: 0n, quoteAmount: 0n, platformFee: 0n, creatorCredit: 0n, referrer: null, referrerFee: 0n, protocolFee: 0n,
-      sqrtPriceX96: e.sqrtPriceX96, logIndex: e.logIndex,
+    const swap: Swap = {
+      poolId: e.poolId, logIndex: e.logIndex, sqrtPriceX96: e.sqrtPriceX96, feePips: e.feePips, group: null,
+      quoteDelta: info.quoteIsCurrency0 ? e.amount0 : e.amount1, coinDelta: info.quoteIsCurrency0 ? e.amount1 : e.amount0,
     };
-    const o = { trade, info, quoteDelta, coinDelta, feePips: e.feePips };
+    swaps.push(swap);
+    last = null;
     if (waiting && waiting.poolId === e.poolId) {
-      settle(o, waiting);
+      swap.group = waiting;
       waiting = null;
-    } else if (quoteDelta === 0n) {
-      settle(o, null);
-    } else {
-      if (waiting) throw new Error(`fee booked in ${waiting.poolId} has no swap beside it`);
-      open = o;
+    } else if (swap.quoteDelta !== 0n) {
+      if (waiting) throw orphan("fee", waiting.poolId);
+      open = swap;
     }
   }
-  if (open) throw new Error(`swap in ${open.trade.poolId} at log ${open.trade.logIndex} has no fee booked beside it`);
-  if (waiting) throw new Error(`fee booked in ${waiting.poolId} has no swap beside it`);
-  return trades;
+  if (open) throw orphan(`swap at log ${open.logIndex}`, open.poolId);
+  if (waiting) throw orphan("fee", waiting.poolId);
+
+  return swaps.map((s) => {
+    const buy = s.coinDelta > 0n;
+    const poolQuote = buy ? -s.quoteDelta : s.quoteDelta;
+    const g = s.group;
+    const taken = (g?.fee ?? 0n) + (g?.referrerFee ?? 0n) + (g?.tax ?? 0n);
+    const coinAmount = buy ? s.coinDelta : -s.coinDelta;
+    return {
+      poolId: s.poolId, side: buy ? "buy" : "sell", coinAmount, quoteAmount: buy ? poolQuote + taken : poolQuote - taken,
+      platformFee: g?.fee ?? 0n, creatorCredit: g?.creatorCredit ?? 0n, referrer: g?.referrer ?? null, referrerFee: g?.referrerFee ?? 0n, tax: g?.tax ?? 0n,
+      protocolFee: protocolFeeOn(buy ? poolQuote : coinAmount, s.feePips), sqrtPriceX96: s.sqrtPriceX96, logIndex: s.logIndex,
+    };
+  });
 }

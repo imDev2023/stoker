@@ -41,7 +41,13 @@ export type PoolKey = { currency0: Address; currency1: Address; fee: number; tic
 let salts = 0;
 
 /** Launches a coin as a Creator would, in one transaction; a native First Buy is the value sent. */
-export async function launchCoin(creator: { key: Hex }, opts: { quote?: Address; firstBuy?: bigint; name?: string; symbol?: string } = {}): Promise<EvmLaunch> {
+/** `StokerHook.LaunchType`: a standard coin, a Reward Launch, a Stoke Launch (`liquidity` in code, #215). */
+export const LAUNCH_TYPE = { standard: 0, reward: 1, liquidity: 2 } as const;
+
+export async function launchCoin(
+  creator: { key: Hex },
+  opts: { quote?: Address; firstBuy?: bigint; name?: string; symbol?: string; reward?: { taxBps: number; burnShareBps: number; liquidityShareBps: number } } = {},
+): Promise<EvmLaunch> {
   const e = evm()!;
   const quote = opts.quote ?? NATIVE;
   const firstBuy = opts.firstBuy ?? 0n;
@@ -49,7 +55,9 @@ export async function launchCoin(creator: { key: Hex }, opts: { quote?: Address;
   const wallet = clients().wallet(creator.key);
   const hash = await wallet.writeContract({
     address: e.factory, abi: stokerFactoryAbi, functionName: "launch",
-    args: [{ name: opts.name ?? `Fork Coin ${tag}`, symbol: opts.symbol ?? `F${tag}`, quote, salt: keccak256(toHex(tag)), creatorDestination: NATIVE, firstBuy }],
+    args: [{ name: opts.name ?? `Fork Coin ${tag}`, symbol: opts.symbol ?? `F${tag}`, quote, salt: keccak256(toHex(tag)), creatorDestination: NATIVE, firstBuy,
+      launchType: opts.reward ? LAUNCH_TYPE.reward : LAUNCH_TYPE.standard, taxBps: opts.reward?.taxBps ?? 0, burnShareBps: opts.reward?.burnShareBps ?? 0,
+      liquidityShareBps: opts.reward?.liquidityShareBps ?? 0, payoutAsset: 0 }],
     value: quote === NATIVE ? firstBuy : 0n,
   });
   const receipt = await clients().public.waitForTransactionReceipt({ hash });
