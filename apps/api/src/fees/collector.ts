@@ -85,7 +85,8 @@ export async function collectFees({ db, cfg, operations }: CollectorDeps): Promi
   };
 
   // The Platform Fee: one vault per Quote Asset, shared by every Launch against it.
-  const quoteMints = (await db.selectDistinct({ mint: launches.quoteMint }).from(launches).orderBy(launches.quoteMint))
+  // Solana's Launches alone: an EVM chain's coins pay their fees into its hook, never a LaunchLab vault (#252).
+  const quoteMints = (await db.selectDistinct({ mint: launches.quoteMint }).from(launches).where(eq(launches.chain, "solana")).orderBy(launches.quoteMint))
     .map((r) => new PublicKey(r.mint));
   for (const v of await readPlatformFeeVaults(connection, cfg.launchlab, cfg.platformConfig, quoteMints)) {
     if (v.balance === 0n) continue;

@@ -24,7 +24,8 @@ jobs:
 
   # The black-box backend suite: the API under wrangler, a real Postgres, and the local chain on Surfpool (the Raydium
   # devnet programs from fixtures, embedded in the test process; see tools/localnet), since runners have no
-  # solana-test-validator.
+  # solana-test-validator. With the ROBINHOOD_RPC_URL secret the stack also forks Robinhood Chain under anvil with our
+  # contracts deployed (#252); without it (a pull request from a fork gets no secrets) the EVM tests skip by name.
   backend:
     runs-on: ubuntu-latest
     # The suite takes 28 to 30 minutes on a runner (2026-11-16): at 30 the limit cancelled runs that had failed nothing.
@@ -51,12 +52,24 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # anvil, for the stack's fork of Robinhood Chain.
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.3
+      # What the fork read at the pinned block, so a run reads the RPC only for state it has not seen.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.foundry/cache/rpc/4663
+          key: backend-fork-4663-120800000-${{ hashFiles('tests/backend/src/evm*.ts') }}
+          restore-keys: backend-fork-4663-120800000-
       - run: pnpm test:backend
         env:
           # Each suite makes its own throwaway database on this server (tools/stack).
           STACK_DATABASE_URL: postgres://test:test@127.0.0.1:5432/postgres
           LOCALNET_RUNTIME: surfpool
           WRANGLER_SEND_METRICS: "false"
+          # An archive endpoint; the URL carries a key, which the stack keeps out of every log (tools/stack).
+          ROBINHOOD_RPC_URL: ${{ secrets.ROBINHOOD_RPC_URL }}
 
   # The EVM contracts' Foundry workspace (contracts/, #241): its own job, apart from the site's.
   # Every test that needs no RPC runs on every push; the fork tests of Robinhood Chain run only where the
@@ -82,6 +95,8 @@ jobs:
       - run: ./script/deps.sh
       - run: forge fmt --check
       - run: forge build --sizes
+      # The EVM package's ABIs and bytecode must be what this build gives (#252): rerun the script after a contract change.
+      - run: node ../packages/evm/scripts/artifacts.mjs --check
       - run: forge lint src
       - run: forge test --no-match-path 'test/fork/**'
       - uses: actions/cache@v6

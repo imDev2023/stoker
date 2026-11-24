@@ -202,7 +202,7 @@ describe("the Platform Fee", () => {
     expect((await lamportsOf(ops())) - before).toBe(paid - share - (await networkFees([...sentBy(run), ...forwards].map((s) => s.signature))));
 
     expect(await entriesOf([claims[0]!.signature])).toEqual([{
-      signature: claims[0]!.signature, index: 0, kind: "platform_fee", asset: expect.objectContaining({ mint: WSOL, symbol: "SOL", decimals: 9 }),
+      chain: "solana", signature: claims[0]!.signature, index: 0, kind: "platform_fee", asset: expect.objectContaining({ mint: WSOL, symbol: "SOL", decimals: 9 }),
       amount: paid.toString(), source: vault.toBase58(), destination: ops().toBase58(), launch: null, slot: expect.any(Number), time: expect.any(String),
     }]);
   });

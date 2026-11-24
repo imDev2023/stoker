@@ -188,7 +188,7 @@ describe("on the curve", () => {
       kind: "creator_forward", asset: { mint: WSOL, symbol: "SOL" }, amount: earned.toString(), source: ops().toBase58(), destination: creator.publicKey.toBase58(), launch: null,
     });
     expect(await forwards(creator.publicKey)).toEqual([
-      { signature: mine[0]!.signature, quote: expect.objectContaining({ mint: WSOL }), amount: earned.toString(), status: "paid", time: entry!.time },
+      { chain: "solana", signature: mine[0]!.signature, quote: expect.objectContaining({ mint: WSOL }), amount: earned.toString(), status: "paid", time: entry!.time },
     ]);
     const after = await earnings(creator.publicKey);
     expect(after.assets[0]).toMatchObject({ earned: earned.toString(), forwarded: earned.toString(), pending: "0" });
@@ -404,7 +404,7 @@ describe("the Graduation Fee", () => {
     // One Ledger entry, keyed by the graduation's own transaction: the Creator's share to the platform, in SOL, with the coin.
     const entries = (await ledgerFees()).filter((e) => e.launch?.mint === prepared.mint);
     expect(entries).toEqual([{
-      signature: migration.signature, index: 1000, kind: "graduation_fee", asset: expect.objectContaining({ mint: WSOL, symbol: "SOL" }), amount: fee.toString(),
+      chain: "solana", signature: migration.signature, index: 1000, kind: "graduation_fee", asset: expect.objectContaining({ mint: WSOL, symbol: "SOL" }), amount: fee.toString(),
       source: creator.publicKey.toBase58(), destination: ops().toBase58(), launch: { mint: prepared.mint, symbol: expect.stringMatching(/^GFEE/), name: expect.any(String) },
       slot: expect.any(Number), time: expect.any(String),
     }]);

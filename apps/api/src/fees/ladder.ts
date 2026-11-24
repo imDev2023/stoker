@@ -96,7 +96,8 @@ async function countActiveDays(db: Db, daySeconds: number, floorBps: number) {
     .select({ mint: trades.mint, day: day.as("day") })
     .from(trades)
     .innerJoin(launches, eq(launches.mint, trades.mint))
-    .where(sql`${trades.venue} = 'pool' and not exists (select 1 from ${creatorTiers} ct where ct.mint = ${trades.mint} and ct.tier = ${TOP_TIER}::int)`)
+    // Solana's pools alone: an EVM coin's Active Days are counted with its chain's jobs (#254), against its own target.
+    .where(sql`${trades.chain} = 'solana' and ${trades.venue} = 'pool' and not exists (select 1 from ${creatorTiers} ct where ct.mint = ${trades.mint} and ct.tier = ${TOP_TIER}::int)`)
     .groupBy(trades.mint, day, launches.graduationTarget)
     .having(sql`sum(${trades.quoteAmount}) * 10000 >= ${launches.graduationTarget} * ${floorBps}::int`)
     .as("active");

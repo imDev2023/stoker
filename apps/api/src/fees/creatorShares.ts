@@ -66,7 +66,8 @@ const paysWallet = sql`${launches.earningsDestination} = 'wallet'`;
 
 /** Each Creator's share per Quote Asset. A pool's share only ever counts collected fees: the Ledger knows no others. */
 export async function creatorShares(db: Db, scope: Scope): Promise<CreatorShare[]> {
-  const mine = sql`${scope.creator ? sql`and ${launches.creator} = ${scope.creator}` : sql``} ${scope.walletOnly ? sql`and ${paysWallet}` : sql``}`;
+  // Solana's coins alone: an EVM coin's Creator is paid by its hook's Credits, never by a Creator Forward (ADR 0025, #252).
+  const mine = sql`and ${launches.chain} = 'solana' ${scope.creator ? sql`and ${launches.creator} = ${scope.creator}` : sql``} ${scope.walletOnly ? sql`and ${paysWallet}` : sql``}`;
   const [curve, pool] = await Promise.all([
     db
       .select({ creator: launches.creator, mint: launches.quoteMint, amount: sql<string>`${curveShare}` })

@@ -9,7 +9,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p .",
-    "stand-ins": "tsx src/stand-ins.ts"
+    "stand-ins": "tsx src/stand-ins.ts",
+    "evm-fork": "tsx src/evm-fork.ts"
   },
   "dependencies": {
     "@launchpad/arweave": "workspace:*",
