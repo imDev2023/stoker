@@ -403,7 +403,7 @@ REGISTRY=0x... ACTION=list QUOTE=0x... OPENING_VALUE=5000000000 MULTIPLE=20 CAP_
   The first run reads the chain; later runs read Foundry's cache under `~/.foundry/cache/rpc/4663/`.
 - CI (`.github/workflows/ci.yml`, job `contracts`) checks the format, builds with sizes, lints `src`, and runs every test that needs no RPC on every push, with deeper fuzz and invariant campaigns (`FOUNDRY_PROFILE=ci`); it runs the fork tests only where the repository has the `ROBINHOOD_RPC_URL` secret.
 
-Results on 2026-11-24 with #246 after its review, #247 and #271 merged in: 295 local tests (the Opening Fee's in six unit files and an invariant campaign) and 72 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too; each of the Opening Fee's 21 guards, removed in turn, fails a named test (the PR lists them), and eight earlier constructor tests now check every case (gotcha 31).
+Results on 2026-11-24 with #246 after its two reviews, #244, #247 and #271 merged in: 464 local tests (the Opening Fee's in seven unit files, one of them with Graduation and the Creator Lock, and an invariant campaign) and 98 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too; each of the Opening Fee's 21 guards, removed in turn, fails a named test (the PR lists them), and eight earlier constructor tests now check every case (gotcha 31).
 Results on 2026-11-24, #244 with #243, #245, #247 and #271 merged in and the hold judged per transaction: 414 local tests (unit, fuzz, and every campaign's invariants, three of Graduation and the Creator Lock among them, one campaign per pairing) and 90 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
 Each of #244's guards, removed in turn, fails a named test (the PR lists them): fifteen in the hook as reworked, and the lock's and the factory's six; one was first missed and its test added.
 Results on 2026-11-24, #271 as its lane pushed it, with #247 merged in: 251 local tests (unit, fuzz, every invariant campaign, the held-price reproduction, its fuzz and the Reference Price's tests) and 64 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too; the held-price fuzz also passed 60,000 runs.
@@ -419,16 +419,16 @@ Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test
 
 | Contract | Runtime | Initcode | #245 | #243 | #242 | #241 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `StokerFactory` | 15,293 | 31,645 | 12,155 / 25,463 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
-| `StokerHook` | 14,247 | 15,483 | 11,461 / 12,447 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
+| `StokerFactory` | 15,698 | 34,222 | 12,155 / 25,463 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
+| `StokerHook` | 16,256 | 17,513 | 11,461 / 12,447 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
 | `StokerCreatorLock` | 1,955 | 2,288 | new | new | new | new |
-| `TaxVault` | 12,128 | 12,835 | 11,417 / 11,947 | new | new | new |
+| `TaxVault` | 12,402 | 13,109 | 11,417 / 11,947 | new | new | new |
 | `QuoteRegistry` | 3,740 | 3,965 | unchanged | new | new | new |
 | `StokerKeys` | 1,291 | 1,483 | unchanged | new | new | new |
 | `Distributor` (#247) | 5,998 | 6,231 | new | new | new | new |
 | `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged | unchanged | unchanged |
 
-The factory grew by the lock's creation code, which it carries to deploy a lock, and #245's tax terms; it stays 9,283 bytes under the 24,576 limit, and the hook, with #271's Reference Price beside the hold, 10,329.
+The factory grew by the lock's creation code, which it carries to deploy a lock, and #245's tax terms; it stays 8,878 bytes under the 24,576 limit, and the hook, with #271's Reference Price, the hold and #246's Opening Fee, 8,320.
 
 Launch gas on the fork, a standard Launch: about 1.25M with a permit First Buy in NVDA, about 1.10M with a native First Buy (#246, the Opening Fee's terms in a third slot; #245: 1.23M and 1.07M, the tax terms written beside the rest; #243: 1.22M and 1.06M; #242: 1.18M and 1.03M; the Listing's three figures and the Graduation Target are read and written into the terms).
 A swap costs about 8,000 gas more than in #242: the terms take a second slot and the Admin is read from the keys; #246 adds a third slot, about 2,100 gas cold, and a buy inside the Opening Fee mints once more to the vault.

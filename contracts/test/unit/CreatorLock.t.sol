@@ -52,6 +52,8 @@ abstract contract CreatorLockCases is LocalBase {
         if (!_native() && p.firstBuy > 0) quote.approve(address(factory), p.firstBuy);
         (coin, id) = factory.launch{value: _native() ? p.firstBuy : 0}(p);
         vm.stopPrank();
+        // Past the Opening Fee (#246), so the buys below trade as they would after a coin's first seconds.
+        _pastOpening();
     }
 
     function _launchLocked(uint16 bps, uint32 cliff, uint32 unlock)
