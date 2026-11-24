@@ -214,6 +214,8 @@ describe.skipIf(!hasEvm)("EVM chain: a stricter RPC, a run's budget, and a deplo
     expect(res.status).toBe(500);
     expect(((await res.json()) as { error: string }).error).toContain("names robinhood twice");
     // Solana's board answers the same through it as through the stack's own API.
-    expect(await api("/v1/launches?chain=solana&limit=20", brokenApi.url)).toEqual(await api("/v1/launches?chain=solana&limit=20"));
+    // (each API names its own URL in a coin's image, so the coins are compared by address)
+    const mints = async (base: string) => ((await api("/v1/launches?chain=solana&limit=20", base)) as { launches: { mint: string }[] }).launches.map((x) => x.mint);
+    expect(await mints(brokenApi.url)).toEqual(await mints(env().apiUrl));
   });
 });
