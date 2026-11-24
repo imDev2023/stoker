@@ -43,6 +43,8 @@ contract TaxVaultTest is TaxLocalBase {
             _trade(key, trader, true, true, 40 * u);
             _trade(key, trader, false, true, _coinOfKey(key).balanceOf(trader) / 2);
         }
+        // The vault spends at a price that has stood (#271).
+        _letThePriceStand();
     }
 
     function _waiting(PoolKey memory key)
@@ -184,7 +186,8 @@ contract TaxVaultTest is TaxLocalBase {
                 vm.prank(stranger);
                 (uint256 spent,) = taxVault.burn(key);
                 spentTotal += spent;
-                vm.warp(vm.getBlockTimestamp() + PIECE_INTERVAL);
+                // Each burn's own buy moves the price, which the next buy waits for the reference to follow.
+                _letThePriceStand();
             }
             (uint256 burnLeft, uint256 supportAfter, uint256 holdersAfter,) = _waiting(key);
             assertEq(spentTotal + burnLeft, booked * 2_500 / 10_000, "the burn spent its quarter, no more");
@@ -219,6 +222,7 @@ contract TaxVaultTest is TaxLocalBase {
             _trade(key, trader, false, true, _coinOfKey(key).balanceOf(trader));
         }
         _trade(key, creator, false, true, _coinOfKey(key).balanceOf(creator));
+        _letThePriceStand();
         // What the pool itself holds now: the PoolManager's Quote Asset less every claim on it.
         uint256 poolQuote = _quoteBalanceOf(key, address(pm)) - _hookClaimsOf(key) - _vaultClaims(key);
         (uint256 burnPart,,,) = _waiting(key);
@@ -309,10 +313,10 @@ contract TaxVaultTest is TaxLocalBase {
             (,,, uint256 holdersCoins) = _waiting(key);
             assertEq(holdersCoins, bought);
 
-            // The burn and the holders' buy share one interval: one vault buy per pool per minute.
+            // A second holders' buy waits its interval (#271: the burn keeps a clock of its own).
             vm.prank(stranger);
             vm.expectRevert(abi.encodeWithSelector(TaxVault.TooSoon.selector, vm.getBlockTimestamp() + PIECE_INTERVAL));
-            taxVault.burn(key);
+            taxVault.buyForHolders(key);
 
             vm.prank(stranger);
             (Currency asset, uint256 amount) = taxVault.passHoldersPart(key);
@@ -359,7 +363,7 @@ contract TaxVaultTest is TaxLocalBase {
             if (burnPart >= 1e9) taxVault.burn(a);
             if (supportPart >= 1e9) taxVault.addSupport(a);
             vm.stopPrank();
-            vm.warp(vm.getBlockTimestamp() + PIECE_INTERVAL);
+            _letThePriceStand();
         }
         vm.prank(stranger);
         taxVault.passHoldersPart(a);

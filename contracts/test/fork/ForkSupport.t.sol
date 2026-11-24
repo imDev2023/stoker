@@ -35,6 +35,9 @@ contract ForkSupportTest is ForkTaxBase {
         _trade(key, trader, true, true, buy);
         assertGt(_taxBooked(key), 0, "the buy booked its tax");
         uint256 coins = coin.balanceOf(trader);
+        // The lifted price stands long enough for the Reference Price to follow it (#271), so the piece
+        // goes just below it, as the price a later seller meets.
+        _letThePriceStand();
 
         // Without Support Liquidity, what selling every coin back would pay.
         uint256 snap = vm.snapshotState();
