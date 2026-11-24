@@ -3,6 +3,8 @@ pragma solidity 0.8.26;
 
 import {LocalBase} from "../utils/LocalBase.sol";
 import {OpcodeScan} from "../utils/OpcodeScan.sol";
+import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {StokerFactory} from "../../src/StokerFactory.sol";
 
 /// The contracts read time only, never `block.number`, which on Robinhood Chain and Arbitrum is an
 /// estimate of the L1 block (the security standards' robinhood-4663 profile, question 1).
@@ -16,6 +18,20 @@ contract ClockTest is LocalBase {
         assertFalse(OpcodeScan.contains(address(keys).code, OpcodeScan.NUMBER), "keys");
         // The registry's clocks (a day between writes, 48 hours to a scheduled change) read the timestamp.
         assertTrue(OpcodeScan.contains(address(registry).code, OpcodeScan.TIMESTAMP), "the registry reads the time");
+        // So do the Graduation Hold (#244) and the Creator Lock's schedule.
+        assertTrue(OpcodeScan.contains(address(hook).code, OpcodeScan.TIMESTAMP), "the hold reads the time");
+    }
+
+    /// A Creator Lock's runtime (#244) reads the time and never the block number.
+    function test_clock_theCreatorLockReadsTimeOnly() public {
+        StokerFactory.LaunchParams memory p = _params(true, 0);
+        p.creatorLockBps = 2_000;
+        p.creatorLockCliff = 7 days;
+        vm.prank(creator);
+        (, PoolId id) = factory.launch(p);
+        address lock = factory.creatorLockOf(id);
+        assertFalse(OpcodeScan.contains(lock.code, OpcodeScan.NUMBER), "lock");
+        assertTrue(OpcodeScan.contains(lock.code, OpcodeScan.TIMESTAMP), "the lock reads the time");
     }
 
     function test_clock_theScanFindsNumberWhereItIs() public {
