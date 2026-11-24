@@ -133,6 +133,9 @@ The Graduation Target is #243's: the Listing's start price times the Listing's G
   The price standing then is the one the last transaction to swap the pool left, standing since `lastSwapAt`: at or above the target, a hold runs from that transaction; under it, there is none.
   The swaps after the first in the same transaction are not judged, so a round trip inside one transaction, across the target and back or under it and back, leaves the hold where the price it ends at says, as if it had never been made.
   `graduationOf(poolId)` reads the record as last judged, which can lag the price by one transaction; `graduationNow(poolId)` judges it against the price standing now, as the next transaction or the public call would.
+- **Beside the Reference Price** (#271): `_beforeSwap` opens with the reference's line and then `_judgeHold`, both before the pool moves.
+  Their order changes nothing: each reads the pool's price, which neither moves, and writes only its own record (`_references`, `_graduations`), which the other never reads.
+  They do judge different spans: the reference credits the time since the pool's last swap and skips a swap in the same second; the hold judges once per transaction, on its first swap.
 - **The direction.** The pool's price is currency1 per currency0.
   With the coin as currency0 a dearer coin is a higher sqrt price, and the hold needs `sqrtPrice >= target`; with the Quote Asset as currency0 (the native asset always is) it is a lower one, and the hold needs `sqrtPrice <= target`.
   #243 rounds the target so it is never a cheaper coin than the multiple says.
@@ -354,7 +357,7 @@ REGISTRY=0x... ACTION=list QUOTE=0x... OPENING_VALUE=5000000000 MULTIPLE=20 CAP_
   The first run reads the chain; later runs read Foundry's cache under `~/.foundry/cache/rpc/4663/`.
 - CI (`.github/workflows/ci.yml`, job `contracts`) checks the format, builds with sizes, lints `src`, and runs every test that needs no RPC on every push, with deeper fuzz and invariant campaigns (`FOUNDRY_PROFILE=ci`); it runs the fork tests only where the repository has the `ROBINHOOD_RPC_URL` secret.
 
-Results on 2026-11-24, #244 with #243 and #245 merged in and the hold judged per transaction: 338 local tests (unit, fuzz, and every campaign's invariants, three of Graduation and the Creator Lock among them, one campaign per pairing) and 74 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
+Results on 2026-11-24, #244 with #243, #245, #247 and #271 merged in and the hold judged per transaction: 414 local tests (unit, fuzz, and every campaign's invariants, three of Graduation and the Creator Lock among them, one campaign per pairing) and 90 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
 Each of #244's guards, removed in turn, fails a named test (the PR lists them): fifteen in the hook as reworked, and the lock's and the factory's six; one was first missed and its test added.
 Results on 2026-11-24, #271 as its lane pushed it, with #247 merged in: 251 local tests (unit, fuzz, every invariant campaign, the held-price reproduction, its fuzz and the Reference Price's tests) and 64 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too; the held-price fuzz also passed 60,000 runs.
 Each of the eight guards #271 adds, removed in turn, fails a named test (the PR lists them).
@@ -369,8 +372,8 @@ Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test
 
 | Contract | Runtime | Initcode | #245 | #243 | #242 | #241 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `StokerFactory` | 12,155 | 26,988 | 12,155 / 25,463 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
-| `StokerHook` | 12,743 | 13,972 | 11,461 / 12,447 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
+| `StokerFactory` | 15,293 | 31,645 | 12,155 / 25,463 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
+| `StokerHook` | 14,247 | 15,483 | 11,461 / 12,447 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
 | `StokerCreatorLock` | 1,955 | 2,288 | new | new | new | new |
 | `TaxVault` | 12,128 | 12,835 | 11,417 / 11,947 | new | new | new |
 | `QuoteRegistry` | 3,740 | 3,965 | unchanged | new | new | new |
@@ -378,7 +381,7 @@ Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test
 | `Distributor` (#247) | 5,998 | 6,231 | new | new | new | new |
 | `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged | unchanged | unchanged |
 
-The factory grew by the lock's creation code, which it carries to deploy a lock, and #245's tax terms; it stays 9,283 bytes under the 24,576 limit, and the hook 11,483.
+The factory grew by the lock's creation code, which it carries to deploy a lock, and #245's tax terms; it stays 9,283 bytes under the 24,576 limit, and the hook, with #271's Reference Price beside the hold, 10,329.
 
 Launch gas on the fork, a standard Launch: about 1.23M with a permit First Buy in NVDA, about 1.07M with a native First Buy (#245, the tax terms written beside the rest; #243: 1.22M and 1.06M; #242: 1.18M and 1.03M; the Listing's three figures and the Graduation Target are read and written into the terms).
 A swap costs about 8,000 gas more than in #242: the terms take a second slot and the Admin is read from the keys.
@@ -691,7 +694,7 @@ For #243 it adds four, each expected: the registry's timestamp comparisons (its 
 For #244 it adds eleven, each expected: `claim`'s `paid == 0` as a strict equality (an amount, never a balance); `_atOrAbove` ignoring `getSlot0`'s other returns (only the price is needed); the lock's Creator without a zero check (the factory passes the launch's own caller); reentrancy in `_lockForCreator` (it creates our own lock and moves our own new coin, which has no hooks) and in `claim` (its event after the transfer of that plain coin, `claimed` written before it); timestamp comparisons in `released`, `claim` (through `released`) and `_judged` (the hour and the schedule); the assembly of the transient flag in `_judgeHold` and `_swappedThisTransaction` (`tstore` and `tload`, EIP-1153, which Solidity 0.8.26 reaches only in assembly); and `_judgeHold` "never used", Slither's own limit, since it does not follow the call from the `_beforeSwap` override that every swap's test proves.
 For #247 it adds nine, each expected: the deposit's pot written after the asset's `transferFrom` and its event after it (benign and events reentrancy: only our own Tax Vault may call, and the pull is checked to the unit before the pot rises), the three comparisons of `block.timestamp` (the Round Delay, in the claim, the cancel and the range cancel, a day, which a sequencer's few seconds move by as much and no more), three uses of assembly (the gas-capped native call that copies no return data, the ERC-20 `transfer` that reads one word of return data at most and returns false where SafeERC20 reverts, and the transient guard), and `claim`'s cyclomatic complexity of 12 (the grouping per holder, each refusal put back; every branch has a guard test above).
 `forge lint src` raised three on the Distributor, each annotated with its reason: the deposit's exact equality (on purpose, so a pot never counts more than arrived) and two reverts in `claim`'s loop (a claim on no round, or with a proof that does not verify, is the caller's error and reverts the call).
-SLITHER_TOTAL
+With #243, #244, #245, #247 and #271 it reports 71 results in all, every one a class triaged here.
 Running Slither and the security standards' gate in CI is #251's.
 
 ## Gotchas met here
@@ -728,3 +731,4 @@ Running Slither and the security standards' gate in CI is #251's.
 26. Removing a guard that only repeats a write with the same value passes every test that reads the value; the hold's early return for a graduated coin was caught only by counting its events (`test_graduation_isEmittedOnce_andNothingAfterIt`).
 27. A Foundry unit test is one transaction, so transient storage set by its first swap stays set for the rest of the test: the hold's tests run with `/// forge-config: default.isolate = true`, which makes every top-level call a transaction of its own, as on the chain; without it every swap after the first goes unjudged and `graduate` refuses after any swap.
 28. A view that judges the price standing now (`graduationNow`) cannot show that a swap type judges: it would pass with the judgement missing; a test of the swap types reads the recorded hold after each (`test_review_everySwapTypeJudgesThePriceLeftBefore`).
+29. A campaign's `afterInvariant` that requires a trade turns any run without one into a failure, and the shrinker then cuts it to a one-call sequence that has none (a `tryDonate`) and persists it, so every later run replays it and fails in under a second (#276); find the original failure with `FOUNDRY_INVARIANT_SHRINK_RUN_LIMIT=0` and a fixed `--fuzz-seed`, and delete the persisted file once the cause is gone.

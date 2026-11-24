@@ -210,6 +210,8 @@ abstract contract GraduationTaxedCases is TaxLocalBase {
         }
         _volume();
         _buyTo(trader, _cheaper(_target(), 1));
+        // The vault buys only at a price that has stood (#271's Reference Price, rising 2 ticks a minute).
+        _letThePriceStand();
         uint256 t0 = vm.getBlockTimestamp();
         uint160 before = _price();
 
@@ -220,15 +222,13 @@ abstract contract GraduationTaxedCases is TaxLocalBase {
         assertEq(_hold(), t0, "the vault's buy across the target started the hold, as any buy would");
 
         vm.warp(t0 + 59 minutes);
-        vm.prank(stranger);
-        taxVault.burn(key);
-        assertEq(_hold(), t0, "a vault buy inside the hold leaves it");
-        assertEq(_graduatedAt(), 0, "59 minutes");
+        assertEq(hook.graduationNow(id).graduatedAt, 0, "59 minutes");
 
-        vm.warp(t0 + 1 hours);
+        // Long enough for the reference to follow the vault's lift, so it buys again; the hold ran through.
+        vm.warp(t0 + 2 days);
         vm.prank(stranger);
         taxVault.burn(key);
-        assertEq(_graduatedAt(), t0 + 1 hours, "the vault's swap after the hour records it, as any swap would");
+        assertEq(_graduatedAt(), t0 + 1 hours, "the vault's swap records it, at the hour's end, as any swap would");
     }
 
     // ------------------------------------------------ Support Liquidity
