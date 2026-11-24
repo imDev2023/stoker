@@ -73,17 +73,22 @@ contract OpeningFeeReferenceTest is TaxLocalBase, OpeningFeeHelpers {
     /// A standard coin whose window passed with no Opening Fee booked keeps following all the same (#248).
     /// Until #248 it stopped, since the vault could never have anything of it to spend; now anyone may fund
     /// any coin's burn or Support Liquidity at any time, and a reference that had stopped would, when next
-    /// read, be the price of that moment. So after the window a lift still leaves the reference behind, and
-    /// the vault holds nothing of the coin until someone funds it.
+    /// read, be the price of that moment. So after the window, and after a quiet month in which a reference
+    /// left alone would have had time to catch up with any price, a lift still leaves the reference where
+    /// the price stood before it; and the vault holds nothing of the coin until someone funds it.
     function test_opening_aStandardCoinWithNoOpeningFeeKeepsFollowingToo() public {
         for (uint256 kind; kind < 3; kind++) {
             uint256 snap = vm.snapshotState();
             PoolKey memory key = _launchOpen(kind, 0, kind == 2 ? 0.1 ether : 1 ether);
-            vm.warp(_launchedAt(key) + OPENING_FEE_DURATION);
+            vm.warp(_launchedAt(key) + OPENING_FEE_DURATION + 30 days);
             for (uint256 i; i < 6; i++) {
+                int24 stood = _tickOf(key);
                 _tradeAndSee(key, true, i % 2 == 0, _buyAmount(key, i % 2 == 0), 0);
+                assertTrue(_tickOf(key) != stood, "the buy lifted the price");
+                assertEq(hook.referenceTick(key.toId()), stood, "the reference is the price that stood");
                 vm.warp(vm.getBlockTimestamp() + PIECE_INTERVAL);
-                assertTrue(hook.referenceTick(key.toId()) != _tickOf(key), "the reference lags the lift");
+                assertTrue(hook.referenceTick(key.toId()) != _tickOf(key), "a minute on, it still lags the lift");
+                vm.warp(vm.getBlockTimestamp() + 30 days);
             }
             assertEq(hook.openingFeeBooked(key.toId()), 0, "nothing booked");
             assertEq(_vaultClaims(key), 0, "the vault holds nothing of it");
