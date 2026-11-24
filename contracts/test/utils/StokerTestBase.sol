@@ -118,6 +118,20 @@ abstract contract StokerTestBase is Test {
         swapRouter = new PoolSwapTest(pm);
     }
 
+    /// Deploys `initCode` from this contract through an external call, so `vm.expectRevert` sees the
+    /// creation revert one call deep. A `new` in the test's own frame is a cheatcode deployment at the test's
+    /// depth: an expected revert there ends the whole test as a pass, and every case after the first is never
+    /// run (gotcha 18).
+    function create(bytes memory initCode) external returns (address a) {
+        assembly ("memory-safe") {
+            a := create(0, add(initCode, 0x20), mload(initCode))
+            if iszero(a) {
+                returndatacopy(0, 0, returndatasize())
+                revert(0, returndatasize())
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- launching
 
     function _params(bool quoteIsCurrency0, uint256 firstBuy)

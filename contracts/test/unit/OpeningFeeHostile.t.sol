@@ -97,9 +97,25 @@ contract OpeningFeeHostileTest is TaxLocalBase, OpeningFeeHelpers {
         uint16[4] memory starts = [uint16(0), 9_901, OPENING_FEE_START_BPS, OPENING_FEE_START_BPS];
         uint32[4] memory durations = [OPENING_FEE_DURATION, OPENING_FEE_DURATION, 0, 601];
         for (uint256 i; i < 4; i++) {
+            // A vault made for this very factory, so the refusal can only be the Opening Fee's.
+            // A fresh deployer makes the vault (its nonce 1) for the factory it makes next (its nonce 2).
+            Deployer d = new Deployer();
+            address bad = vm.computeCreateAddress(address(d), 2);
+            address fitting = d.create(
+                abi.encodePacked(
+                    type(TaxVault).creationCode,
+                    abi.encode(pm, bad, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS)
+                )
+            );
+            assertEq(fitting, vm.computeCreateAddress(address(d), 1), "the vault at the deployer's first address");
             vm.expectRevert(StokerFactory.InvalidSettings.selector);
-            new StokerFactory(
-                pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, bytes32(0), taxVault, starts[i], durations[i]
+            d.create(
+                abi.encodePacked(
+                    type(StokerFactory).creationCode,
+                    abi.encode(
+                        pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, bytes32(0), fitting, starts[i], durations[i]
+                    )
+                )
             );
         }
         address next = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
@@ -239,5 +255,18 @@ contract TwoHop is IUnlockCallback {
         pm.settle();
         pm.take(b.currency1, address(this), coinsOut);
         return abi.encode(ethMid, coinsOut);
+    }
+}
+
+/// Deploys what it is given by its own CREATE, so a test knows the address of each contract it makes.
+contract Deployer {
+    function create(bytes memory initCode) external returns (address a) {
+        assembly ("memory-safe") {
+            a := create(0, add(initCode, 0x20), mload(initCode))
+            if iszero(a) {
+                returndatacopy(0, 0, returndatasize())
+                revert(0, returndatasize())
+            }
+        }
     }
 }

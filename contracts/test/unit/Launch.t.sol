@@ -178,27 +178,68 @@ contract LaunchTest is LocalBase {
 
     function test_factory_refusesUnboundedSettings() public {
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(
-            pm, registry, 0, CREATOR_SHARE_BPS, bytes32(0), taxVault, OPENING_FEE_START_BPS, OPENING_FEE_DURATION
+        this.create(
+            abi.encodePacked(
+                type(StokerFactory).creationCode,
+                abi.encode(
+                    pm,
+                    registry,
+                    0,
+                    CREATOR_SHARE_BPS,
+                    bytes32(0),
+                    taxVault,
+                    OPENING_FEE_START_BPS,
+                    OPENING_FEE_DURATION
+                )
+            )
         );
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(
-            pm, registry, 1_001, CREATOR_SHARE_BPS, bytes32(0), taxVault, OPENING_FEE_START_BPS, OPENING_FEE_DURATION
+        this.create(
+            abi.encodePacked(
+                type(StokerFactory).creationCode,
+                abi.encode(
+                    pm,
+                    registry,
+                    1_001,
+                    CREATOR_SHARE_BPS,
+                    bytes32(0),
+                    taxVault,
+                    OPENING_FEE_START_BPS,
+                    OPENING_FEE_DURATION
+                )
+            )
         );
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(
-            pm, registry, PLATFORM_FEE_BPS, 10_001, bytes32(0), taxVault, OPENING_FEE_START_BPS, OPENING_FEE_DURATION
+        this.create(
+            abi.encodePacked(
+                type(StokerFactory).creationCode,
+                abi.encode(
+                    pm,
+                    registry,
+                    PLATFORM_FEE_BPS,
+                    10_001,
+                    bytes32(0),
+                    taxVault,
+                    OPENING_FEE_START_BPS,
+                    OPENING_FEE_DURATION
+                )
+            )
         );
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(
-            pm,
-            QuoteRegistry(address(0)),
-            PLATFORM_FEE_BPS,
-            CREATOR_SHARE_BPS,
-            bytes32(0),
-            taxVault,
-            OPENING_FEE_START_BPS,
-            OPENING_FEE_DURATION
+        this.create(
+            abi.encodePacked(
+                type(StokerFactory).creationCode,
+                abi.encode(
+                    pm,
+                    QuoteRegistry(address(0)),
+                    PLATFORM_FEE_BPS,
+                    CREATOR_SHARE_BPS,
+                    bytes32(0),
+                    taxVault,
+                    OPENING_FEE_START_BPS,
+                    OPENING_FEE_DURATION
+                )
+            )
         );
     }
 

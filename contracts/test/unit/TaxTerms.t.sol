@@ -141,26 +141,36 @@ contract TaxTermsTest is TaxLocalBase {
     function test_vault_factoryRefusesAVaultMadeForAnother() public {
         TaxVault other = new TaxVault(pm, stranger, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(
-            pm,
-            registry,
-            PLATFORM_FEE_BPS,
-            CREATOR_SHARE_BPS,
-            bytes32(0),
-            other,
-            OPENING_FEE_START_BPS,
-            OPENING_FEE_DURATION
+        this.create(
+            abi.encodePacked(
+                type(StokerFactory).creationCode,
+                abi.encode(
+                    pm,
+                    registry,
+                    PLATFORM_FEE_BPS,
+                    CREATOR_SHARE_BPS,
+                    bytes32(0),
+                    other,
+                    OPENING_FEE_START_BPS,
+                    OPENING_FEE_DURATION
+                )
+            )
         );
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(
-            pm,
-            registry,
-            PLATFORM_FEE_BPS,
-            CREATOR_SHARE_BPS,
-            bytes32(0),
-            TaxVault(payable(0)),
-            OPENING_FEE_START_BPS,
-            OPENING_FEE_DURATION
+        this.create(
+            abi.encodePacked(
+                type(StokerFactory).creationCode,
+                abi.encode(
+                    pm,
+                    registry,
+                    PLATFORM_FEE_BPS,
+                    CREATOR_SHARE_BPS,
+                    bytes32(0),
+                    TaxVault(payable(0)),
+                    OPENING_FEE_START_BPS,
+                    OPENING_FEE_DURATION
+                )
+            )
         );
     }
 
@@ -168,19 +178,21 @@ contract TaxTermsTest is TaxLocalBase {
         IHoldersPart d = holdersPart;
         IPoolManager m = pm;
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 0, 60, 10);
+        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 0, 60, 10)));
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 101, 60, 10);
+        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 101, 60, 10)));
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 0, 10);
+        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 0, 10)));
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 60, 0);
+        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 0)));
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, d, 50, 60, 1_001);
+        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 1_001)));
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, stranger, IHoldersPart(address(0)), 50, 60, 10);
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, IHoldersPart(address(0)), 50, 60, 10))
+        );
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        new TaxVault(m, address(0), d, 50, 60, 10);
+        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, address(0), d, 50, 60, 10)));
         // The vault has no owner and no setter: its settings are what it was deployed with.
         assertEq(address(taxVault.distributor()), address(holdersPart));
         assertEq(taxVault.factory(), address(factory));
