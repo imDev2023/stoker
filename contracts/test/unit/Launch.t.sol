@@ -8,6 +8,7 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 
 import {LocalBase} from "../utils/LocalBase.sol";
 import {StokerFactory} from "../../src/StokerFactory.sol";
+import {QuoteRegistry} from "../../src/QuoteRegistry.sol";
 import {StokerCoin} from "../../src/StokerCoin.sol";
 
 /// One transaction launches a standard coin by Direct Seed (ADR 0024): the coin, the pool at the
@@ -170,19 +171,28 @@ contract LaunchTest is LocalBase {
         assertEq(hook.termsOf(_keyFor(coin).toId()).creatorDestination, creator);
         assertEq(hook.termsOf(_keyFor(coin).toId()).platformFeeBps, PLATFORM_FEE_BPS);
         assertEq(hook.termsOf(_keyFor(coin).toId()).creatorShareBps, CREATOR_SHARE_BPS);
+        assertEq(hook.termsOf(_keyFor(coin).toId()).referrerFeeCapBps, REFERRER_FEE_CAP_BPS);
+        assertEq(hook.termsOf(_keyFor(coin).toId()).startTick, START_TICK);
+        assertEq(hook.termsOf(_keyFor(coin).toId()).graduationMultiple, GRADUATION_MULTIPLE);
     }
 
     function test_factory_refusesUnboundedSettings() public {
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, listings, platform, 0, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0), taxVault);
+        new StokerFactory(pm, registry, 0, CREATOR_SHARE_BPS, bytes32(0), taxVault);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, listings, platform, 1_001, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0), taxVault);
+        new StokerFactory(pm, registry, 1_001, CREATOR_SHARE_BPS, bytes32(0), taxVault);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, listings, platform, PLATFORM_FEE_BPS, 10_001, TICK_SPACING, bytes32(0), taxVault);
+        new StokerFactory(pm, registry, PLATFORM_FEE_BPS, 10_001, bytes32(0), taxVault);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(
-            pm, listings, address(0), PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0), taxVault
-        );
+        new StokerFactory(pm, QuoteRegistry(address(0)), PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, bytes32(0), taxVault);
+    }
+
+    /// The factory takes its tick spacing from the registry and the hook its keys, so a start price is
+    /// always on the pools' spacing and the platform's share is always the registry's Admin's.
+    function test_factory_readsTheRegistrysSpacingAndKeys() public view {
+        assertEq(factory.tickSpacing(), registry.tickSpacing());
+        assertEq(address(hook.keys()), address(registry.keys()));
+        assertEq(address(factory.registry()), address(registry));
     }
 
     function _tick(PoolKey memory key) internal view returns (int24 tick) {

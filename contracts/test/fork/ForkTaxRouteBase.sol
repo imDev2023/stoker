@@ -38,8 +38,13 @@ abstract contract ForkTaxRouteBase is ForkTaxBase {
 
     /// The Quoter's figure for a trade: what comes out on exact in, what goes in on exact out.
     function _quoteTrade(PoolKey memory key, Trade memory t) internal returns (uint256 figure) {
+        return _quoteTrade(key, t, "");
+    }
+
+    /// The same, for a trade carrying `hookData` (a referrer and a Referrer Fee, #243).
+    function _quoteTrade(PoolKey memory key, Trade memory t, bytes memory hookData) internal returns (uint256 figure) {
         IV4Quoter.QuoteExactSingleParams memory q =
-            IV4Quoter.QuoteExactSingleParams(key, _zeroForOne(key, t.buy), uint128(t.amount), "");
+            IV4Quoter.QuoteExactSingleParams(key, _zeroForOne(key, t.buy), uint128(t.amount), hookData);
         (figure,) =
             t.exactIn ? IV4Quoter(V4_QUOTER).quoteExactInputSingle(q) : IV4Quoter(V4_QUOTER).quoteExactOutputSingle(q);
     }
@@ -47,6 +52,18 @@ abstract contract ForkTaxRouteBase is ForkTaxBase {
     /// One trade through `router` with `limit` as the slippage bound: the minimum out on exact in, the
     /// maximum in on exact out. A native buy sends its side as value.
     function _route(address router, address who, PoolKey memory key, Trade memory t, uint256 limit) internal {
+        _route(router, who, key, t, limit, "");
+    }
+
+    /// The same, carrying `hookData`.
+    function _route(
+        address router,
+        address who,
+        PoolKey memory key,
+        Trade memory t,
+        uint256 limit,
+        bytes memory hookData
+    ) internal {
         bool zeroForOne = _zeroForOne(key, t.buy);
         Currency q = _quoteOfKey(key);
         Currency c = Currency.wrap(address(_coinOfKey(key)));
@@ -55,14 +72,15 @@ abstract contract ForkTaxRouteBase is ForkTaxBase {
         bytes[] memory params = new bytes[](3);
         if (t.exactIn) {
             actions = abi.encodePacked(RouterLib.SWAP_EXACT_IN_SINGLE, RouterLib.SETTLE_ALL, RouterLib.TAKE_ALL);
-            params[0] =
-                abi.encode(RouterLib.ExactInputSingleParams(key, zeroForOne, uint128(t.amount), uint128(limit), 0, ""));
+            params[0] = abi.encode(
+                RouterLib.ExactInputSingleParams(key, zeroForOne, uint128(t.amount), uint128(limit), 0, hookData)
+            );
             params[1] = abi.encode(cin, t.amount);
             params[2] = abi.encode(cout, limit);
         } else {
             actions = abi.encodePacked(RouterLib.SWAP_EXACT_OUT_SINGLE, RouterLib.SETTLE_ALL, RouterLib.TAKE_ALL);
             params[0] = abi.encode(
-                RouterLib.ExactOutputSingleParams(key, zeroForOne, uint128(t.amount), uint128(limit), 0, "")
+                RouterLib.ExactOutputSingleParams(key, zeroForOne, uint128(t.amount), uint128(limit), 0, hookData)
             );
             params[1] = abi.encode(cin, limit);
             params[2] = abi.encode(cout, t.amount);

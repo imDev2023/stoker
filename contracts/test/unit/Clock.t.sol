@@ -12,7 +12,10 @@ contract ClockTest is LocalBase {
         assertFalse(OpcodeScan.contains(address(hook).code, OpcodeScan.NUMBER), "hook");
         assertFalse(OpcodeScan.contains(address(factory).code, OpcodeScan.NUMBER), "factory");
         assertFalse(OpcodeScan.contains(coin.code, OpcodeScan.NUMBER), "coin");
-        assertFalse(OpcodeScan.contains(address(listings).code, OpcodeScan.NUMBER), "listing stand-in");
+        assertFalse(OpcodeScan.contains(address(registry).code, OpcodeScan.NUMBER), "registry");
+        assertFalse(OpcodeScan.contains(address(keys).code, OpcodeScan.NUMBER), "keys");
+        // The registry's clocks (a day between writes, 48 hours to a scheduled change) read the timestamp.
+        assertTrue(OpcodeScan.contains(address(registry).code, OpcodeScan.TIMESTAMP), "the registry reads the time");
         assertFalse(OpcodeScan.contains(address(taxVault).code, OpcodeScan.NUMBER), "tax vault");
     }
 

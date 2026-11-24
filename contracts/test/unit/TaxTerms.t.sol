@@ -141,11 +141,9 @@ contract TaxTermsTest is TaxLocalBase {
     function test_vault_factoryRefusesAVaultMadeForAnother() public {
         TaxVault other = new TaxVault(pm, stranger, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(pm, listings, platform, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0), other);
+        new StokerFactory(pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, bytes32(0), other);
         vm.expectRevert(StokerFactory.InvalidSettings.selector);
-        new StokerFactory(
-            pm, listings, platform, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, TICK_SPACING, bytes32(0), TaxVault(payable(0))
-        );
+        new StokerFactory(pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, bytes32(0), TaxVault(payable(0)));
     }
 
     function test_vault_refusesUnboundedSettings() public {

@@ -9,7 +9,7 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {LocalBase} from "../utils/LocalBase.sol";
 import {StokerFactory} from "../../src/StokerFactory.sol";
 import {StokerCoin} from "../../src/StokerCoin.sol";
-import {ListingStandIn} from "../../src/ListingStandIn.sol";
+import {QuoteRegistry} from "../../src/QuoteRegistry.sol";
 
 /// The native asset as a Quote Asset (#242, ADR 0024): one call with value launches a coin paired with it
 /// and makes the First Buy, with no approval and no permit, and the factory keeps nothing it was sent.
@@ -23,8 +23,8 @@ contract NativeLaunchTest is LocalBase {
     }
 
     function test_native_listed() public view {
-        assertTrue(listings.listingOf(address(0)).listed, "the native asset has a Listing");
-        assertEq(listings.listingOf(address(0)).startTick, NATIVE_START_TICK);
+        assertTrue(registry.listingOf(address(0)).listed, "the native asset has a Listing");
+        assertEq(registry.listingOf(address(0)).startTick, NATIVE_START_TICK);
     }
 
     function test_native_launch_oneCallWithValue_firstBuy() public {
@@ -124,11 +124,11 @@ contract NativeLaunchTest is LocalBase {
     }
 
     function test_native_unlistedUntilListed() public {
-        // A fresh stand-in with no native Listing: the factory refuses the native asset.
-        ListingStandIn fresh = new ListingStandIn(listingWriter);
+        // A fresh registry with no native Listing: the native asset has none until the Admin writes it.
+        QuoteRegistry fresh = new QuoteRegistry(keys, TICK_SPACING);
         assertFalse(fresh.listingOf(address(0)).listed);
-        vm.prank(listingWriter);
-        fresh.list(address(0), NATIVE_START_TICK);
+        vm.prank(platform);
+        fresh.list(address(0), NATIVE_START_TICK, GRADUATION_MULTIPLE, REFERRER_FEE_CAP_BPS);
         assertTrue(fresh.listingOf(address(0)).listed);
     }
 

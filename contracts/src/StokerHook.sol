@@ -19,19 +19,24 @@ import {
 } from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 
+import {StokerKeys} from "./StokerKeys.sol";
+
 /// @title StokerHook
 /// @notice The Uniswap v4 hook of every Stoker coin's pool on an EVM chain. It keeps the books and does
 ///         nothing else (ADR 0025): on every swap it takes the Platform Fee on the Quote Asset's side and
 ///         records it as Credits, the Creator's share to the Launch's Creator Earnings Destination and the
-///         rest to the platform. It calls no recipient, buys nothing and adds no liquidity inside a swap.
+///         rest to the platform (the Admin's address, ADR 0030). A trade may name a referrer and a Referrer
+///         Fee up to its Launch's cap in its `hookData`; that fee is taken on top, on the same side, and
+///         recorded as the referrer's Credit (ADR 0027). It calls no recipient, buys nothing and adds no
+///         liquidity inside a swap.
 ///
 ///         The fees stay in the PoolManager as this hook's ERC-6909 claims, which back every Credit one
 ///         for one; the hook never holds an ERC-20. A Payout Call, which anyone can make, pays Credits to
 ///         their owners, and a Credit owed to an address the Quote Asset refuses stays owed to it.
 ///
-///         A Reward Launch's Reward Tax and a Stoke Launch's Stoke Tax (#245) are taken beside the Platform
-///         Fee, on the same side, and minted as ERC-6909 claims to the Tax Vault, with a running total per
-///         pool (`taxBooked`); the hook does nothing else with them inside a swap.
+///         A Reward Launch's Reward Tax and a Stoke Launch's Stoke Tax (#245) are taken beside these fees, on
+///         the same side, and minted as ERC-6909 claims to the Tax Vault, with a running total per pool
+///         (`taxBooked`); the hook does nothing else with them inside a swap.
 ///
 ///         The hook also guards the pool: only the factory opens a pool on it, only the factory and the Tax
 ///         Vault add liquidity to it, no liquidity is ever removed, and donations are refused.
@@ -66,9 +71,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         liquidity to them.
     address public immutable factory;
 
-    /// @notice Where the platform's share of every Platform Fee is credited (the Admin's address, ADR 0030;
-    ///         its two-step replacement is #243's).
-    address public immutable platform;
+    /// @notice Where the Admin is read: the platform's share of every Platform Fee is booked to the Admin of
+    ///         the moment the fee is taken (ADR 0030).
+    StokerKeys public immutable keys;
 
     /// @notice The Tax Vault: it receives every Reward Tax and Stoke Tax as claims, and is the only address
     ///         beside the factory that may add liquidity to a pool on this hook (Support Liquidity, #245).
@@ -88,11 +93,18 @@ contract StokerHook is BaseHook, IUnlockCallback {
         Coin
     }
 
-    /// @notice A Launch's terms, written once by the factory before its pool opens and never changed.
+    /// @notice A Launch's terms, written once by the factory before its pool opens and never changed: every
+    ///         figure of its Listing is copied here, so no write to the Quote Registry reaches a launched coin.
     /// @param creatorDestination The Creator Earnings Destination credited with the Creator's share.
     /// @param platformFeeBps The Platform Fee, of the Quote Asset's side of every swap.
     /// @param creatorShareBps The Creator's share of the Platform Fee (the Creator Ladder's tier, ADR 0027).
+    /// @param referrerFeeCapBps The most a trade may name as its Referrer Fee (the Listing's cap at launch).
     /// @param quoteIsCurrency0 Which side of the pool the Quote Asset is.
+    /// @param startTick The Listing's start price at launch, as a tick of Quote Asset per coin.
+    /// @param graduationMultiple The Listing's Graduation multiple at launch.
+    /// @param graduationSqrtPriceX96 The Graduation Target, the start price times the multiple, as the pool's
+    ///        own sqrt price (#244 reads it; with the Quote Asset as currency0 the pool's price falls as the
+    ///        coin's rises, so the target is below the open price there).
     /// @param launchType Standard, Reward or Liquidity (the Stoke Launch).
     /// @param taxBps The Reward Tax or the Stoke Tax, of the Quote Asset's side of every swap; 0 on a
     ///        standard Launch.
@@ -104,8 +116,12 @@ contract StokerHook is BaseHook, IUnlockCallback {
         address creatorDestination;
         uint16 platformFeeBps;
         uint16 creatorShareBps;
+        uint16 referrerFeeCapBps;
         bool quoteIsCurrency0;
         bool registered;
+        int24 startTick;
+        uint16 graduationMultiple;
+        uint160 graduationSqrtPriceX96;
         LaunchType launchType;
         uint16 taxBps;
         uint16 burnShareBps;
@@ -131,7 +147,11 @@ contract StokerHook is BaseHook, IUnlockCallback {
         address indexed creatorDestination,
         uint16 platformFeeBps,
         uint16 creatorShareBps,
-        bool quoteIsCurrency0
+        uint16 referrerFeeCapBps,
+        bool quoteIsCurrency0,
+        int24 startTick,
+        uint16 graduationMultiple,
+        uint160 graduationSqrtPriceX96
     );
     /// @notice One swap's Platform Fee and the two Credits it was recorded as.
     event FeeCredited(
@@ -142,6 +162,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
         uint256 creatorCredit,
         uint256 platformCredit
     );
+    /// @notice One swap's Referrer Fee, taken on top of the Platform Fee and credited to the referrer the
+    ///         trade named.
+    event ReferrerFeeCredited(PoolId indexed poolId, Currency indexed currency, address indexed referrer, uint256 fee);
     /// @notice A Launch's tax terms, written with the rest of its terms.
     event TaxTermsRegistered(
         PoolId indexed poolId,
@@ -168,11 +191,18 @@ contract StokerHook is BaseHook, IUnlockCallback {
     error PayoutReentered();
     /// @notice The Payout Call was given too little gas to carry a native payment's full allowance.
     error PayoutGasTooLow();
+    /// @notice A trade's `hookData` was neither empty nor exactly a referrer and a Referrer Fee.
+    error MalformedHookData();
+    /// @notice A trade named a Referrer Fee over its Launch's cap.
+    error ReferrerFeeOverCap(uint256 feeBps, uint16 capBps);
+    /// @notice A trade named this hook, the factory or the PoolManager as its referrer, none of which can be
+    ///         paid usefully.
+    error InvalidReferrer(address referrer);
 
-    constructor(IPoolManager poolManager_, address platform_, address taxVault_) BaseHook(poolManager_) {
-        if (platform_ == address(0) || taxVault_ == address(0)) revert ZeroAddress();
+    constructor(IPoolManager poolManager_, StokerKeys keys_, address taxVault_) BaseHook(poolManager_) {
+        if (address(keys_) == address(0) || taxVault_ == address(0)) revert ZeroAddress();
         factory = msg.sender;
-        platform = platform_;
+        keys = keys_;
         taxVault = taxVault_;
     }
 
@@ -206,7 +236,17 @@ contract StokerHook is BaseHook, IUnlockCallback {
         Terms memory t = terms;
         t.registered = true;
         _terms[id] = t;
-        emit LaunchRegistered(id, t.creatorDestination, t.platformFeeBps, t.creatorShareBps, t.quoteIsCurrency0);
+        emit LaunchRegistered(
+            id,
+            t.creatorDestination,
+            t.platformFeeBps,
+            t.creatorShareBps,
+            t.referrerFeeCapBps,
+            t.quoteIsCurrency0,
+            t.startTick,
+            t.graduationMultiple,
+            t.graduationSqrtPriceX96
+        );
         emit TaxTermsRegistered(id, t.launchType, t.taxBps, t.burnShareBps, t.liquidityShareBps, t.payoutAsset);
     }
 
@@ -253,98 +293,149 @@ contract StokerHook is BaseHook, IUnlockCallback {
 
     // ------------------------------------------------------------------ the fee
 
-    /// @dev When the Quote Asset is the swap's specified currency the fee and the tax are taken here, on the
-    ///      specified amount: an exact-in buy (the trader pays the amount, both included) or an exact-out sell
-    ///      (the trader receives the amount, the pool pays both on top).
-    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+    /// @dev When the Quote Asset is the swap's specified currency the fees are taken here, on the specified
+    ///      amount: an exact-in buy (the trader pays the amount, fees included) or an exact-out sell (the
+    ///      trader receives the amount, the pool pays the fees on top). A trade's referrer is read here for
+    ///      every swap, so a malformed `hookData` or a fee over the cap reverts before the pool runs. The fees
+    ///      are the Platform Fee, the Referrer Fee and the Launch's tax (#245), each its own rate.
+    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         PoolId id = key.toId();
         Terms memory t = _termsOf(id);
+        (address referrer, uint256 referrerBps) = _referral(hookData, t);
         bool exactIn = params.amountSpecified < 0;
         bool specifiedIsCurrency0 = exactIn == params.zeroForOne;
         if (specifiedIsCurrency0 != t.quoteIsCurrency0) {
             return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
-        (uint256 fee, uint256 tax) = _feesOnSpecified(params.amountSpecified, t.platformFeeBps, _taxBps(sender, t));
-        uint256 taken = fee + tax;
+        (uint256 fee, uint256 referrerFee, uint256 tax) =
+            _feesOnSpecified(params.amountSpecified, t.platformFeeBps, referrerBps, _taxBps(sender, t));
+        uint256 taken = fee + referrerFee + tax;
         // Never consume the whole specified amount: a swap the hook swallowed would be a NoOp swap.
         if (exactIn && taken >= OZSafeCast.toUint256(-params.amountSpecified)) revert SwapTooSmall();
-        _book(id, key, t, fee);
+        _book(id, key, t, fee, referrer, referrerFee);
         _bookTax(id, key, t, tax);
         return (this.beforeSwap.selector, toBeforeSwapDelta(taken.toInt128(), 0), 0);
     }
 
-    /// @dev When the Quote Asset is the unspecified currency the fee and the tax are taken here, once the
-    ///      pool's Quote Asset amount is known: an exact-in sell (the pool's output, both taken from it) or an
-    ///      exact-out buy (the pool's input, the trader pays both on top). When it is the specified currency
-    ///      this only checks that the pool traded the whole amount they were taken on.
+    /// @dev When the Quote Asset is the unspecified currency the fees are taken here, once the pool's Quote
+    ///      Asset amount is known: an exact-in sell (the pool's output, the fees taken from it) or an exact-out
+    ///      buy (the pool's input, the trader pays the fees on top). When it is the specified currency this
+    ///      only checks that the pool traded the whole amount the fees were taken on.
     function _afterSwap(
         address sender,
         PoolKey calldata key,
         SwapParams calldata params,
         BalanceDelta delta,
-        bytes calldata
+        bytes calldata hookData
     ) internal override returns (bytes4, int128) {
         PoolId id = key.toId();
         Terms memory t = _termsOf(id);
+        (address referrer, uint256 referrerBps) = _referral(hookData, t);
         uint256 taxBps = _taxBps(sender, t);
         bool exactIn = params.amountSpecified < 0;
         bool specifiedIsCurrency0 = exactIn == params.zeroForOne;
         int128 quoteDelta = t.quoteIsCurrency0 ? delta.amount0() : delta.amount1();
         if (specifiedIsCurrency0 == t.quoteIsCurrency0) {
-            // The fee and the tax were taken in `_beforeSwap`, on the whole specified amount, so the pool
-            // must have traded all of it. A swap its own price limit stopped early would have paid them on
-            // Quote Asset it never traded, so it is refused; the same trade with the coin as the specified
-            // side goes through, since its fee and tax are taken below on what really moved.
-            (uint256 feeTaken, uint256 taxTaken) = _feesOnSpecified(params.amountSpecified, t.platformFeeBps, taxBps);
-            if (int256(quoteDelta) != params.amountSpecified + OZSafeCast.toInt256(feeTaken + taxTaken)) {
+            // The fees were taken in `_beforeSwap`, on the whole specified amount, so the pool must have
+            // traded all of it. A swap its own price limit stopped early would have paid them on Quote Asset
+            // it never traded, so it is refused; the same trade with the coin as the specified side goes
+            // through, since its fees are taken below on what really moved.
+            (uint256 feeTaken, uint256 referrerFeeTaken, uint256 taxTaken) =
+                _feesOnSpecified(params.amountSpecified, t.platformFeeBps, referrerBps, taxBps);
+            if (
+                int256(quoteDelta)
+                    != params.amountSpecified + OZSafeCast.toInt256(feeTaken + referrerFeeTaken + taxTaken)
+            ) {
                 revert SwapStoppedEarly();
             }
             return (this.afterSwap.selector, 0);
         }
 
         uint256 fee = 0;
+        uint256 referrerFee = 0;
         uint256 tax = 0;
         if (exactIn) {
-            // A sell: the pool owes the trader `quoteDelta` (positive), the gross, before the fee and the tax.
+            // A sell: the pool owes the trader `quoteDelta` (positive), the gross, before the fees.
             if (quoteDelta > 0) {
                 uint256 gross = OZSafeCast.toUint256(quoteDelta);
                 fee = _feeOnGross(gross, t.platformFeeBps);
+                referrerFee = _feeOnGross(gross, referrerBps);
                 tax = _feeOnGross(gross, taxBps);
-                // Never more than the pool pays out: the trader would pay to sell.
-                if (fee + tax > gross) revert SwapTooSmall();
+                // Never more than the pool pays out: the trader would pay to sell. Only a referrer's fee or a
+                // tax beside the Platform Fee can reach past a gross of 1, so a swap with neither is untouched.
+                if (fee + referrerFee + tax > gross) revert SwapTooSmall();
             }
         } else if (quoteDelta < 0) {
-            // A buy: the trader owes the pool `-quoteDelta`, the net, before the fee and the tax.
+            // A buy: the trader owes the pool `-quoteDelta`, the net, before the fees.
             uint256 net = OZSafeCast.toUint256(-int256(quoteDelta));
-            uint256 totalBps = uint256(t.platformFeeBps) + taxBps;
+            uint256 totalBps = uint256(t.platformFeeBps) + referrerBps + taxBps;
             fee = _feeOnNet(net, t.platformFeeBps, totalBps);
+            referrerFee = _feeOnNet(net, referrerBps, totalBps);
             tax = _feeOnNet(net, taxBps, totalBps);
         }
-        uint256 taken = fee + tax;
+        uint256 taken = fee + referrerFee + tax;
         if (taken == 0) return (this.afterSwap.selector, 0);
-        _book(id, key, t, fee);
+        _book(id, key, t, fee, referrer, referrerFee);
         _bookTax(id, key, t, tax);
         return (this.afterSwap.selector, taken.toInt128());
     }
 
-    /// @dev Takes `fee` of the Quote Asset as this hook's claims and records it as two Credits.
-    ///      The claims are minted against the delta the hook is owed by the swap, so nothing is transferred.
-    function _book(PoolId id, PoolKey calldata key, Terms memory t, uint256 fee) internal {
-        if (fee == 0) return;
+    /// @dev Takes `fee + referrerFee` of the Quote Asset as this hook's claims and records it as Credits:
+    ///      the Platform Fee split between the Creator and the Admin of the moment, the Referrer Fee to the
+    ///      referrer. The claims are minted against the delta the hook is owed by the swap, so nothing is
+    ///      transferred.
+    function _book(PoolId id, PoolKey calldata key, Terms memory t, uint256 fee, address referrer, uint256 referrerFee)
+        internal
+    {
+        uint256 taken = fee + referrerFee;
+        if (taken == 0) return;
         Currency currency = t.quoteIsCurrency0 ? key.currency0 : key.currency1;
-        poolManager.mint(address(this), currency.toId(), fee);
+        poolManager.mint(address(this), currency.toId(), taken);
         uint256 creatorCredit = fee * t.creatorShareBps / BPS;
         uint256 platformCredit = fee - creatorCredit;
         _credits[t.creatorDestination][currency] += creatorCredit;
-        _credits[platform][currency] += platformCredit;
-        totalCredits[currency] += fee;
-        // The only call before it is the PoolManager's own `mint`.
+        // The Admin of this moment: a handover changes where later shares are booked, never an earlier one.
+        _credits[keys.admin()][currency] += platformCredit;
+        totalCredits[currency] += taken;
+        if (referrerFee > 0) {
+            _credits[referrer][currency] += referrerFee;
+            // The calls before it are the PoolManager's `mint` and our own keys' view.
+            // forge-lint: disable-next-line(reentrancy-events)
+            emit ReferrerFeeCredited(id, currency, referrer, referrerFee);
+        }
         // forge-lint: disable-next-line(reentrancy-events)
         emit FeeCredited(id, currency, t.creatorDestination, fee, creatorCredit, platformCredit);
+    }
+
+    /// @dev The trade's referrer and Referrer Fee from its `hookData`, which reaches the hook from any router
+    ///      and any caller, so it is read defensively. Empty, it names nobody. Otherwise it must be exactly
+    ///      `abi.encode(address referrer, uint256 feeBps)`: two words, the first a clean address, the second
+    ///      at most the Launch's cap; anything else reverts by name and credits nobody. A fee of zero, or
+    ///      the zero address with no fee, is no referrer. `sender` (the router) is never read.
+    function _referral(bytes calldata hookData, Terms memory t) internal view returns (address, uint256) {
+        if (hookData.length == 0) return (address(0), 0);
+        if (hookData.length != 64) revert MalformedHookData();
+        uint256 word0 = 0;
+        uint256 feeBps = 0;
+        assembly ("memory-safe") {
+            word0 := calldataload(hookData.offset)
+            feeBps := calldataload(add(hookData.offset, 32))
+        }
+        if (word0 >> 160 != 0) revert MalformedHookData();
+        // Its upper 96 bits are zero by the line above.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        address referrer = address(uint160(word0));
+        if (feeBps > t.referrerFeeCapBps) revert ReferrerFeeOverCap(feeBps, t.referrerFeeCapBps);
+        if (feeBps == 0) return (address(0), 0);
+        if (referrer == address(0)) revert MalformedHookData();
+        if (referrer == address(this) || referrer == factory || referrer == address(poolManager)) {
+            revert InvalidReferrer(referrer);
+        }
+        return (referrer, feeBps);
     }
 
     /// @dev Mints `tax` of the Quote Asset to the Tax Vault as claims, against the delta the hook is owed by
@@ -368,20 +459,22 @@ contract StokerHook is BaseHook, IUnlockCallback {
         return sender == taxVault ? 0 : t.taxBps;
     }
 
-    /// @dev The fee and the tax when the Quote Asset is the swap's specified currency: of the gross for an
-    ///      exact-in buy (a negative amount), on the net for an exact-out sell (a positive one).
-    function _feesOnSpecified(int256 amountSpecified, uint16 feeBps, uint256 taxBps)
+    /// @dev The three fees when the Quote Asset is the swap's specified currency (the Platform Fee, the
+    ///      Referrer Fee and the tax): of the gross for an exact-in buy (a negative amount), on the net for an
+    ///      exact-out sell (a positive one).
+    function _feesOnSpecified(int256 amountSpecified, uint16 feeBps, uint256 referrerBps, uint256 taxBps)
         internal
         pure
-        returns (uint256 fee, uint256 tax)
+        returns (uint256 fee, uint256 referrerFee, uint256 tax)
     {
         if (amountSpecified < 0) {
             uint256 gross = OZSafeCast.toUint256(-amountSpecified);
-            return (_feeOnGross(gross, feeBps), _feeOnGross(gross, taxBps));
+            return (_feeOnGross(gross, feeBps), _feeOnGross(gross, referrerBps), _feeOnGross(gross, taxBps));
         }
         uint256 net = OZSafeCast.toUint256(amountSpecified);
-        uint256 totalBps = uint256(feeBps) + taxBps;
-        return (_feeOnNet(net, feeBps, totalBps), _feeOnNet(net, taxBps, totalBps));
+        uint256 totalBps = uint256(feeBps) + referrerBps + taxBps;
+        return
+            (_feeOnNet(net, feeBps, totalBps), _feeOnNet(net, referrerBps, totalBps), _feeOnNet(net, taxBps, totalBps));
     }
 
     /// @dev A rate of a known gross amount, rounded up in the platform's favour.
@@ -389,9 +482,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
         return FullMath.mulDivRoundingUp(gross, feeBps, BPS);
     }
 
-    /// @dev A rate of a gross amount known only as its net, when the rates taken from it together are
-    ///      `totalBps`: so that each is its rate of net plus everything taken, rounded up. With no tax
-    ///      `totalBps` is the Platform Fee alone, as before #245.
+    /// @dev A rate of a gross amount known only as its net, when the fees taken from it together are
+    ///      `totalBps`: so that each fee is its rate of net plus every fee, rounded up. With no referrer and
+    ///      no tax `totalBps` is the Platform Fee alone, as before #243 and #245.
     function _feeOnNet(uint256 net, uint256 feeBps, uint256 totalBps) internal pure returns (uint256) {
         return FullMath.mulDivRoundingUp(net, feeBps, BPS - totalBps);
     }
@@ -572,5 +665,10 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @notice A Launch's terms, by its pool.
     function termsOf(PoolId id) external view returns (Terms memory) {
         return _terms[id];
+    }
+
+    /// @notice Where the platform's share of a Platform Fee taken now is booked: the Admin's address.
+    function platform() external view returns (address) {
+        return keys.admin();
     }
 }
