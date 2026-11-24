@@ -24,9 +24,7 @@ const ARTIFACTS = [
   { name: "QuoteRegistry", deploy: true },
   { name: "StokerKeys", deploy: true },
   { name: "TaxVault", deploy: true },
-  // The contracts' own stand-in for the Distributor behind IHoldersPart (contracts/test/utils), which the test stack
-  // deploys until the Distributor lands (#247); never deployed to a live chain.
-  { name: "HoldersPartStandIn", deploy: true },
+  { name: "Distributor", deploy: true },
   { name: "IPoolManager" },
   { name: "IERC20Metadata" },
 ];

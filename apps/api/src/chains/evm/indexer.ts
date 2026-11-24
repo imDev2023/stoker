@@ -140,11 +140,13 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig, client: PublicCli
         await setAside(db, c, hash, error);
       }
     }
-    await saveCursor({ indexedBlock: end, indexedBlockTime: await timeOf(BigInt(end)), logBlockRange: range });
+    // The block's time is read once a run, after the last range, so keeping up costs one `getLogs` a range and no more.
+    await saveCursor({ indexedBlock: end, indexedBlockTime: null, logBlockRange: range });
     run.to = end;
     start = end + 1;
   }
   run.logBlockRange = range;
+  if (run.to !== null) await saveCursor({ indexedBlock: run.to, indexedBlockTime: await timeOf(BigInt(run.to)) });
   await saveCursor({ headBlock: Number(head.number), headBlockTime: times.get(head.number)!, checkedAt: new Date(), logBlockRange: range });
   await refreshMultipliers(db, c, client);
   return run;

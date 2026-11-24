@@ -4,13 +4,13 @@
 // contracts/README.md gives for #251: the keys, the Quote Registry, then the factory, whose constructor makes the hook
 // at the salt mined here, and the native asset listed.
 import {
-  concat, createPublicClient, createWalletClient, encodeAbiParameters, getContractAddress, http, keccak256, numberToHex, pad, parseAbiParameters,
+  concat, createPublicClient, createWalletClient, encodeAbiParameters, getAddress, getContractAddress, http, keccak256, numberToHex, pad, parseAbiParameters,
   type Address, type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { holdersPartStandInAbi, NATIVE, quoteRegistryAbi, ROBINHOOD_CHAIN, stokerFactoryAbi, stokerKeysAbi, taxVaultAbi } from "@launchpad/evm";
+import { distributorAbi, NATIVE, quoteRegistryAbi, ROBINHOOD_CHAIN, stokerFactoryAbi, stokerKeysAbi, taxVaultAbi } from "@launchpad/evm";
 import {
-  holdersPartStandInBytecode, quoteRegistryBytecode, stokerFactoryBytecode, stokerHookBytecode, stokerKeysBytecode, taxVaultBytecode,
+  distributorBytecode, quoteRegistryBytecode, stokerFactoryBytecode, stokerHookBytecode, stokerKeysBytecode, taxVaultBytecode,
 } from "@launchpad/evm/bytecode";
 
 /** L2 block 120,800,000 (2026-11-22): the contracts' fork tests' block, so the chain facts they prove hold here. */
@@ -46,6 +46,7 @@ export type EvmStackEnv = {
   registry: Address;
   keys: Address;
   taxVault: Address;
+  distributor: Address;
   tickSpacing: number;
   fromBlock: number;
   /** The Admin, which writes the Quote Registry: a test lists a Quote Asset with it. */
@@ -93,24 +94,29 @@ export async function deployStoker(rpcUrl: string): Promise<EvmStackEnv> {
   const keysReceipt = await deployed(await wallet.deployContract({ abi: stokerKeysAbi, bytecode: stokerKeysBytecode, args: [admin.address] }));
   const keys = keysReceipt.contractAddress!;
   const registry = (await deployed(await wallet.deployContract({ abi: quoteRegistryAbi, bytecode: quoteRegistryBytecode, args: [keys, TICK_SPACING] }))).contractAddress!;
-  // The Distributor's stand-in until #247 lands, then the Tax Vault, made for the factory's future address (the next
-  // deployment after it), as the contracts' tests deploy them.
-  const holdersPart = (await deployed(await wallet.deployContract({ abi: holdersPartStandInAbi, bytecode: holdersPartStandInBytecode }))).contractAddress!;
+  // The Distributor (#247), the Tax Vault and the factory each name another, so each is made for the address the next
+  // deployments will have: the Distributor for the vault's, the vault for the Distributor's and the factory's.
   const nonce = await pub.getTransactionCount({ address: admin.address, blockTag: "pending" });
-  const factoryAt = getContractAddress({ from: admin.address, nonce: BigInt(nonce + 1) });
+  const [distributorAt, vaultAt, factoryAt] = [0, 1, 2].map((i) => getContractAddress({ from: admin.address, nonce: BigInt(nonce + i) }));
+  const distributor = (await deployed(await wallet.deployContract({ abi: distributorAbi, bytecode: distributorBytecode, args: [keys, vaultAt!] }))).contractAddress!;
   const taxVault = (
-    await deployed(await wallet.deployContract({ abi: taxVaultAbi, bytecode: taxVaultBytecode, args: [poolManager, factoryAt, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS] }))
+    await deployed(await wallet.deployContract({ abi: taxVaultAbi, bytecode: taxVaultBytecode, args: [poolManager, factoryAt!, distributorAt!, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS] }))
   ).contractAddress!;
-  const salt = mineHookSalt(factoryAt, poolManager, keys, taxVault);
+  if (distributor.toLowerCase() !== distributorAt!.toLowerCase() || taxVault.toLowerCase() !== vaultAt!.toLowerCase()) {
+    throw new Error("the Distributor and the Tax Vault did not land at the addresses they were made for");
+  }
+  const salt = mineHookSalt(factoryAt!, poolManager, keys, taxVault);
   const factory = (
     await deployed(await wallet.deployContract({ abi: stokerFactoryAbi, bytecode: stokerFactoryBytecode, args: [poolManager, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, salt, taxVault] }))
   ).contractAddress!;
-  if (factory.toLowerCase() !== factoryAt.toLowerCase()) throw new Error(`the factory landed at ${factory}, not the ${factoryAt} its hook's salt was mined for`);
+  if (factory.toLowerCase() !== factoryAt!.toLowerCase()) throw new Error(`the factory landed at ${factory}, not the ${factoryAt} its hook's salt was mined for`);
   const hook = await pub.readContract({ address: factory, abi: stokerFactoryAbi, functionName: "hook" });
   const list = await wallet.writeContract({ address: registry, abi: quoteRegistryAbi, functionName: "list", args: [NATIVE, NATIVE_START_TICK, GRADUATION_MULTIPLE, REFERRER_FEE_CAP_BPS] });
   await pub.waitForTransactionReceipt({ hash: list });
+  // A receipt names a new contract in lower case; the API stores and answers every EVM address checksummed.
   return {
-    chain: "robinhood", rpcUrl, chainId: ROBINHOOD_CHAIN.chainId, poolManager, factory, hook, registry, keys, taxVault, tickSpacing: TICK_SPACING,
+    chain: "robinhood", rpcUrl, chainId: ROBINHOOD_CHAIN.chainId, poolManager, factory: getAddress(factory), hook: getAddress(hook), registry: getAddress(registry),
+    keys: getAddress(keys), taxVault: getAddress(taxVault), distributor: getAddress(distributor), tickSpacing: TICK_SPACING,
     fromBlock: Number(keysReceipt.blockNumber), admin: { address: admin.address, key: ADMIN_KEY },
   };
 }

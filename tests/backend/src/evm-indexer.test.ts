@@ -5,7 +5,7 @@ import { describe, expect, inject, test } from "vitest";
 import { erc20Abi, parseAbi, type Address } from "viem";
 import { CandleList, ChainList, LaunchList, LaunchSummary, TradeList } from "@launchpad/contract";
 import { NATIVE, ROBINHOOD_CHAIN } from "@launchpad/evm";
-import { env, fundedWallet, launchedCoin, SOL, trade } from "./client";
+import { deliverWebhook, env, fundedWallet, launchedCoin, SOL, trade } from "./client";
 import { balanceOf, clients, evmWallet, launchCoin, listQuote, runIndexer, swapExactIn, swapExactOut } from "./evm";
 
 const hasEvm = inject("harness").evm !== null;
@@ -74,7 +74,8 @@ describe("Solana coins name their chain", () => {
   test("a wallet's and a Creator's lists take the chain filter, totals included", async () => {
     const { creator, mint } = await launchedCoin();
     const trader = await fundedWallet();
-    await trade(trader, mint, "buy", SOL(0.2));
+    const { signature } = await trade(trader, mint, "buy", SOL(0.2));
+    expect((await deliverWebhook([signature])).status).toBe(200);
     for (const job of ["fee-collector", "creator-forward"]) {
       const res = await fetch(`${env().apiUrl}/v1/operator/jobs/${job}`, { method: "POST", headers: { authorization: `Bearer ${env().operatorToken}` } });
       expect(res.status, job).toBe(200);
