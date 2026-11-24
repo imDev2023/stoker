@@ -7,9 +7,10 @@ Nothing here has been deployed to any chain, live or test.
 These contracts have not been audited by an independent firm (the owner's decision of 2026-11-22, ADR 0030).
 What stands in for an audit is listed under "The safety checklist" below, and the gate before any deployment is #251.
 
-## What is built (#241, #242, #243)
+## What is built (#241, #242, #243, #247)
 
 The first path, end to end: a standard coin launched by Direct Seed, with the hook keeping the books (#241), paired with a listed ERC-20 or with the chain's native asset (#242), against the on-chain Quote Registry, with the Admin and the server keys named on-chain and a Referrer Fee a trade may add (#243).
+Beside it, the Distributor, which pays Holder Rewards from Round Roots after the Round Delay, with the Guard able to cancel a root inside it (#247); it is tested against a stand-in for the Tax Vault until #245 lands.
 
 | File | What it is |
 | --- | --- |
@@ -18,6 +19,7 @@ The first path, end to end: a standard coin launched by Direct Seed, with the ho
 | `src/StokerHook.sol` | The hook: on every swap it takes the 1.00% Platform Fee on the Quote Asset's side, holds it as ERC-6909 claims in the PoolManager, and records it as two Credits (the Creator's share by the first Creator Tier, the rest to the Admin of the moment). A trade may name a referrer and a Referrer Fee up to its Launch's cap in its `hookData`; that fee is taken on top, on the same side, and recorded as a third Credit. It calls no recipient inside a swap. `payout` is the Payout Call: anyone pays any owners, each to themselves; an owner the Quote Asset refuses keeps their Credit and the others are paid. A native Credit is paid by a gas-capped call only once the PoolManager is locked again (below). It also guards the pool: only the factory opens pools on it and adds liquidity, no removal is ever allowed, donations are refused. |
 | `src/QuoteRegistry.sol` | The Quote Registry (ADR 0028), behind `src/interfaces/IQuoteListings.sol`: one Listing per Quote Asset (the zero address is the native asset) with its start price, Graduation multiple and Referrer Fee cap. Only the Admin writes it; a Listing takes one write a day, a routine write moves a start price by 25% at most, and a deliberate change is scheduled 48 hours ahead (below). It holds nothing and reaches no launched coin. |
 | `src/StokerKeys.sol` | The Admin and the three server keys (the round key, the ladder key, the Keeper), named on-chain (ADR 0030, story 47). The Admin is handed over, and a server key replaced, only when the new address accepts; the Admin can revoke a server key at once. It holds nothing and calls nothing. |
+| `src/Distributor.sol` | The Distributor (ADR 0029): a pot per coin and asset, raised only by the Tax Vault's deposit of the holders' part and lowered only by a payment; Round Roots posted by the round key, each reserving its total from its own coin's pot; the Round Delay of 24 hours; the Guard's cancel inside it; claims anyone may submit, each paid to its holder alone, each holder's payment made on its own, a holder's rounds in a row paid as one. No owner, no setter; it reads the round key and the Guard from `StokerKeys` at each call. |
 | `script/ListingWrite.s.sol` | The tool that prepares a registry write for the Admin's hardware wallet (ADR 0028): it computes the start tick from an Opening Value, checks a routine write against the 25% band, and prints the target and the calldata. It sends nothing and holds no key. |
 
 The fee is 1.00% of the Quote Asset's side of every swap, rounded up:
@@ -112,7 +114,35 @@ Its Listing is the zero address, which is native ETH in the pool key (`currency0
 
 With `r` zero every row is the table above.
 
-Not in this slice, by the ticket: Graduation and the Creator Lock (#244), the tax and the Tax Vault (#245), the Opening Fee (#246), the Distributor (#247), the Creator Ladder's key and the Destination contracts (#248), and the deployment and the gate (#251).
+### The Distributor (#247)
+
+Holder Rewards on EVM (ADR 0029): the Reward Engine computes a Reward Round off-chain, the round key posts its Round Root, and after the Round Delay anyone may submit the holders' claims, each paid to its holder.
+
+- **The pot.** The Tax Vault hands a Reward Launch's holders' part over through `deposit(coin, asset, amount)`, the one function of `IHoldersPart` (#245): the native asset as the call's value, exactly the amount; an ERC-20 pulled from the Tax Vault, which approved exactly the amount, with no value.
+  Only the Tax Vault may deposit, an address fixed at deployment.
+  The asset is the Quote Asset, or the coin itself when the Launch's Payout Asset is the coin and the Tax Vault bought it with its capped buy.
+  The Distributor keeps a pot per coin and asset (`potOf`), raised only by a deposit and lowered only by a payment, and refuses an asset that delivers less than the amount (`DepositShort`).
+- **A Round Root reserves its total.** The round key posts `postRoot(round, coin, asset, root, total)`: the round's number (the next one, since the leaves carry it), the coin, what the round pays in, the Merkle root and what it owes in all.
+  The total is reserved from that coin's pot in that asset at once, and a root that owes more than the pot holds unreserved is refused (`RootExceedsPot`), so a root can never pay beyond its own coin's pot, nor from another coin's, and a coin with nothing in its pot cannot be given a root at all.
+  A round then pays at most its total (`RoundTotalExceeded`), whatever its tree says.
+  The ADR's "the round pays what the Distributor holds when the root is computed" is this: the Reward Engine computes from `availableOf`, which only a post lowers, so a round posted honestly always finds its total waiting.
+- **The keys, read at the moment.** The round key is `keys.holderOf(Role.RoundKey)` and the Guard is `keys.admin()`, read at each call, so a revoke or a replacement takes effect at once; an Admin that names itself the round key still cannot post (`GuardCannotPost`).
+- **The Round Delay and the Guard.** A root pays from 24 hours after its posting (`RoundDelay` before then, `block.timestamp` alone); inside the delay the Guard may cancel it (`cancelRoot`), never after (`DelayOver`).
+  A cancelled root never pays, and what it reserved is free again in the coin's pot for a round computed and posted again.
+- **The leaf** is `keccak256(bytes.concat(keccak256(abi.encode(chainId, distributor, coin, round, holder, amount))))`, OpenZeppelin's standard leaf (`StandardMerkleTree` with the types `uint256, address, address, uint256, address, uint256`), so a proof cannot be replayed on another round, coin, Distributor or chain; `leafOf` returns it.
+  One leaf per holder per round: a holder is paid once for a round (`isClaimed`), so the Reward Engine adds a holder's entries together before it builds the tree.
+- **Claims.** `claim(Claim[])` takes any holders' claims from anyone, and each payment goes to its holder.
+  Claims in a row for the same holder in the same asset are paid as one payment of their sum, so a holder's rounds add together.
+  A claim already paid is passed over rather than reverting, so a holder's own claim landing first cannot stop the Keeper's batch; a claim on an unknown or cancelled round, inside its delay, or with a proof that does not verify reverts the call.
+  Each holder's payment is made on its own: an ERC-20 by a `transfer` that returns false where SafeERC20 would revert and reads one word of return data at most, the native asset as below.
+  A payment the asset refuses (a Stock Token's blocklist, its issuer's pause, a false return, a receive that reverts) leaves that holder's claims owed, every figure added back, and the others are paid; nothing is paid while the issuer's pause is on.
+- **The native asset** is paid as the hook pays native Credits (#242): the Distributor holds it, so no PoolManager is unlocked around the payment; a call carrying `NATIVE_CLAIM_GAS` (50,000) that copies no return data; all the gas there is only when the holder claims for themselves; a floor that reverts the whole call rather than starve a holder (`ClaimGasTooLow`); and a transient guard on re-entry (`ClaimReentered`).
+- **What a false root can do, and nothing more.** A stolen round key can post a root that pays its own addresses, bounded by three things and nothing else: the coin's pot (it cannot reserve more than is there, nor anything of another coin's), the Round Delay (nothing pays for 24 hours), and the Guard (who cancels it, after which it never pays and its reserve is free again).
+  The Admin then revokes the key, which stops it at once.
+  A round's unpaid claims never expire and no key can redirect them (the agent's call: ADR 0029 names no expiry).
+- **Rounds of source `earnings`** (a Creator Earnings Destination of the holders, #248) will fund the same pot: the holders' Destination of a coin receives the Creator's Credits by the hook's Payout Call like any owner, and hands them to the Distributor through an entry point #248 adds beside `deposit`, admitted for that coin's own Destination alone (read from the Launch's terms, never a list a key keeps), raising `potOf[coin][asset]`; its rounds are posted, delayed, guarded and claimed exactly as a tax round's, and the bound becomes "never more than what was deposited for that coin".
+
+Not built yet: Graduation and the Creator Lock (#244), the tax and the Tax Vault (#245), the Opening Fee (#246), the Creator Ladder's key and the Destination contracts (#248), and the deployment and the gate (#251).
 
 ## Run it
 
@@ -140,7 +170,8 @@ REGISTRY=0x... ACTION=list QUOTE=0x... OPENING_VALUE=5000000000 MULTIPLE=20 CAP_
   The first run reads the chain; later runs read Foundry's cache under `~/.foundry/cache/rpc/4663/`.
 - CI (`.github/workflows/ci.yml`, job `contracts`) checks the format, builds with sizes, lints `src`, and runs every test that needs no RPC on every push, with deeper fuzz and invariant campaigns (`FOUNDRY_PROFILE=ci`); it runs the fork tests only where the repository has the `ROBINHOOD_RPC_URL` secret.
 
-Results on 2026-11-24, with #243 after the main session's review: 124 local tests (unit, fuzz, and five invariants in two campaigns, one per kind of Quote Asset, plus one for native leftovers) and 27 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
+Results on 2026-11-24 with #247, the Distributor, as its lane pushed it: 163 local tests (39 new, eight invariants in the Distributor's own campaign among them) and 35 fork tests (8 new) pass, the local ones under `FOUNDRY_PROFILE=ci` too; each of the Distributor's 28 guards, removed in turn, fails a named test (the PR lists them).
+#243 after the main session's review: 124 local tests (unit, fuzz, and five invariants in two campaigns, one per kind of Quote Asset, plus one for native leftovers) and 27 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
 Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test (the PR lists them); the review added two more, each shown failing before its fix.
 #243 as its lane pushed it: 122 local and 27 fork tests.
 #242 after the main session's review: 70 local and 18 fork tests.
@@ -153,11 +184,23 @@ Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test
 | `StokerHook` | 9,979 | 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
 | `QuoteRegistry` | 3,740 | 3,965 | new | new |
 | `StokerKeys` | 1,291 | 1,483 | new | new |
+| `Distributor` (#247) | 5,601 | 5,827 | new | new |
 | `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged |
 
 Launch gas on the fork: about 1.22M with a permit First Buy in NVDA, about 1.06M with a native First Buy (#242: 1.18M and 1.03M; the Listing's three figures and the Graduation Target are read and written into the terms).
 A swap costs about 8,000 gas more than in #242: the terms take a second slot and the Admin is read from the keys.
 A native Payout Call to eight owners, five of them refusing (each spending its whole 50,000), took 321,867 gas on the fork.
+
+The Distributor's claims on the fork (#247), measured as #232 measured its minimal distributor (`docs/evm/research/robinhood-chain.md`, section 5): a round of 16,384 holders, every account and slot the claim touches marked cold, holders with no prior balance, and each total counting the 21,000 base and the calldata's gas beside the execution (`test/fork/ForkDistributorGas.t.sol`).
+
+| Asset paid | Pushed claim, per holder of a batch of 50 | A holder's own first claim | #232: pushed, of 50 | #232: own first claim |
+| --- | ---: | ---: | ---: | ---: |
+| NVDA (Stock Token) | 85,479 | 167,103 | 88,648 | 152,233 |
+| ETH | 84,782 | 116,985 | 87,228 | 129,005 |
+
+A pushed claim costs about what #232 measured, so a round of 16,384 holders still costs about $50 to push at 0.02 gwei.
+A holder's own first claim in NVDA costs about 15,000 more than #232's minimal distributor, which kept one cumulative figure per holder: this one reads the round (four cold slots) and writes the claim's mark, the round's paid sum and the coin's pot, for the per-round leaf, the reservation and the per-coin pot ADR 0029 asks for.
+The native first claim comes out about 12,000 below #232's; why was not traced.
 
 ## The tests
 
@@ -188,6 +231,11 @@ Every test proves behaviour from outside: what a wallet receives, what an event 
 | `test/fork/ForkNoReferrer.t.sol` | Through both Universal Routers, the same four trades naming no referrer: the Quoter's figure, what the trader paid and received and what the hook took, to the wei against figures recorded from `main` before the hook changed. |
 | `test/fork/ForkRouteBase.sol` | One trade through either router in a coin paired with NVDA or native ETH, carrying the hookData a front-end puts in it; a small base so the contracts over it stay clear of the stack limit. |
 | `test/fork/ForkNative.t.sol` | Against native ETH on the real PoolManager: one call with value launches and makes the First Buy with no approval and no permit; through both Universal Routers the four trades deliver the V4 Quoter's figure to the wei, a bound one wei tighter reverts, each credits exactly 1.00% of the native side and pays nobody; the controller's policy leaves a native pool at 0; a route from one coin to another through native ETH books each pool's fee to its own Creator with no ETH reaching anyone; one Payout Call under a Keeper's gas pays an ordinary wallet, a Safe 1.4.1 and the platform while five hostile recipients stay owed; the re-entrants meet the guard and a locked PoolManager. |
+| `test/unit/Distributor.t.sol` | Only the round key posts, never the Guard (even holding the round key), the ladder key, the Keeper or the vault; a revoked or replaced round key stops at once, a proposed one cannot post until it accepts; the round number is the next; no empty root; a root beyond its coin's pot refused to the unit, one at it taken, none for a coin with nothing in its pot, none paid from another coin's pot or the same coin's other asset; a claim a second before the delay reverts by name and succeeds at it; the Guard cancels inside the delay, its claims never pay, its reserve is free and the round posted again pays; no cancel after the delay, by anyone but the Admin of the moment, or twice; a stranger's batch pays each holder their own and the caller nothing; a claim paid once whether repeated in a batch or in a later one; three rounds of one holder paid in one call as one transfer, and claims in two assets paid apart; a proof refused for another amount, holder, round, coin, Distributor or chain; never past a round's total; a blocked holder, a paused asset and an asset returning false each leave holders owed while the others are paid, and pay once cleared; a refused merged payment leaves every round in it owed; a round paid in the coin; only the Tax Vault deposits, the value exactly the native amount and none with an ERC-20, a short transfer refused, plain value refused. |
+| `test/unit/DistributorNative.t.sol` | Under a Keeper's 1,000,000 gas, a native batch pays an ordinary wallet and a counting contract while holders that revert, burn their gas, return a bomb or re-enter stay owed, each refusal an event; a lenient re-entrant meets the guard and is paid once; a refused holder is paid once it accepts; a heavy wallet refused when pushed is paid when it claims its own; too little gas reverts the whole batch; across every gas budget from 60,000 to 200,000 a holder that needs the whole allowance is paid in full or the call reverts by name; duplicates paid once. |
+| `test/invariant/Distributor.invariant.t.sol` | One campaign over two coins, a mock Stock Token and the native asset, six holders (one the Stock Token blocks at random, one refusing the native asset at random, one always burning its gas): deposits, rounds posted at random amounts up to the pot, the Guard cancelling in and after the delay, the Guard, a stranger and the vault trying to post, time passing, strangers' batches with duplicates and rounds still in their delay, holders claiming their own. Every pot is its deposits less its payments and the pots are exactly what the Distributor holds; a coin's rounds never pay more than its pot received; no holder is paid twice for a round; nothing is paid inside the Round Delay; a cancelled root pays nothing; each holder is paid exactly their leaf, no round more than its leaves or its total, and the round's own count agrees; every payment is a `Claimed` event and every such event a payment; nobody but the round key posts, and the Guard cancels only in time. |
+| `test/fork/ForkDistributor.t.sol` | Against NVDA and native ETH on the real chain: a claim a second before the delay reverts and succeeds at it; a root beyond its coin's pot, or for a coin with nothing in its pot, is refused while another coin's pot sits beside it, and one at it pays without touching the other; a stranger pushes 50 holders' claims in one call, each receives their own, and with one blocked by the Stock Token's registry the other 49 are paid and the blocked one stays owed until unblocked; with the issuer's pause on nothing is paid and all stay owed, then all are paid; rounds paid in the coin for a coin on either side of an NVDA pool and one paired with native ETH; a native round pays a wallet and a Safe 1.4.1 while four hostile holders stay owed. |
+| `test/fork/ForkDistributorGas.t.sol` | The gas of a pushed claim and of a holder's own first claim, in NVDA and ETH, measured as #232 measured (below), each bounded so a dearer claim fails. |
 
 ## Chain facts the tests stand on
 
@@ -209,7 +257,9 @@ Every test proves behaviour from outside: what a wallet receives, what an event 
 | #244, Graduation and the Creator Lock | `StokerHook._afterSwap` (one hold timestamp per pool, `block.timestamp` only), `StokerHook.Terms.graduationSqrtPriceX96` (the Graduation Target, already written at launch as the pool's own sqrt price: above the open price with the coin as currency0, below it with the Quote Asset as currency0, so the comparison flips with `quoteIsCurrency0`), and `StokerFactory._placeSeed` (the Creator Lock is held out of `SUPPLY` before the seed is placed). |
 | #245, the tax and the Tax Vault | `StokerHook._beforeSwap` and `_afterSwap` (the tax beside the fee, booked to the Tax Vault), `_beforeAddLiquidity` (admits the Tax Vault's Support Liquidity beside the factory), and `Terms` (the launch type and its shares). |
 | #246, the Opening Fee | `_beforeSwap` and `_afterSwap` on buys, from the Launch's start time (`Terms` gains it), with the factory's First Buy exempt by its `sender`. |
-| #247, the Distributor | `StokerKeys`: the round key is `holderOf(Role.RoundKey)` and the Guard is the Admin (`admin()`), each read at the moment of the call, so a replacement takes effect at once. The Tax Vault's holders' part. A round in the native asset pays holders as `StokerHook._payoutNative` pays Credits: never a call to a holder with the PoolManager unlocked, a gas-capped call that copies no return data, a refusal kept owed, and a guard on re-entry. |
+| #245, the Tax Vault, for the Distributor | `Distributor.deposit(coin, asset, amount)`, the signature of `IHoldersPart` (the Distributor declares it until #245's interface file lands, then inherits it), called by the Tax Vault alone. The Distributor is deployed first with the Tax Vault's address computed ahead, since the Tax Vault in turn fixes the Distributor's (`test/utils/DistributorHelpers.sol` deploys a stand-in in its place). |
+| #248, rounds of source `earnings` | An entry point beside `deposit` that raises the same `potOf[coin][asset]`, admitted for that coin's own holders' Destination alone (above). |
+| #254 and #255, the Keeper and the Reward Engine | `availableOf(coin, asset)` is what a round may owe; `leafOf` and `roundCount() + 1` build the tree; `postRoot` by the round key; `claim` by the Keeper once `roundOf(round).postedAt + ROUND_DELAY` has passed, with the events `RootPosted`, `RootCancelled`, `Claimed` and `ClaimRefused`. In the native asset a refusing holder costs the batch up to `NATIVE_CLAIM_GAS` and its overhead each time, so the Keeper backs off a holder that refused and sets a batch's gas from its count, as for the Payout Call; in a Stock Token it waits while the issuer's pause is on. The API recomputes each posted root from its own index and wakes the owner on a mismatch, so the Guard can cancel inside the 24 hours. |
 | #248, the Creator Ladder's key and the Destinations | `StokerKeys.holderOf(Role.LadderKey)`, read at the moment of the call. `Terms.creatorShareBps` (the three tiers' shares written at launch, the ladder key raising only), and `LaunchParams.creatorDestination`, which already takes any address: the Destination contracts are addresses to the launch core. The factory should refuse the hook, itself and the PoolManager as a Destination: none of them accepts the native asset, so a native Credit to one is refused for good, and an ERC-20 paid to one is stranded. A Destination contract that receives the native asset must not act on `creditOf` from inside its payment, where the Credits of the same Payout Call's unpaid owners read zero. |
 | #254, the Keeper's Payout Calls | `payout(currency, owners)` and the events `CreditPaid` and `CreditRefused`. In the native asset a refusing owner costs the batch up to `NATIVE_PAYOUT_GAS` and its call's overhead every time it is named, so the Keeper backs off an owner that refused (the event says who) and does not name them in every run. It sets a batch's gas from the owners' count (the cap and the overhead each, plus the two unlocks) and not from a simulation alone, since a recipient may accept in the simulation and burn its allowance in the block; a batch given too little reverts whole (`PayoutGasTooLow`) and loses nothing. |
 | #251, the gate and the deployment | This README's checklist and triage, the invariant suite in `test/invariant/`, and a deploy script in the order the fixture uses: `StokerKeys` with the Admin's address (checked against the hardware wallet), `QuoteRegistry` with the keys and the tick spacing, then `StokerFactory` with the registry, the hook's salt mined over `abi.encode(poolManager, keys)` as `test/utils/StokerTestBase.sol` does. The first Listings are the Admin's writes, prepared by `script/ListingWrite.s.sol`. |
@@ -241,6 +291,35 @@ Expect the finished hook to score 15 or more (#251 scores it again): Graduation,
 
 The Quote Registry and the keys are not hooks, but scored on the same scale for #251 they total 9 (Low): complexity 2 (a write band, a rolling day, a scheduled change folded in on read), custom math 1 (the band as ticks), external dependencies 0, liquidity exposure 0 (they hold nothing), TVL potential 0, team maturity 3, upgradeability 0, autonomous parameter updates 2 (the Admin writes the figures every future Launch opens with, bounded by the band, the day and the 48 hours), price impacting behaviour 1 (a new Launch's opening price, never a live pool's).
 What they guard is the start price of every future Launch: a stolen Admin key can move a Listing 25% a day, or any figure 48 hours after posting it, in public, and can do nothing to a launched coin.
+
+The Distributor (#247) is not a hook either; scored on the same scale on 2026-11-24 it totals 13 (Medium):
+
+| Dimension | Range | Distributor | Why |
+| --- | --- | ---: | --- |
+| Complexity | 0-5 | 2 | Roots with a reservation, a delay and a cancel; claims grouped per holder, two payment modes, a refusal put back figure by figure, a transient guard. No pool, no unlock, no swap. |
+| Custom math | 0-5 | 1 | Sums and differences of amounts; the Merkle proof is OpenZeppelin's. |
+| External dependencies | 0-3 | 1 | No oracle; a Stock Token's issuer can block, pause, burn from and upgrade the asset it holds; the keys it reads are ours. |
+| External liquidity exposure | 0-3 | 2 | It holds every Reward Launch's holders' part, funds owed to others, as plain balances; it forwards nothing to another protocol. |
+| TVL potential | 0-5 | 2 | A share of every Reward Tax waiting a day or more; assumed within the hook's $1M to $5M. |
+| Team maturity | 0-3 | 3 | No prior audited production deployment. |
+| Upgradeability | 0-3 | 0 | No proxy, no owner, no setter. |
+| Autonomous parameter updates | 0-3 | 2 | The round key decides who is paid what, a server key; bounded by each coin's pot, the 24-hour delay and the Guard, and by nothing else. |
+| Price impacting behaviour | 0-3 | 0 | It trades nothing. |
+| **Total** | 0-33 | **13** | **Medium (7 to 17).** |
+
+Hard stops: it holds user funds (the holders' part), said plainly; no curve, no NoOp swap, no oracle, no upgrade; its real TVL passing $1M is the same stop the hook meets, by the owner's decision without an audit (ADR 0030).
+Its own checklist, item by item:
+
+- [x] Only the Tax Vault deposits, and only exactly the amount arrives (`test_deposit_onlyTheTaxVault`, `test_deposit_aShortTransferIsRefused`).
+- [x] Only the round key of the moment posts, never the Guard, and a revoke stops it at once (`test_post_*`).
+- [x] A root can never owe more than its own coin's pot in its own asset holds unreserved (`test_pot_*`, `test_fork_aRootBeyondItsCoinsPotCannotPay_andCoinsAreApart`, the invariants).
+- [x] Nothing pays inside the Round Delay; only the Guard cancels, only inside it; a cancelled root pays nothing (`test_delay_*`, `test_guard_*`, the invariants).
+- [x] A leaf binds the chain, the Distributor, the coin, the round, the holder and the amount, hashed twice (`test_claim_aProofCannotBeReplayed`).
+- [x] A holder is paid once per round, never past the leaf or the round's total, and always to the holder (`test_claim_*`, the invariants).
+- [x] Each payment is isolated, and a refusal leaves every figure as it was (`test_claim_aBlockedHolderStaysOwed_andTheOthersArePaid`, the pause and false-return tests, `test_fork_aStrangerPushesFiftyClaims_oneBlockedStaysOwed`).
+- [x] Native payments: a gas cap, no return data copied, a floor that reverts the whole call, a guard on re-entry, all the gas only to a holder claiming their own (`DistributorNative.t.sol`, `test_fork_native_walletAndSafePaid_hostileHoldersStayOwed`).
+- [x] Its clocks read `block.timestamp` alone (`test_clock_theDistributorReadsTimeOnly`).
+- [ ] The issuer's `adminBurn` from the Distributor would leave a pot counting more than it holds, and the last claims in that asset would be refused until topped up; not testable from here and accepted by ADR 0028, as for the hook.
 
 Hard stops, by the checklist's own wording:
 
@@ -324,7 +403,9 @@ Operational (for #251):
 Slither 0.11.3 (`slither . --config-file <security standards>/tooling/slither.config.json --filter-paths "lib/|test/|script/"`) reports the same classes, and two more that are its own limits: it cannot generate IR for `StokerFactory._placeSeed` and `_firstBuy` (memory structs under via IR), and so reports `SUPPLY` as unused and the launch's `seed` as uninitialized, both of which those two functions use.
 For #242 it adds three: the factory "locks ether" (the same IR gap: `_firstBuy` settles exactly the value sent into the PoolManager or the launch reverts, and the tests and the native invariant hold the factory's balance at 0), the native Payout Call's reentrancy pattern (guarded, and the only writes after the calls add back refused Credits), and the assembly of the gas-capped call (on purpose, so no return data is copied).
 For #243 it adds four, each expected: the registry's timestamp comparisons (its clocks), the zero-address `proposeAdmin` (a withdrawal), `_book`'s writes after the PoolManager's `mint` (the only call before them, with our own keys' view), and the assembly in `_referral` (two `calldataload`s, so a malformed `hookData` reverts by name rather than inside `abi.decode`).
-It reports 31 results in all, every one a class triaged here.
+For #247 it adds eight, each expected: the deposit's pot written after the asset's `transferFrom` and its event after it (benign and events reentrancy: only our own Tax Vault may call, and the pull is checked to the unit before the pot rises), the two comparisons of `block.timestamp` (the Round Delay, a day, which a sequencer's few seconds move by as much and no more), three uses of assembly (the gas-capped native call that copies no return data, the ERC-20 `transfer` that reads one word of return data at most and returns false where SafeERC20 reverts, and the transient guard), and `claim`'s cyclomatic complexity of 12 (the grouping per holder, each refusal put back; every branch has a guard test above).
+`forge lint src` raised three on the Distributor, each annotated with its reason: the deposit's exact equality (on purpose, so a pot never counts more than arrived) and two reverts in `claim`'s loop (a claim on no round, or with a proof that does not verify, is the caller's error and reverts the call).
+It reports 39 results in all, every one a class triaged here.
 Running Slither and the security standards' gate in CI is #251's.
 
 ## Gotchas met here
@@ -344,3 +425,6 @@ Running Slither and the security standards' gate in CI is #251's.
 11. Gotcha 2's general form: `vm.expectRevert` binds to the next external call, and reading the pool's price for a limit (`getSlot0` is an `extsload`) inside the swap's own arguments is one; read the limit into a local first.
 12. Every handler function added to an invariant campaign dilutes the trades in a run: with #243's five, a run of 64 calls once held four trades, all stopped by their own limits, and `afterInvariant`'s "no swap went through" failed; the campaign now has four trade entry points.
     A failing sequence persists under `cache/invariant/failures/` and replays on the next run even after the fix, so delete the file once the cause is gone.
+13. `vm.recordLogs` records the events of a call that reverted as well, so a handler that reads events after a `try` must read them only when the call went through; the Distributor's campaign counted payments that a later claim's revert had undone until it did.
+14. Gotcha 10 holds for `block.chainid` too: read it once, `vm.chainId` another, and a second read can return the first value, so a test that restores the chain id reads it through an external call first.
+15. Claims in a batch that name a round still inside its delay revert the whole call, so an invariant campaign that picks rounds at random rarely pays; the Distributor's handler names rounds that may pay now in seven batches of eight and any round in the eighth.
