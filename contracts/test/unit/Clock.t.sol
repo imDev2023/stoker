@@ -5,6 +5,7 @@ import {LocalBase} from "../utils/LocalBase.sol";
 import {OpcodeScan} from "../utils/OpcodeScan.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {StokerFactory} from "../../src/StokerFactory.sol";
+import {Distributor} from "../../src/Distributor.sol";
 
 /// The contracts read time only, never `block.number`, which on Robinhood Chain and Arbitrum is an
 /// estimate of the L1 block (the security standards' robinhood-4663 profile, question 1).
@@ -33,6 +34,13 @@ contract ClockTest is LocalBase {
         address lock = factory.creatorLockOf(id);
         assertFalse(OpcodeScan.contains(lock.code, OpcodeScan.NUMBER), "lock");
         assertTrue(OpcodeScan.contains(lock.code, OpcodeScan.TIMESTAMP), "the lock reads the time");
+    }
+
+    /// The Distributor's Round Delay reads the timestamp, never the block number (#247).
+    function test_clock_theDistributorReadsTimeOnly() public {
+        Distributor d = new Distributor(keys, makeAddr("taxVault"));
+        assertFalse(OpcodeScan.contains(address(d).code, OpcodeScan.NUMBER), "distributor");
+        assertTrue(OpcodeScan.contains(address(d).code, OpcodeScan.TIMESTAMP), "the Round Delay reads the time");
     }
 
     function test_clock_theScanFindsNumberWhereItIs() public {
