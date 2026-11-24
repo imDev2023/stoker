@@ -253,6 +253,7 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
     ///         the Platform Fee like any buy and no tax (see the hook's `_taxBps`).
     function burn(PoolKey calldata key) external nonReentrant returns (uint256 spent, uint256 burned) {
         Pool memory p = _load(key);
+        _checkOpeningOver(p.terms);
         Books storage b = _books[p.id];
         _checkInterval(b.lastBuyAt);
         Prices memory px = _prices(p);
@@ -274,6 +275,7 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
     function buyForHolders(PoolKey calldata key) external nonReentrant returns (uint256 spent, uint256 bought) {
         Pool memory p = _load(key);
         if (p.terms.payoutAsset != StokerHook.PayoutAsset.Coin) revert NothingToSpend();
+        _checkOpeningOver(p.terms);
         Books storage b = _books[p.id];
         _checkInterval(b.lastHoldersBuyAt);
         Prices memory px = _prices(p);
@@ -413,7 +415,8 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         return _part(p.booked, p.terms.liquidityShareBps) + p.openingBooked;
     }
 
-    /// @dev No buy of this vault's runs while the Launch's Opening Fee does: it would pay up to the start figure,
+    /// @dev No buy of this vault's runs while the Launch's Opening Fee does, checked first in `burn` and
+    ///      `buyForHolders`, before the Reference Price's band (#271): it would pay up to the start figure,
     ///      moving the burn's or the holders' Quote Asset into Support Liquidity, mixing parts the Launch fixed,
     ///      and no buy but the Creator's First Buy is exempt from it (ADR 0026). The first may come at the end.
     function _checkOpeningOver(StokerHook.Terms memory t) internal view {
@@ -455,7 +458,6 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
     }
 
     function _buy(PoolKey calldata key, Pool memory p, uint256 amount) internal returns (uint256 coins) {
-        _checkOpeningOver(p.terms);
         // The PoolManager calls back only this vault, and runs only our hook inside; the guard holds.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         bytes memory result =

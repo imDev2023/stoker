@@ -274,7 +274,9 @@ contract StokerFactory is IUnlockCallback {
             // The hook writes the Launch's own second itself when it registers the terms.
             launchedAt: 0,
             openingFeeStartBps: openingFeeStartBps,
-            openingFeeDuration: openingFeeDuration
+            openingFeeDuration: openingFeeDuration,
+            // The hook's own mark, set by the pool's first Opening Fee.
+            openingFeeTaken: false
         });
         _writeTaxTerms(terms, p);
         hook.registerLaunch(seed.key, terms);

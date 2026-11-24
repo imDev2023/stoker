@@ -48,20 +48,23 @@ contract OpeningFeeTest is TaxLocalBase, OpeningFeeHelpers {
     /// The fees together, as the ticket states them at the three seconds it names.
     function _checkTotal(Seen memory s, Fees memory f, bool exactIn, uint256 elapsed, uint256 rBps, uint256 tBps)
         internal
-        pure
+        view
     {
-        uint256 standingBps = PLATFORM_FEE_BPS + rBps + tBps;
         uint256 taken = _taken(s);
         uint256 net = s.quoteIn - taken;
         if (elapsed == 0) {
-            // 99% together at the launch's own second, rounded up once to the wei.
+            // 99% together at the launch's own second, rounded up once to the wei, a referrer or not: no
+            // Referrer Fee fits under the start figure then.
+            assertEq(s.referrerCredit, 0, "no Referrer Fee at the launch's own second");
             if (exactIn) assertEq(taken, _rateOfGross(s.quoteIn, OPENING_FEE_START_BPS), "99% of the payment");
             else assertEq(taken, _rateOfNet(net, OPENING_FEE_START_BPS, OPENING_FEE_START_BPS), "99% of gross");
             assertGt(f.opening, 0, "an Opening Fee was paid");
         } else if (elapsed == 10) {
-            // Half the Opening Fee's start rate, the standing fees whole.
-            uint256 halfBps = (OPENING_FEE_START_BPS - standingBps + 1) / 2;
-            uint256 rateBps = standingBps + halfBps;
+            // Half the Opening Fee's start rate above the Platform Fee and the tax, which stay whole, and the
+            // Referrer Fee whole too: half the schedule leaves room for any the Listing's cap allows.
+            uint256 halfBps = (OPENING_FEE_START_BPS - PLATFORM_FEE_BPS - tBps + 1) / 2;
+            assertEq(_referrerRateUnder(rBps, tBps, halfBps), rBps, "the Referrer Fee whole at ten seconds");
+            uint256 rateBps = PLATFORM_FEE_BPS + tBps + halfBps + rBps;
             if (exactIn) assertEq(taken, _rateOfGross(s.quoteIn, rateBps), "the standing fees and half the rest");
             else assertEq(taken, _rateOfNet(net, rateBps, rateBps), "the standing fees and half the rest");
             // About half of 99%: between 49.5% and 53.5% of the payment, by the standing fees.
@@ -115,7 +118,10 @@ contract OpeningFeeTest is TaxLocalBase, OpeningFeeHelpers {
                 Seen memory outside = _tradeAndSee(key, true, true, amount, REFERRER_FEE_CAP_BPS);
                 assertEq(inside.creatorCredit, outside.creatorCredit, "the Creator's Credit");
                 assertEq(inside.platformCredit, outside.platformCredit, "the platform's Credit");
-                assertEq(inside.referrerCredit, outside.referrerCredit, "the referrer's Credit");
+                // At the launch's own second no Referrer Fee fits under the start figure: the referrer the buy
+                // named is credited nothing, never a share of the Opening Fee.
+                assertEq(inside.referrerCredit, 0, "the referrer's Credit inside: nothing");
+                assertGt(outside.referrerCredit, 0, "the referrer's Credit outside: its fee");
                 assertEq(inside.tax, outside.tax, "the tax");
                 assertGt(inside.opening, 0, "inside, an Opening Fee");
                 assertEq(outside.opening, 0, "outside, none");
@@ -311,8 +317,8 @@ contract OpeningFeeTest is TaxLocalBase, OpeningFeeHelpers {
         _checkBuy(s, true, elapsed, referrerBps, TAX_BPS);
     }
 
-    /// A buy so small that the standing fees' own roundings take more than the combined rate pays those and
-    /// no Opening Fee, and is not refused: ten wei at 19 seconds with a referrer and a 5% tax.
+    /// A buy so small that the Platform Fee's and the tax's own roundings take more than the combined rate
+    /// pays those and no Opening Fee, and is not refused: ten wei at 19 seconds with a referrer and a 5% tax.
     function test_opening_aBuyTheStandingRoundingsOutweighPaysThemAlone() public {
         for (uint256 kind; kind < 3; kind++) {
             uint256 snap = vm.snapshotState();
@@ -332,7 +338,9 @@ contract OpeningFeeTest is TaxLocalBase, OpeningFeeHelpers {
             vm.warp(_launchedAt(key) + 19);
             Seen memory s = _tradeAndSee(key, true, true, 10, REFERRER_FEE_CAP_BPS);
             assertEq(s.opening, 0, "no Opening Fee");
-            assertEq(_taken(s), 3, "a wei each of the three standing fees");
+            // A wei each of the Platform Fee and the tax; the Referrer Fee is what its rate adds to theirs and
+            // the Opening Fee's, rounded once, which on ten wei is nothing.
+            assertEq(_taken(s), 2, "a wei each of the Platform Fee and the tax");
             _checkBuy(s, true, 19, REFERRER_FEE_CAP_BPS, 500);
             vm.revertToState(snap);
         }

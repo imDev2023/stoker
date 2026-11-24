@@ -83,9 +83,9 @@ contract TaxReferenceGasTest is TaxLocalBase {
         return [uint256(168_801), 173_642, 173_549, 175_820];
     }
 
-    /// A standard coin's swap costs what it did: the one comparison that skips the reference, and nothing
-    /// else. A taxed swap pays for following its reference, measured here and bounded.
-    function test_gas_standardUnchanged_taxedMeasured() public {
+    /// A standard coin's swap after its Opening Fee (none booked) costs what it did but for #246's terms slot
+    /// and schedule; a taxed swap pays for following its reference too. Both measured here and bounded.
+    function test_gas_standardAndTaxedMeasuredAgainstMain() public {
         uint256 standardWorst;
         uint256 taxedWorst;
         for (uint256 k; k < 6; k++) {
@@ -102,16 +102,19 @@ contract TaxReferenceGasTest is TaxLocalBase {
                 if (k >= 3 && delta > 0 && uint256(delta) > taxedWorst) taxedWorst = uint256(delta);
             }
         }
-        assertLe(standardWorst, STANDARD_TOLERANCE, "a standard swap costs what it did");
+        assertLe(standardWorst, STANDARD_TOLERANCE, "a standard swap's cost since #271 and #246 is bounded");
         assertLe(taxedWorst, TAXED_BOUND, "a taxed swap's reference is bounded");
     }
 
-    /// Measured on 2026-11-24: 80 gas more on a swap with the coin specified and 159 with the Quote Asset
-    /// specified, under 0.1%: the comparison that skips the reference (about 30 gas in each callback), the
-    /// dispatch over the hook's one new external view (about 20), and the rest the compiler's layout of the
-    /// larger hook, which removing the call site alone does not give back.
-    uint256 internal constant STANDARD_TOLERANCE = 200;
-    /// Measured: about 7,800 gas on a swap in a new second (the reference's slot read cold and written, and
-    /// the pool's price read from the PoolManager); a second swap in the same second reads the slot alone.
-    uint256 internal constant TAXED_BOUND = 8_500;
+    /// Measured on 2026-11-24 for #271 alone: 80 gas more on a swap with the coin specified and 159 with the
+    /// Quote Asset specified, under 0.1%: the comparison that skips the reference (about 30 gas in each
+    /// callback), the dispatch over the hook's one new external view (about 20), and the rest the compiler's
+    /// layout of the larger hook. With #246 merged: 3,232 to 4,115 gas more than 6c33d3f, about 2%: the
+    /// terms' third slot read cold (2,100, the Opening Fee's terms), the schedule's and the Referrer Fee's
+    /// room arithmetic, and #271's share above.
+    uint256 internal constant STANDARD_TOLERANCE = 4_500;
+    /// Measured for #271 alone: about 7,800 gas on a swap in a new second (the reference's slot read cold and
+    /// written, and the pool's price read from the PoolManager); a second swap in the same second reads the
+    /// slot alone. With #246 merged: 10,765 to 11,648 more than 6c33d3f, the same 3,200 to 4,100 above it.
+    uint256 internal constant TAXED_BOUND = 12_500;
 }

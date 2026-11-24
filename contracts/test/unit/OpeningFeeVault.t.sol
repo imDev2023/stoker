@@ -93,7 +93,7 @@ contract OpeningFeeVaultTest is TaxLocalBase, OpeningFeeHelpers {
     }
 
     /// While a Launch's Opening Fee runs, the vault makes no buy in its pool: neither the burn nor a Payout
-    /// Asset of the coin, at every second of it, so neither pays it; the first may come at its end.
+    /// Asset of the coin, at every second of it, so neither pays it; afterwards they go through.
     function test_opening_theVaultMakesNoBuyWhileItRuns() public {
         for (uint256 kind; kind < 3; kind++) {
             uint256 snap = vm.snapshotState();
@@ -119,13 +119,16 @@ contract OpeningFeeVaultTest is TaxLocalBase, OpeningFeeHelpers {
                 vm.expectRevert(abi.encodeWithSelector(TaxVault.TooSoon.selector, openAt));
                 taxVault.buyForHolders(key);
             }
+            // After the window the vault's buys wait only for the Reference Price (#271): once the price has
+            // stood, they go through, and pay no Opening Fee.
             vm.warp(openAt);
+            _letThePriceStand();
             uint256 openingBefore = hook.openingFeeBooked(key.toId());
             (uint256 spent, uint256 burned) = taxVault.burn(key);
-            assertGt(spent, 0, "the burn spends at the window's end");
+            assertGt(spent, 0, "the burn spends after the window");
             assertGt(burned, 0, "and burns");
             assertEq(hook.openingFeeBooked(key.toId()), openingBefore, "its buy paid no Opening Fee");
-            vm.warp(openAt + PIECE_INTERVAL);
+            _letThePriceStand();
             (spent,) = taxVault.buyForHolders(key);
             assertGt(spent, 0, "the holders' buy too");
             assertEq(hook.openingFeeBooked(key.toId()), openingBefore, "its buy paid no Opening Fee");

@@ -155,32 +155,48 @@ abstract contract OpeningFeeHelpers is TaxHelpers {
 
     // ---------------------------------------------------------------- the rule, a second plain copy
 
-    /// The Opening Fee's rate `elapsed` seconds after the launch for a buy whose standing fees are
-    /// `standingBps`: the part of the start figure above them, falling in a straight line to nothing at the
-    /// duration, rounded up to the basis point.
-    function _openingRateAt(uint256 elapsed, uint256 standingBps) internal pure returns (uint256) {
-        if (elapsed >= OPENING_FEE_DURATION || OPENING_FEE_START_BPS <= standingBps) return 0;
-        uint256 n = (OPENING_FEE_START_BPS - standingBps) * (OPENING_FEE_DURATION - elapsed);
+    /// The Opening Fee's rate `elapsed` seconds after the launch for a buy whose Platform Fee and tax are
+    /// `standingBps` together: the part of the start figure above them, falling in a straight line to nothing
+    /// at the duration, rounded up to the basis point. A Referrer Fee is never counted here.
+    function _openingRateAt(uint256 elapsed, uint256 standingBps) internal view returns (uint256) {
+        if (elapsed >= OPENING_FEE_DURATION || openingFeeStartBps <= standingBps) return 0;
+        uint256 n = (openingFeeStartBps - standingBps) * (OPENING_FEE_DURATION - elapsed);
         return (n + OPENING_FEE_DURATION - 1) / OPENING_FEE_DURATION;
     }
 
-    /// The four fees of a buy of a known gross (an exact-in buy's payment).
+    /// The Referrer Fee's rate a buy pays: whole outside the window, and inside it no more than the room the
+    /// Platform Fee, the tax and the Opening Fee leave under the start figure.
+    function _referrerRateUnder(uint256 referrerBps, uint256 taxBps, uint256 openingBps)
+        internal
+        view
+        returns (uint256)
+    {
+        if (openingBps == 0) return referrerBps;
+        uint256 room = openingFeeStartBps - PLATFORM_FEE_BPS - taxBps - openingBps;
+        return referrerBps < room ? referrerBps : room;
+    }
+
+    /// The four fees of a buy of a known gross (an exact-in buy's payment), the Referrer Fee's rate already
+    /// held under the start figure: outside the window each its rate rounded up; inside it the Opening Fee is
+    /// the Platform Fee's, the tax's and its own rates rounded once less the two, and the Referrer Fee what
+    /// its rate adds beyond them, rounded once.
     function _feesOfGross(uint256 gross, uint256 referrerBps, uint256 taxBps, uint256 openingBps)
         internal
         pure
         returns (Fees memory f)
     {
         f.fee = _rateOfGross(gross, PLATFORM_FEE_BPS);
-        f.referrerFee = _rateOfGross(gross, referrerBps);
         f.tax = _rateOfGross(gross, taxBps);
-        if (openingBps > 0) {
-            uint256 all = _rateOfGross(gross, PLATFORM_FEE_BPS + referrerBps + taxBps + openingBps);
-            uint256 standing = f.fee + f.referrerFee + f.tax;
-            f.opening = all > standing ? all - standing : 0;
+        if (openingBps == 0) {
+            f.referrerFee = _rateOfGross(gross, referrerBps);
+            return f;
         }
+        uint256 base = _rateOfGross(gross, PLATFORM_FEE_BPS + taxBps + openingBps);
+        f.opening = base > f.fee + f.tax ? base - f.fee - f.tax : 0;
+        f.referrerFee = _rateOfGross(gross, PLATFORM_FEE_BPS + taxBps + openingBps + referrerBps) - base;
     }
 
-    /// The four fees of a buy whose net reaching the pool is known (an exact-out buy).
+    /// The four fees of a buy whose net reaching the pool is known (an exact-out buy), by the same split.
     function _feesOfNet(uint256 net, uint256 referrerBps, uint256 taxBps, uint256 openingBps)
         internal
         pure
@@ -188,25 +204,28 @@ abstract contract OpeningFeeHelpers is TaxHelpers {
     {
         uint256 total = PLATFORM_FEE_BPS + referrerBps + taxBps + openingBps;
         f.fee = _rateOfNet(net, PLATFORM_FEE_BPS, total);
-        f.referrerFee = _rateOfNet(net, referrerBps, total);
         f.tax = _rateOfNet(net, taxBps, total);
-        if (openingBps > 0) {
-            uint256 all = _rateOfNet(net, total, total);
-            uint256 standing = f.fee + f.referrerFee + f.tax;
-            f.opening = all > standing ? all - standing : 0;
+        if (openingBps == 0) {
+            f.referrerFee = _rateOfNet(net, referrerBps, total);
+            return f;
         }
+        uint256 base = _rateOfNet(net, PLATFORM_FEE_BPS + taxBps + openingBps, total);
+        f.opening = base > f.fee + f.tax ? base - f.fee - f.tax : 0;
+        f.referrerFee = _rateOfNet(net, total, total) - base;
     }
 
-    /// Checks one buy against the rule at `elapsed` seconds, and returns what the rule said.
+    /// Checks one buy against the rule at `elapsed` seconds, `referrerBps` the rate the trade named, and
+    /// returns what the rule said.
     function _checkBuy(Seen memory s, bool exactIn, uint256 elapsed, uint256 referrerBps, uint256 taxBps)
         internal
-        pure
+        view
         returns (Fees memory f)
     {
-        uint256 openingBps = _openingRateAt(elapsed, PLATFORM_FEE_BPS + referrerBps + taxBps);
+        uint256 openingBps = _openingRateAt(elapsed, PLATFORM_FEE_BPS + taxBps);
+        uint256 paidReferrerBps = _referrerRateUnder(referrerBps, taxBps, openingBps);
         f = exactIn
-            ? _feesOfGross(s.quoteIn, referrerBps, taxBps, openingBps)
-            : _feesOfNet(s.quoteIn - _taken(s), referrerBps, taxBps, openingBps);
+            ? _feesOfGross(s.quoteIn, paidReferrerBps, taxBps, openingBps)
+            : _feesOfNet(s.quoteIn - _taken(s), paidReferrerBps, taxBps, openingBps);
         assertEq(s.creatorCredit + s.platformCredit, f.fee, "the Platform Fee");
         assertEq(s.creatorCredit, f.fee * CREATOR_SHARE_BPS / B, "the Creator's share of the Platform Fee alone");
         assertEq(s.referrerCredit, f.referrerFee, "the Referrer Fee alone");

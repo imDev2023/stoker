@@ -104,7 +104,17 @@ contract OpeningFeeHostileTest is TaxLocalBase, OpeningFeeHelpers {
             address fitting = d.create(
                 abi.encodePacked(
                     type(TaxVault).creationCode,
-                    abi.encode(pm, bad, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS, REFERENCE_RISE, REFERENCE_FALL, BUY_BAND)
+                    abi.encode(
+                        pm,
+                        bad,
+                        holdersPart,
+                        PIECE_BPS,
+                        PIECE_INTERVAL,
+                        SUPPORT_WIDTH_SPACINGS,
+                        REFERENCE_RISE,
+                        REFERENCE_FALL,
+                        BUY_BAND
+                    )
                 )
             );
             assertEq(fitting, vm.computeCreateAddress(address(d), 1), "the vault at the deployer's first address");
@@ -119,7 +129,17 @@ contract OpeningFeeHostileTest is TaxLocalBase, OpeningFeeHelpers {
             );
         }
         address next = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        TaxVault vault = new TaxVault(pm, next, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS, REFERENCE_RISE, REFERENCE_FALL, BUY_BAND);
+        TaxVault vault = new TaxVault(
+            pm,
+            next,
+            holdersPart,
+            PIECE_BPS,
+            PIECE_INTERVAL,
+            SUPPORT_WIDTH_SPACINGS,
+            REFERENCE_RISE,
+            REFERENCE_FALL,
+            BUY_BAND
+        );
         bytes32 initHash =
             keccak256(abi.encodePacked(type(StokerHook).creationCode, abi.encode(pm, keys, address(vault))));
         bytes32 salt;
@@ -137,25 +157,30 @@ contract OpeningFeeHostileTest is TaxLocalBase, OpeningFeeHelpers {
     }
 }
 
-/// A start figure below what a buy's standing fees already take (a deployment's setting can be anything up
-/// to 99%): the Opening Fee is then nothing for that buy, and the buy is never refused for it.
+/// A start figure of 1.50% (a deployment's setting can be anything up to 99%): on a Reward Launch, whose
+/// Platform Fee and 3% tax already take more, the Opening Fee is nothing and a Referrer Fee is paid whole; on
+/// a standard coin the Opening Fee is the half percent above the Platform Fee, which leaves no room for a
+/// Referrer Fee at the launch's own second. No buy is refused for it.
 contract OpeningFeeLowStartTest is TaxLocalBase, OpeningFeeHelpers {
     function setUp() public override {
         openingFeeStartBps = 150;
         super.setUp();
     }
 
-    function test_opening_aStartFigureUnderTheStandingFeesChargesNothing() public {
+    function test_opening_aStartFigureUnderThePlatformFeeAndTheTaxChargesNothing() public {
         for (uint256 kind; kind < 3; kind++) {
             uint256 snap = vm.snapshotState();
-            PoolKey memory key = _launchOpen(kind, 0, 0);
-            // With a referrer at the cap the standing fees are 2.00%, over the 1.50% start: nothing more.
-            Seen memory s = _tradeAndSee(key, true, true, _buyAmount(key, true), REFERRER_FEE_CAP_BPS);
-            assertEq(s.opening, 0, "no Opening Fee above the start figure");
-            assertEq(s.creatorCredit + s.platformCredit, _rateOfGross(s.quoteIn, PLATFORM_FEE_BPS), "the fee");
-            // With none they are 1.00%: the Opening Fee is the half percent above them, at the launch's second.
-            s = _tradeAndSee(key, true, true, _buyAmount(key, true), 0);
+            PoolKey memory reward = _launchOpen(kind, 1, 0);
+            Seen memory s = _tradeAndSee(reward, true, true, _buyAmount(reward, true), REFERRER_FEE_CAP_BPS);
+            assertEq(s.opening, 0, "no Opening Fee under the Platform Fee and the tax");
+            assertEq(s.referrerCredit, _rateOfGross(s.quoteIn, REFERRER_FEE_CAP_BPS), "the Referrer Fee whole");
+            _checkBuy(s, true, 0, REFERRER_FEE_CAP_BPS, TAX_BPS);
+
+            PoolKey memory standard = _launchOpen(kind, 0, 0);
+            s = _tradeAndSee(standard, true, true, _buyAmount(standard, true), REFERRER_FEE_CAP_BPS);
             assertEq(_taken(s), _rateOfGross(s.quoteIn, 150), "1.50% together");
+            assertEq(s.referrerCredit, 0, "no room for a Referrer Fee at the launch's own second");
+            _checkBuy(s, true, 0, REFERRER_FEE_CAP_BPS, 0);
             vm.revertToState(snap);
         }
     }

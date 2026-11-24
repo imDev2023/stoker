@@ -184,30 +184,42 @@ contract OpeningFeeHandler is Test {
     ) internal {
         StokerHook.Terms memory t = hook.termsOf(_keys[k].toId());
         uint256 elapsed = vm.getBlockTimestamp() - t.launchedAt;
-        uint256 standing = feeBps + referrerBps + t.taxBps;
+        uint256 standing = feeBps + t.taxBps;
         uint256 rate = 0;
         if (elapsed < duration && startBps > standing) {
             rate = ((startBps - standing) * (duration - elapsed) + duration - 1) / duration;
         }
+        // Inside the window a Referrer Fee takes only the room left under the start figure.
+        if (rate > 0 && referrerBps > startBps - standing - rate) referrerBps = startBps - standing - rate;
         if (elapsed >= duration && opening != 0) openingAfterTheWindow++;
         uint256 taken = credits + tax + opening;
         if (taken * B > paid * startBps + B) overTheStart++;
 
-        uint256 total = standing + rate;
+        uint256 total = standing + rate + referrerBps;
         uint256 fee;
         uint256 refFee;
         uint256 expTax;
-        uint256 all;
+        uint256 expOpening;
         if (exactIn) {
-            (fee, refFee, expTax) = (_ofGross(paid, feeBps), _ofGross(paid, referrerBps), _ofGross(paid, t.taxBps));
-            all = _ofGross(paid, total);
+            (fee, expTax) = (_ofGross(paid, feeBps), _ofGross(paid, t.taxBps));
+            if (rate == 0) {
+                refFee = _ofGross(paid, referrerBps);
+            } else {
+                uint256 base = _ofGross(paid, standing + rate);
+                expOpening = base > fee + expTax ? base - fee - expTax : 0;
+                refFee = _ofGross(paid, total) - base;
+            }
         } else {
             uint256 net = paid - taken;
-            (fee, refFee, expTax) =
-            (_ofNet(net, feeBps, total), _ofNet(net, referrerBps, total), _ofNet(net, t.taxBps, total));
-            all = _ofNet(net, total, total);
+            (fee, expTax) = (_ofNet(net, feeBps, total), _ofNet(net, t.taxBps, total));
+            if (rate == 0) {
+                refFee = _ofNet(net, referrerBps, total);
+            } else {
+                uint256 base = _ofNet(net, standing + rate, total);
+                expOpening = base > fee + expTax ? base - fee - expTax : 0;
+                refFee = _ofNet(net, total, total) - base;
+            }
         }
-        uint256 expOpening = rate > 0 && all > fee + refFee + expTax ? all - fee - refFee - expTax : 0;
         if (credits != fee + refFee || tax != expTax || opening != expOpening) mismatches++;
     }
 

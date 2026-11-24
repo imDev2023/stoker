@@ -188,19 +188,36 @@ contract TaxTermsTest is TaxLocalBase {
         IHoldersPart d = holdersPart;
         IPoolManager m = pm;
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 0, 60, 10, 2, 60_000, 200)));
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 0, 60, 10, 2, 60_000, 200))
+        );
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 101, 60, 10, 2, 60_000, 200)));
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 101, 60, 10, 2, 60_000, 200))
+        );
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 0, 10, 2, 60_000, 200)));
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 0, 10, 2, 60_000, 200))
+        );
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 0, 2, 60_000, 200)));
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 0, 2, 60_000, 200))
+        );
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 1_001, 2, 60_000, 200)));
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, d, 50, 60, 1_001, 2, 60_000, 200))
+        );
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, stranger, IHoldersPart(address(0)), 50, 60, 10, 2, 60_000, 200)));
+        this.create(
+            abi.encodePacked(
+                type(TaxVault).creationCode,
+                abi.encode(m, stranger, IHoldersPart(address(0)), 50, 60, 10, 2, 60_000, 200)
+            )
+        );
         vm.expectRevert(TaxVault.InvalidSettings.selector);
-        this.create(abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, address(0), d, 50, 60, 10, 2, 60_000, 200)));
+        this.create(
+            abi.encodePacked(type(TaxVault).creationCode, abi.encode(m, address(0), d, 50, 60, 10, 2, 60_000, 200))
+        );
         // The vault has no owner and no setter: its settings are what it was deployed with.
         assertEq(address(taxVault.distributor()), address(holdersPart));
         assertEq(taxVault.factory(), address(factory));
