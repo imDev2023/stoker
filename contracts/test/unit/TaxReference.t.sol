@@ -156,9 +156,12 @@ contract TaxReferenceTest is TaxLocalBase {
         for (uint256 p; p < 3; p++) {
             PoolKey memory key = _settled(Pair(p));
             int24 r0 = _ref(key);
+            uint256 capBefore = taxVault.pieceCap(key);
             _quiet(60);
             _trade(key, trader, true, true, _depth(key) / 4);
             int24 lifted = _tickOf(key);
+            // A piece is capped at the depth at the reference, so a lifted price does not grow it.
+            assertApproxEqRel(taxVault.pieceCap(key), capBefore, 0.0001e18, "the cap stays at the reference's");
             int256 rise = _above(key, lifted, r0);
             assertGt(rise, int256(uint256(BUY_BAND)) + 200, "a rise past the band");
             assertEq(_ref(key), r0, "reached a moment ago: nothing yet");

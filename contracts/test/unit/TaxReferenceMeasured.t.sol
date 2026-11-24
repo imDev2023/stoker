@@ -84,22 +84,26 @@ contract TaxReferenceMeasuredTest is TaxLocalBase {
         vm.revertToState(snap);
     }
 
-    /// Past the fuzz's two hours: Support Liquidity (a Stoke Launch at 1%) and the Reward Burn (a Reward
-    /// Launch at 3%, half to the burn), lifts from 2% to 64%, held for up to a day.
-    function test_measured_longHolds() public {
+    /// Past the fuzz's two hours: Support Liquidity on a Stoke Launch at 1%, lifts from 2% to 65%, held for
+    /// up to a day.
+    function test_measured_longHolds_support() public {
         PoolKey memory stoke = _busy(StokerHook.LaunchType.Liquidity, 100, 0);
-        PoolKey memory reward = _busy(StokerHook.LaunchType.Reward, 300, 5_000);
         (, uint256 supportWaiting,,) = taxVault.waiting(stoke);
-        (uint256 burnWaiting,,,) = taxVault.waiting(reward);
         emit log_named_decimal_uint("depth", _depth(stoke), 18);
         emit log_named_decimal_uint("Support Liquidity waiting", supportWaiting, 18);
-        emit log_named_decimal_uint("Reward Burn waiting", burnWaiting, 18);
         uint256[4] memory lifts = [uint256(200), 600, 2_000, 5_000];
-        emit log("Support Liquidity");
         for (uint256 i; i < lifts.length; i++) {
             _holdADay(stoke, lifts[i], false);
         }
-        emit log("Reward Burn");
+    }
+
+    /// The same for the Reward Burn, on a Reward Launch at 3% with half to the burn.
+    function test_measured_longHolds_burn() public {
+        PoolKey memory reward = _busy(StokerHook.LaunchType.Reward, 300, 5_000);
+        (uint256 burnWaiting,,,) = taxVault.waiting(reward);
+        emit log_named_decimal_uint("depth", _depth(reward), 18);
+        emit log_named_decimal_uint("Reward Burn waiting", burnWaiting, 18);
+        uint256[4] memory lifts = [uint256(200), 600, 2_000, 5_000];
         for (uint256 i; i < lifts.length; i++) {
             _holdADay(reward, lifts[i], true);
         }
