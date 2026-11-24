@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import type { Chain } from "@launchpad/contract";
+import { chainFilter, chainIs } from "../chains/filter";
 import { PublicKey } from "@solana/web3.js";
 import { and, countDistinct, desc, eq, inArray, sql } from "drizzle-orm";
 import { WSOL_MINT } from "@launchpad/chain";
@@ -34,8 +36,10 @@ burnRoutes.get("/burns", async (c) => {
   const db = c.get("db");
   const cfg = c.get("cfg");
   const token = await platformToken(db);
+  // The events of one chain, `?chain=` (#252); the budgets and the shares are the platform's, whichever chain is asked.
+  const onChain = chainIs(ledgerEntries.chain, chainFilter(c));
   const [entries, picks, b, destinations, additions, [added]] = await Promise.all([
-    db.select().from(ledgerEntries).where(inArray(ledgerEntries.kind, ["burn", "flywheel"])).orderBy(desc(ledgerEntries.slot), desc(ledgerEntries.signature), desc(ledgerEntries.eventIndex)).limit(400),
+    db.select().from(ledgerEntries).where(and(inArray(ledgerEntries.kind, ["burn", "flywheel"]), onChain)).orderBy(desc(ledgerEntries.slot), desc(ledgerEntries.signature), desc(ledgerEntries.eventIndex)).limit(400),
     flywheelPicks(db, cfg.flywheelTopN),
     budgets(db),
     budgetDestinations(db),
@@ -44,7 +48,7 @@ burnRoutes.get("/burns", async (c) => {
       .select({ entry: ledgerEntries, feeKey: feeKeys.nftMint })
       .from(ledgerEntries)
       .leftJoin(feeKeys, and(eq(ledgerEntries.eventIndex, 1), eq(feeKeys.lockedLiquidity, ledgerEntries.destination)))
-      .where(inArray(ledgerEntries.kind, ADDITION_KINDS))
+      .where(and(inArray(ledgerEntries.kind, ADDITION_KINDS), onChain))
       .orderBy(desc(ledgerEntries.slot), desc(ledgerEntries.signature), desc(ledgerEntries.eventIndex))
       .limit(ADDITIONS_SHOWN * 2),
     db
@@ -64,7 +68,7 @@ burnRoutes.get("/burns", async (c) => {
   const bySignature = new Map<string, BurnEvent>();
   for (const e of entries) {
     const event = bySignature.get(e.signature) ?? {
-      signature: e.signature, kind: e.kind as "burn" | "flywheel", coin: asset(e.assetMint), lamports: "0", amount: "0", slot: e.slot, time: e.blockTime.toISOString(),
+      chain: e.chain as Chain, signature: e.signature, kind: e.kind as "burn" | "flywheel", coin: asset(e.assetMint), lamports: "0", amount: "0", slot: e.slot, time: e.blockTime.toISOString(),
     };
     if (e.assetMint === WSOL_MINT.toBase58()) event.lamports = e.amount;
     else {
@@ -79,7 +83,7 @@ burnRoutes.get("/burns", async (c) => {
   const bySignatureAdded = new Map<string, LiquidityAdditionEvent>();
   for (const { entry: e, feeKey } of additions) {
     const event = bySignatureAdded.get(e.signature) ?? {
-      signature: e.signature, kind: e.kind === LIQUIDITY_KIND.burn ? "burn" as const : "flywheel" as const, coin: asset(e.launchMint ?? e.assetMint),
+      chain: e.chain as Chain, signature: e.signature, kind: e.kind === LIQUIDITY_KIND.burn ? "burn" as const : "flywheel" as const, coin: asset(e.launchMint ?? e.assetMint),
       lamports: "0", amount: "0", position: e.destination, feeKey: null, slot: e.slot, time: e.blockTime.toISOString(),
     };
     if (e.assetMint === WSOL) event.lamports = e.amount;

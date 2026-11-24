@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Chain } from "@launchpad/contract";
 import { HTTPException } from "hono/http-exception";
 import { Connection, PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
@@ -51,6 +52,7 @@ tradeRoutes.get("/launches/:mint/trades", async (c) => {
     .limit(limit);
   const res: TradeList = {
     trades: rows.map((t) => ({
+      chain: t.chain as Chain,
       signature: t.signature,
       venue: t.venue,
       trader: t.trader,

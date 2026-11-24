@@ -16,6 +16,9 @@ import { bootstrapPlatform, LOCAL_QUOTE_LOGOS, LOCAL_QUOTE_PRICES_USD, LOCAL_QUO
 import { createSolRoutes, type SolRoutes } from "@launchpad/localnet/routes";
 import { startTurboStandIn, type TurboStandIn } from "./turbo";
 import { startXStandIn } from "./x";
+import { deployStoker, deploymentOf, forkArgs, type EvmStackEnv } from "./evm";
+
+export type { EvmStackEnv } from "./evm";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -84,6 +87,11 @@ export type StackEnv = {
   webApiKey: string | null;
   /** Every variable the API was started with, so a test can start a second API that differs in one setting. */
   apiVars: Record<string, string>;
+  /**
+   * The EVM side (#252): a fork of Robinhood Chain with our contracts deployed, which the API indexes; null when the
+   * stack was started without `ROBINHOOD_RPC_URL` (an archive endpoint) or with `STACK_EVM=off`, and the EVM tests skip.
+   */
+  evm: EvmStackEnv | null;
 };
 
 export type StackOptions = {
@@ -242,15 +250,19 @@ function alive(pid: number) {
   }
 }
 
-/** Runs a stack process, keeping its output; with `STACK_LOG_DIR` set, the output also streams to `<dir>/<name>.log`. */
-function run(name: string, cmd: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) {
+/**
+ * Runs a stack process, keeping its output; with `STACK_LOG_DIR` set, the output also streams to `<dir>/<name>.log`.
+ * `secret` (an RPC URL that carries a key) is taken out of everything kept, so it never reaches a log or a failure.
+ */
+function run(name: string, cmd: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, secret?: string) {
   const proc: ChildProcess = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
   const dir = process.env.STACK_LOG_DIR;
   const file = dir ? (mkdirSync(dir, { recursive: true }), join(dir, `${name}.log`)) : null;
   const keep = (d: Buffer) => {
-    log += d;
-    if (file) appendFileSync(file, d);
+    const text = secret ? d.toString().replaceAll(secret, "<redacted RPC URL>") : d.toString();
+    log += text;
+    if (file) appendFileSync(file, text);
   };
   proc.stdout?.on("data", keep);
   proc.stderr?.on("data", keep);
@@ -368,6 +380,30 @@ export async function startApi(opts: { port: number; vars: Record<string, string
   return { url, stop: api.stop, log: api.log };
 }
 
+/**
+ * A fork of Robinhood Chain under anvil on a free port, with our contracts deployed (./evm.ts). The fork's own URL is a
+ * local one with no key, which is all the API and the tests are given.
+ */
+async function startEvmFork(forkUrl: string, cleanups: (() => Promise<void> | void)[]) {
+  const port = await freePort();
+  const anvil = run(`anvil-${port}`, "anvil", forkArgs(forkUrl, port), REPO, {}, forkUrl);
+  cleanups.push(anvil.stop);
+  const rpcUrl = `http://127.0.0.1:${port}`;
+  const chainId = async () => {
+    const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }) });
+    return res.ok;
+  };
+  await waitFor("EVM fork", chainId, 120_000, anvil.log);
+  try {
+    return await deployStoker(rpcUrl);
+  } catch (e) {
+    // The cause is the error with the fork's URL taken out, never the error itself, which could carry the key.
+    const reason = new Error(String((e as Error).message).replaceAll(forkUrl, "<redacted RPC URL>"));
+    // eslint-disable-next-line preserve-caught-error -- the caught error could carry the RPC key, so its cleaned copy is the cause
+    throw new Error(`deploying our contracts to the fork failed: ${reason.message}\n${anvil.log()}`, { cause: reason });
+  }
+}
+
 /** Starts everything and returns the addresses plus a teardown that stops it all, in reverse order. */
 export async function startStack(opts: StackOptions = {}): Promise<{ env: StackEnv; stop: () => Promise<void> }> {
   const cleanups: (() => Promise<void> | void)[] = [];
@@ -411,6 +447,9 @@ export async function startStack(opts: StackOptions = {}): Promise<{ env: StackE
     const poolBackfillSeconds = 8;
     const referralShareBps = 50;
     const feeChangeLeadSeconds = 3;
+
+    // The EVM side (#252), when the stack has an archive endpoint for Robinhood Chain to fork.
+    const evm = process.env.ROBINHOOD_RPC_URL && process.env.STACK_EVM !== "off" ? await startEvmFork(process.env.ROBINHOOD_RPC_URL, cleanups) : null;
 
     const webPort = opts.web ? await freePort() : null;
     const webUrl = webPort ? `http://127.0.0.1:${webPort}` : null;
@@ -492,6 +531,7 @@ export async function startStack(opts: StackOptions = {}): Promise<{ env: StackE
       ANON_PREPARE_RATE_LIMIT_PER_MINUTE: "1000000",
       SOL_ROUTE_SOURCE: "raydium-cpmm",
       SOL_ROUTE_POOLS: JSON.stringify(solRoutes.pools),
+      ...(evm ? { EVM_DEPLOYMENTS: JSON.stringify(deploymentOf(evm)), ROBINHOOD_RPC_URL: evm.rpcUrl } : {}),
     };
     const api = await startApi({ port: apiPort, vars, databaseUrl: pg.url });
     cleanups.push(api.stop);
@@ -546,6 +586,7 @@ export async function startStack(opts: StackOptions = {}): Promise<{ env: StackE
         graduationAlertAfterSeconds, poolBackfillSeconds, ...fees, referralShareBps, feeChangeLeadSeconds, activeDaySeconds: opts.activeDaySeconds ?? 86_400,
         holdingDaySeconds: opts.holdingDaySeconds ?? 86_400,
         rebateWeekSeconds: opts.rebateWeekSeconds ?? 7 * 86_400, rebateMinLamports: REBATE_MIN_LAMPORTS, platform, solRoutes, webApiKey, apiVars: vars,
+        evm,
       },
       stop,
     };

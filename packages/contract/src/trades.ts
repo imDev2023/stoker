@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Chain, ChainAddress } from "./chains";
 import { CoinCreatorTier } from "./ladder";
 
 /**
@@ -167,9 +168,13 @@ export const PreparedTrade = z.object({
 export type PreparedTrade = z.infer<typeof PreparedTrade>;
 
 export const Trade = z.object({
+  /** The chain the trade was made on (#252). */
+  chain: Chain,
+  /** The transaction: a signature on Solana, a transaction hash on an EVM chain. */
   signature: z.string(),
   venue: TradeVenue,
-  trader: base58,
+  /** The wallet that traded: on an EVM chain the transaction's sender, whatever router carried it. */
+  trader: ChainAddress,
   side: TradeSide,
   /** Coins bought or sold, raw units. */
   baseAmount: raw,
@@ -180,7 +185,7 @@ export const Trade = z.object({
   price: z.number(),
   time: z.iso.datetime(),
   /** The referrer the chain paid a share fee to, and the fee, in the Quote Asset's raw units; null on an unreferred trade. */
-  referral: z.object({ referrer: base58, fee: raw }).nullable(),
+  referral: z.object({ referrer: ChainAddress, fee: raw }).nullable(),
 });
 export type Trade = z.infer<typeof Trade>;
 

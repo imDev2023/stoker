@@ -23,6 +23,8 @@ import {
   buildLaunch, creatorLockChoice, launchQuoteAsset, loadDraft, newMintKeyNonce, refuseWith, resolveLaunchModes, saveDraft, taxChoice,
 } from "./launch";
 import { runJob, toJobRun } from "./jobs";
+import { runIndexers } from "./chains/indexers";
+import { chainRoutes } from "./routes/chains";
 import { arweaveUrl, metadataDocument, signedItems, signMetadataItems, uploadMetadata } from "./metadata";
 import { refreshQuoteRegistry } from "./quotes/registry";
 import { lockRewardTaxes } from "./rewardTax";
@@ -243,6 +245,21 @@ app.post("/v1/transactions/:signature", async (c) => {
   return c.json(result);
 });
 
+/**
+ * What a coin on an EVM chain has so far (#252): itself, its trades and its candles. The rest of a coin's pages read
+ * Solana's chain (its holders, its quote, its trust figures, its lock, its earnings, its rewards, its marks) and come to
+ * the EVM chains slice by slice (#253 to #256), so for an EVM coin they answer 404 by name, never a Solana error.
+ */
+const EVM_COIN_READS = new Set(["trades", "candles"]);
+app.use("/v1/launches/:mint/:part{.+}", async (c, next) => {
+  const part = c.req.param("part");
+  if (/^0x[0-9a-fA-F]{40}$/.test(c.req.param("mint")) && !EVM_COIN_READS.has(part)) {
+    return c.json({ error: `${part} is not available for coins on EVM chains yet` }, 404);
+  }
+  await next();
+});
+
+app.route("/v1", chainRoutes);
 app.route("/v1", launchRoutes);
 app.route("/v1", launchModeRoutes);
 app.route("/v1", copyRoutes);
@@ -338,6 +355,9 @@ app.post("/v1/operator/jobs/rebates", (c) => {
   return manualJob(c, "rebates", () => runRebates({ db: c.get("db"), cfg: c.get("cfg"), operations: operationsKey(c.env) }, maxWallets));
 });
 
+/** Every polled chain's Indexer (#252): the EVM chains', which read our contracts' events up to each chain's finality depth. */
+app.post("/v1/operator/jobs/indexer", (c) => manualJob(c, "indexer", () => runIndexers(c.env, c.get("cfg"), c.get("db"))));
+
 app.post("/v1/operator/jobs/metadata-upload", (c) => manualJob(c, "metadata-upload", () => uploadMetadata(uploadDeps(c.env, c.get("db")))));
 
 /** The mentions job (#160, ADR 0018): searches X for the coins that traded lately; without TWITTERAPI_API_KEY it calls nothing. */
@@ -430,6 +450,8 @@ export default {
       }
       // Launches that sold out but that Raydium has not migrated, and graduated Reward Launches whose tax is not locked yet.
       if (run(CRONS.graduationWatch)) {
+        // The EVM chains' Indexer (#252), every minute; a deployment without EVM_DEPLOYMENTS has nothing to poll and skips it.
+        if (env.EVM_DEPLOYMENTS) await job(runJob(db, "indexer", () => runIndexers(env, config(env), db), { exclusive: true }));
         await job(runJob(db, "graduation-watch", () => watchGraduations(db, config(env)), { exclusive: true }));
         await job(runJob(db, "reward-tax-lock", () => lockRewardTaxes(db, config(env), operationsKey(env)), { exclusive: true }));
         // Permanent metadata for any launch the fast path after indexing did not upload (#44).

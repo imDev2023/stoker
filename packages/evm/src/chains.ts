@@ -1,0 +1,83 @@
+import { getAddress, type Address } from "viem";
+
+/**
+ * Each EVM chain's profile (PRD #231, "Modules"): the facts the server needs about a chain that are the same for every
+ * deployment of our contracts on it. A deployment's own addresses (the factory, the hook, the registry, the keys) are
+ * not here: each API is given them (`EvmDeployment`), so the test stack's fork and a real chain use one profile.
+ */
+export type EvmChainProfile = {
+  /** The API's name for the chain, as `Chain` in @launchpad/contract has it. */
+  chain: "robinhood";
+  /** What the site calls it, in plain text (ADR 0028: Robinhood Chain is named in words only). */
+  name: string;
+  chainId: number;
+  /**
+   * How many blocks behind the head the Indexer stops: what it reads is never deeper in the unconfirmed part of the
+   * chain than this. Robinhood Chain is an Arbitrum Orbit chain whose sequencer confirms a block as it makes it (0.1 s);
+   * it is reorganized only if the sequencer misbehaves before posting to Ethereum, the issuer treats one block's
+   * confirmation as a legal transfer, and Solana's Indexer reads `confirmed` too, so 0: trades show as the sequencer
+   * confirms them (the knowledge base's `14-transaction-finality.md`). A job that pays (#254) waits for `safe` instead.
+   */
+  finalityDepth: number;
+  /** The widest block range one `eth_getLogs` asks for, kept small for free RPC tiers. */
+  logBlockRange: number;
+  /**
+   * `block.number` on this chain is an estimate of the parent chain's block, so time and the chain's own block numbers
+   * are read through the RPC (a block's `timestamp` and `number`), never from the opcode (the knowledge base's
+   * `44-uniswap-v4-hooks.md`).
+   */
+  blockNumberIsL1Estimate: boolean;
+  explorer: string;
+  /** The chain's native asset, a Quote Asset at the zero address (#242). */
+  native: { symbol: string; name: string; decimals: number };
+  /** Uniswap v4 and its periphery on the chain (the knowledge base's `uniswap/DEPLOYMENTS.md`, contracts/README.md). */
+  uniswap: {
+    poolManager: Address;
+    stateView: Address;
+    v4Quoter: Address;
+    permit2: Address;
+    /** The Universal Router the chain's traffic uses (#249), and the one Uniswap's feed lists, which reads the same structs. */
+    universalRouter: Address;
+    universalRouterV212: Address;
+  };
+};
+
+export const ROBINHOOD_CHAIN: EvmChainProfile = {
+  chain: "robinhood",
+  name: "Robinhood Chain",
+  chainId: 4663,
+  finalityDepth: 0,
+  logBlockRange: 2_000,
+  blockNumberIsL1Estimate: true,
+  explorer: "https://robinhoodchain.blockscout.com",
+  native: { symbol: "ETH", name: "Ether", decimals: 18 },
+  uniswap: {
+    poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    stateView: "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
+    v4Quoter: "0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94",
+    permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+    universalRouter: "0x8876789976dEcBfCbBbe364623C63652db8C0904",
+    universalRouterV212: "0x204FAca1764B154221e35c0d20aBb3c525710498",
+  },
+};
+
+export const EVM_CHAINS = { robinhood: ROBINHOOD_CHAIN } as const;
+export type EvmChain = keyof typeof EVM_CHAINS;
+export const isEvmChain = (chain: string): chain is EvmChain => Object.hasOwn(EVM_CHAINS, chain);
+
+/** One deployment of our contracts on an EVM chain, as an API is configured with it. */
+export type EvmDeployment = {
+  chain: EvmChain;
+  factory: Address;
+  hook: Address;
+  registry: Address;
+  keys: Address;
+  /** The block the factory was deployed in: the Indexer starts there. */
+  fromBlock: number;
+};
+
+/** The native asset's address as a Quote Asset: the zero address, native ETH in the pool key (#242). */
+export const NATIVE: Address = "0x0000000000000000000000000000000000000000";
+
+/** An EVM address in its checksummed form, which is how the API stores and answers every one. */
+export const checksum = (address: string): Address => getAddress(address);

@@ -6,11 +6,14 @@ import type { HoldingWeightStep, QuoteLabel } from "@launchpad/contract";
 export const launches = pgTable(
   "launches",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     mint: text("mint").primaryKey(),
     pool: text("pool").notNull().unique(),
     creator: text("creator").notNull(),
     quoteMint: text("quote_mint").notNull(),
-    globalConfig: text("global_config").notNull(),
+    /** The LaunchLab GlobalConfig of the coin's Quote Asset on Solana; null on an EVM chain, which has none. */
+    globalConfig: text("global_config"),
     name: text("name").notNull(),
     symbol: text("symbol").notNull(),
     metadataUri: text("metadata_uri").notNull(),
@@ -94,6 +97,8 @@ export const launches = pgTable(
   },
   (t) => [
     index("launches_created_slot_idx").on(t.createdSlot),
+    // The board lists every chain's coins together, newest first by time, since slots and block numbers are not comparable.
+    index("launches_chain_created_at_idx").on(t.chain, t.createdAt),
     index("launches_creator_idx").on(t.creator),
     index("launches_quote_mint_idx").on(t.quoteMint),
     index("launches_name_key_idx").on(t.nameKey),
@@ -116,6 +121,8 @@ export const launches = pgTable(
  * is indexed, then the price after each newer trade, on the curve or in its pool after Graduation.
  */
 export const launchMarkets = pgTable("launch_markets", {
+  /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+  chain: text("chain").notNull().default("solana"),
   mint: text("mint").primaryKey(),
   /** Price of one whole coin in whole Quote Asset units. */
   price: doublePrecision("price").notNull(),
@@ -128,6 +135,8 @@ export const launchMarkets = pgTable("launch_markets", {
 
 /** Launch metadata we host (name, description, links, image), keyed by the id in the metadata URI. */
 export const launchMetadata = pgTable("launch_metadata", {
+  /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+  chain: text("chain").notNull().default("solana"),
   id: text("id").primaryKey(),
   creator: text("creator").notNull(),
   name: text("name").notNull(),
@@ -154,6 +163,8 @@ export const launchMetadata = pgTable("launch_metadata", {
 export const trades = pgTable(
   "trades",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     signature: text("signature").notNull(),
     /** Position among the trades in the transaction. */
     eventIndex: integer("event_index").notNull(),
@@ -191,6 +202,8 @@ export const trades = pgTable(
 
 /** The latest indexed state of each Launch's curve: what it has raised toward its Graduation Target, and its price. */
 export const curves = pgTable("curves", {
+  /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+  chain: text("chain").notNull().default("solana"),
   mint: text("mint").primaryKey(),
   /** Quote Asset raised so far, raw units, fees excluded. */
   realQuote: numeric("real_quote", { precision: 40, scale: 0 }).notNull(),
@@ -210,6 +223,8 @@ export const curves = pgTable("curves", {
  * The price and Graduation Target are as of `pricedAt`; the rule band mirrors our on-chain curve rule once the refresh has written it.
  */
 export const quoteAssets = pgTable("quote_assets", {
+  /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+  chain: text("chain").notNull().default("solana"),
   mint: text("mint").primaryKey(),
   globalConfig: text("global_config").notNull().unique(),
   tokenProgram: text("token_program").notNull(),
@@ -252,6 +267,8 @@ export const quoteAssets = pgTable("quote_assets", {
 
 /** One row per graduated Launch: Raydium's migration of its curve into a CPMM pool, and the pool's latest price. */
 export const graduations = pgTable("graduations", {
+  /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+  chain: text("chain").notNull().default("solana"),
   mint: text("mint").primaryKey(),
   /** The CPMM pool the Launch trades in after Graduation. */
   pool: text("pool").notNull().unique(),
@@ -311,6 +328,8 @@ export const operatorAlerts = pgTable(
 export const launchDrafts = pgTable(
   "launch_drafts",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     mint: text("mint").primaryKey(),
     creator: text("creator").notNull(),
     /** With the API's MINT_KEY_SECRET this derives the mint key, so the key itself is never stored; null when the draft
@@ -375,6 +394,8 @@ export const launchDrafts = pgTable(
 export const chosenMintKeys = pgTable(
   "chosen_mint_keys",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     mint: text("mint").primaryKey(),
     creator: text("creator").notNull(),
     secret: text("secret").notNull(),
@@ -387,6 +408,8 @@ export const chosenMintKeys = pgTable(
 export const airdropRecipients = pgTable(
   "airdrop_recipients",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     mint: text("mint").notNull(),
     wallet: text("wallet").notNull(),
     /** Order in the Creator's list. */
@@ -413,6 +436,8 @@ export const airdropRecipients = pgTable(
 export const ledgerEntries = pgTable(
   "ledger_entries",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     signature: text("signature").notNull(),
     /** Position among the movements in the transaction. */
     eventIndex: integer("event_index").notNull(),
@@ -445,6 +470,8 @@ export const ledgerEntries = pgTable(
  * its transaction here on the next run and records what landed, so nothing it moved is missing from the Ledger.
  */
 export const jobTransactions = pgTable("job_transactions", {
+  /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+  chain: text("chain").notNull().default("solana"),
   signature: text("signature").primaryKey(),
   job: text("job").notNull(),
   /** What the transaction does, such as a revenue kind. */
@@ -468,6 +495,8 @@ export const jobTransactions = pgTable("job_transactions", {
 export const creatorForwards = pgTable(
   "creator_forwards",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     signature: text("signature").primaryKey(),
     creator: text("creator").notNull(),
     /** The Quote Asset paid; SOL as the wrapped-SOL mint, though it is paid as plain SOL. */
@@ -605,6 +634,8 @@ export const creatorLadders = pgTable(
 export const creatorTiers = pgTable(
   "creator_tiers",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     mint: text("mint").notNull(),
     /** 2 for the second tier, 3 for the top. Every coin is on the first from its launch, without a row. */
     tier: integer("tier").notNull(),
@@ -653,6 +684,8 @@ export const rebateWeeks = pgTable("rebate_weeks", {
 export const rebates = pgTable(
   "rebates",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     weekStart: timestamp("week_start", { withTimezone: true }).notNull(),
     wallet: text("wallet").notNull(),
     /** The Platform Fees the wallet's trades paid in the week, valued in SOL like the week's total, in lamports. */
@@ -672,6 +705,8 @@ export const rebates = pgTable(
 export const rewardRounds = pgTable(
   "reward_rounds",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     id: text("id").primaryKey(),
     mint: text("mint").notNull(),
     rulesVersion: integer("rules_version").notNull(),
@@ -716,6 +751,8 @@ export const rewardRounds = pgTable(
 export const rewardPayouts = pgTable(
   "reward_payouts",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     roundId: text("round_id").notNull(),
     wallet: text("wallet").notNull(),
     /** What the wallet held at the snapshot, raw units. */
@@ -748,6 +785,8 @@ export const rewardPayouts = pgTable(
 export const holdingLots = pgTable(
   "holding_lots",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     mint: text("mint").notNull(),
     wallet: text("wallet").notNull(),
     /** The time of the Holding Check that opened the lot. */
@@ -766,6 +805,8 @@ export const holdingLots = pgTable(
 export const holdingChecks = pgTable(
   "holding_checks",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     mint: text("mint").notNull(),
     /** The Holding Day, counted from the epoch: `floor(unix seconds / HOLDING_DAY_SECONDS)`. */
     day: integer("day").notNull(),
@@ -787,6 +828,8 @@ export const holdingChecks = pgTable(
 export const rewardSales = pgTable(
   "reward_sales",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     signature: text("signature").primaryKey(),
     mint: text("mint").notNull(),
     /** Where the slice was sold: the coin's curve, or its CPMM pool after Graduation. */
@@ -821,6 +864,8 @@ export const rewardSales = pgTable(
 export const creatorBuybacks = pgTable(
   "creator_buybacks",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     signature: text("signature").primaryKey(),
     mint: text("mint").notNull(),
     kind: text("kind", { enum: ["burn", "liquidity"] }).notNull(),
@@ -887,6 +932,8 @@ export const apiKeyUsage = pgTable(
 export const feeAnnouncements = pgTable(
   "fee_announcements",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     id: text("id").primaryKey(),
     platformFeeBps: integer("platform_fee_bps").notNull(),
     creatorFeeBps: integer("creator_fee_bps").notNull(),
@@ -914,6 +961,8 @@ export const platformSettings = pgTable("platform_settings", {
 export const feeKeys = pgTable(
   "fee_keys",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     nftMint: text("nft_mint").primaryKey(),
     nftAccount: text("nft_account").notNull(),
     lockedLiquidity: text("locked_liquidity").notNull(),
@@ -939,6 +988,8 @@ export const feeKeys = pgTable(
 export const metadataUploads = pgTable(
   "metadata_uploads",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     mint: text("mint").notNull(),
     item: text("item", { enum: ["image", "metadata"] }).notNull(),
     /** The item's Arweave id: the SHA-256 of its signature, base64url, fixed at signing. */
@@ -964,6 +1015,8 @@ export const metadataUploads = pgTable(
  * and credited once Turbo has seen it finalized. A transfer that is `sent` is resumed by the next run, never repeated.
  */
 export const arweaveTopUps = pgTable("arweave_top_ups", {
+  /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+  chain: text("chain").notNull().default("solana"),
   signature: text("signature").primaryKey(),
   lamports: numeric("lamports", { precision: 40, scale: 0 }).notNull(),
   status: text("status", { enum: ["sent", "credited", "failed"] }).notNull().default("sent"),
@@ -983,6 +1036,8 @@ export const arweaveTopUps = pgTable("arweave_top_ups", {
 export const coinMentions = pgTable(
   "coin_mentions",
   {
+    /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+    chain: text("chain").notNull().default("solana"),
     mint: text("mint").notNull(),
     tweetId: text("tweet_id").notNull(),
     url: text("url").notNull(),
@@ -1002,6 +1057,8 @@ export const coinMentions = pgTable(
 
 /** Where the mentions job's search for each coin last reached: the next search asks only for posts since then. */
 export const mentionPolls = pgTable("mention_polls", {
+  /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+  chain: text("chain").notNull().default("solana"),
   mint: text("mint").primaryKey(),
   polledAt: timestamp("polled_at", { withTimezone: true }).notNull(),
 }).enableRLS();
@@ -1012,10 +1069,49 @@ export const mentionPolls = pgTable("mention_polls", {
  * only source of such names.
  */
 export const notableWallets = pgTable("notable_wallets", {
+  /** The chain the row is on (#252): `solana` for every row from before the EVM chains, and every Solana row since. */
+  chain: text("chain").notNull().default("solana"),
   wallet: text("wallet").primaryKey(),
   handle: text("handle").notNull(),
   name: text("name"),
   /** Whether a picture is cached in the bucket (`notable-avatars/<wallet>`), which the API serves. */
   avatar: boolean("avatar").notNull().default(false),
   addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+}).enableRLS();
+
+/**
+ * The Quote Assets of the EVM chains' Launches (#252): what the Indexer read from each asset's contract the first time a
+ * Launch was paired with it, and a Stock Token's ERC-8056 multiplier, read again on every run of the chain's Indexer so
+ * the one in force is answered beside every raw amount (ADR 0028). Solana's Quote Registry is `quote_assets`; the EVM
+ * chains' registry of Listings is on-chain, and its prices come with the jobs per chain (#254).
+ */
+export const evmQuoteAssets = pgTable(
+  "evm_quote_assets",
+  {
+    chain: text("chain").notNull(),
+    /** The asset's contract, checksummed; the zero address is the chain's native asset. */
+    address: text("address").notNull(),
+    symbol: text("symbol"),
+    name: text("name"),
+    decimals: integer("decimals").notNull(),
+    category: text("category", { enum: ["sol", "stablecoin", "tokenized_stock", "rwa", "wrapped", "defi", "leveraged", "collectible", "meme", "community"] }).notNull().default("community"),
+    /** `uiMultiplier()` in force at `multiplierAt`, 18 decimals; null for an asset that has none. */
+    multiplier: numeric("multiplier", { precision: 78, scale: 0 }),
+    multiplierAt: timestamp("multiplier_at", { withTimezone: true }),
+    readAt: timestamp("read_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.chain, t.address] })],
+).enableRLS();
+
+/**
+ * How far each polled chain's Indexer has read (#252): the newest block whose events it has written, and the head it saw
+ * on its last run. A run starts from the block after `indexed_block`, so a run that dies part way reads that part again.
+ */
+export const chainCursors = pgTable("chain_cursors", {
+  chain: text("chain").primaryKey(),
+  indexedBlock: bigint("indexed_block", { mode: "number" }).notNull(),
+  indexedBlockTime: timestamp("indexed_block_time", { withTimezone: true }),
+  headBlock: bigint("head_block", { mode: "number" }),
+  headBlockTime: timestamp("head_block_time", { withTimezone: true }),
+  checkedAt: timestamp("checked_at", { withTimezone: true }),
 }).enableRLS();

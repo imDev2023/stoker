@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Chain, ChainAddress } from "./chains";
 
 /** Asset Pairing: the Quote Assets a Launch can be paired with, as the Quote Registry lists them. */
 
@@ -72,7 +73,10 @@ export type QuoteMarket = z.infer<typeof QuoteMarket>;
 
 /** Enough about a Quote Asset to show an amount in it: every Launch carries one. */
 export const QuoteRef = z.object({
-  mint: base58,
+  /** The chain the asset is on (#252). */
+  chain: Chain,
+  /** The asset's mint on Solana; its contract on an EVM chain, the zero address standing for the chain's native asset. */
+  mint: ChainAddress,
   /** Null when the mint has no on-chain metadata; show a short mint address instead. */
   symbol: z.string().nullable(),
   name: z.string().nullable(),
@@ -80,6 +84,12 @@ export const QuoteRef = z.object({
   logo: z.string().nullable(),
   category: QuoteCategory,
   issuer: QuoteIssuer.nullable(),
+  /**
+   * A Stock Token's ERC-8056 multiplier in force (`uiMultiplier()`, 18 decimals: "1000000000000000000" is 1.0), read
+   * from the chain: every amount in the asset is in raw units, and a wallet shows it as raw units times this (ADR 0028,
+   * story 31). Null for an asset without one, and for every Solana asset.
+   */
+  multiplier: z.string().regex(/^\d+$/).nullable(),
 });
 export type QuoteRef = z.infer<typeof QuoteRef>;
 

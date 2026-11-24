@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import type { Chain } from "@launchpad/contract";
+import { chainFilter, chainIs } from "../chains/filter";
 import { PublicKey } from "@solana/web3.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { RebatesPage, WalletRebates } from "@launchpad/contract";
@@ -18,12 +20,14 @@ rebateRoutes.get("/rebates", async (c) => {
   const db = c.get("db");
   const cfg = c.get("cfg");
   const now = new Date();
+  // Rebate Weeks are settled in SOL on Solana; an EVM chain's are its own (#254), so `?chain=` of one lists none yet.
+  const chain = chainFilter(c);
   const [{ inForce, upcoming }, row, owed, current, weeks] = [
     split(await budgetVersions(db), now),
     (await budgets(db, now)).rows.rebates,
     await rebatesOwed(db),
     await currentWeek(db, cfg, operationsKey(c.env).publicKey, now),
-    await db.select().from(rebateWeeks).orderBy(desc(rebateWeeks.weekStart)).limit(PAGE),
+    chain === undefined || chain === "solana" ? await db.select().from(rebateWeeks).orderBy(desc(rebateWeeks.weekStart)).limit(PAGE) : [],
   ];
   // How much of each listed week has reached its wallets.
   const paid = weeks.length
@@ -71,7 +75,7 @@ rebateRoutes.get("/wallets/:address/rebates", async (c) => {
     })
     .from(rebates)
     .where(eq(rebates.wallet, address));
-  const mine = await db.select().from(rebates).where(eq(rebates.wallet, address)).orderBy(desc(rebates.weekStart)).limit(PAGE);
+  const mine = await db.select().from(rebates).where(and(eq(rebates.wallet, address), chainIs(rebates.chain, chainFilter(c)))).orderBy(desc(rebates.weekStart)).limit(PAGE);
   const ends = mine.length
     ? await db.select({ start: rebateWeeks.weekStart, end: rebateWeeks.weekEnd }).from(rebateWeeks).where(inArray(rebateWeeks.weekStart, mine.map((r) => r.weekStart)))
     : [];
@@ -84,6 +88,7 @@ rebateRoutes.get("/wallets/:address/rebates", async (c) => {
     paidLamports: totals!.paid,
     current: current && { feesLamports: (share?.fees ?? 0n).toString(), estimateLamports: (share?.amount ?? 0n).toString() },
     rebates: mine.map((r) => ({
+      chain: r.chain as Chain,
       weekStart: r.weekStart.toISOString(), weekEnd: endOf.get(r.weekStart.getTime())!.toISOString(), feesLamports: r.fees, amountLamports: r.amount,
       status: r.status, signature: r.signature, paidAt: r.paidAt?.toISOString() ?? null,
     })),
