@@ -17,17 +17,15 @@ contract ListingStandIn is IQuoteListings {
     event Listed(address indexed quote, int24 startTick);
 
     error NotWriter();
-    error NativeAssetNotYet();
 
     constructor(address writer_) {
         if (writer_ == address(0)) revert NotWriter();
         writer = writer_;
     }
 
-    /// @notice Lists `quote` with a start price. The native asset is refused until its own slice (#242).
+    /// @notice Lists `quote` with a start price; the zero address is the chain's native asset (#242).
     function list(address quote, int24 startTick) external {
         if (msg.sender != writer) revert NotWriter();
-        if (quote == address(0)) revert NativeAssetNotYet();
         _listings[quote] = Listing({listed: true, startTick: startTick});
         emit Listed(quote, startTick);
     }

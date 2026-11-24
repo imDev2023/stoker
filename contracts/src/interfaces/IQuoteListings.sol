@@ -14,6 +14,7 @@ interface IQuoteListings {
         int24 startTick;
     }
 
-    /// @notice The Listing of `quote`; an asset never listed answers `listed == false`.
+    /// @notice The Listing of `quote`, where the zero address is the chain's native asset (native ETH in
+    ///         the pool key, never a wrapped asset); an asset never listed answers `listed == false`.
     function listingOf(address quote) external view returns (Listing memory);
 }
