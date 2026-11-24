@@ -16,16 +16,19 @@ contract ForkNoReferrerTest is ForkRouteBase {
         for (uint256 r; r < 2; r++) {
             uint256 snap = vm.snapshotState();
             _approveFor(routers[r], trader, key);
-            ForkRouteBase.Trade[4] memory trades = _fourTrades(key);
             for (uint256 i; i < 4; i++) {
-                (uint256 figure, Seen memory s) = _routeAndSee(routers[r], key, trades[i], "");
-                assertEq(figure, recorded[i][0], "the Quoter's figure");
-                assertEq(s.quoteMoved, recorded[i][1], "the Quote Asset the trader paid or received");
-                assertEq(s.coinsMoved, recorded[i][2], "the coins the trader received or paid");
-                assertEq(s.fee, recorded[i][3], "what the hook took");
+                _assertTrade(routers[r], key, _fourTrades(key)[i], recorded[i]);
             }
             vm.revertToState(snap);
         }
+    }
+
+    function _assertTrade(address router, PoolKey memory key, Trade memory t, uint256[4] memory recorded) internal {
+        (uint256 figure, Seen memory s) = _routeAndSee(router, key, t, "");
+        assertEq(figure, recorded[0], "the Quoter's figure");
+        assertEq(s.quoteMoved, recorded[1], "the Quote Asset the trader paid or received");
+        assertEq(s.coinsMoved, recorded[2], "the coins the trader received or paid");
+        assertEq(s.fee, recorded[3], "what the hook took");
     }
 
     function test_fork_noReferrer_nvda_quoteIsCurrency0_costsWhatItDidBefore() public {

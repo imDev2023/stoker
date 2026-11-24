@@ -14,10 +14,12 @@ import {PoolDonateTest} from "@uniswap/v4-core/src/test/PoolDonateTest.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {LocalBase} from "../utils/LocalBase.sol";
+import {StokerKeys} from "../../src/StokerKeys.sol";
 
-/// Drives trades, Payout Calls, refusals and refused liquidity changes with random actors and amounts,
-/// and measures every swap from outside. The same handler runs against a coin paired with an ERC-20 and
-/// one paired with the native asset (#242).
+/// Drives trades (naming a referrer or not), Payout Calls, refusals, refused liquidity changes, and every
+/// call the Admin and the server keys can make, with random actors and amounts, and measures every swap
+/// from outside. The same handler runs against a coin paired with an ERC-20 and one paired with the native
+/// asset (#242).
 contract BooksHandler is Test {
     BooksInvariantBase internal immutable t;
     PoolKey internal key;
@@ -35,6 +37,10 @@ contract BooksHandler is Test {
     uint256 public lockBreaches; // a removal, a foreign add or a donation that went through
     uint256 public refusedPayouts; // Payout Calls made while the Creator's Credit owner refused
     uint256 public ownPulls; // Payout Calls the Creator's Credit owner made for themselves
+    uint256 public referredSwaps; // swaps that named a referrer and a fee
+    uint256 public referrerCredits; // what the referrers' Credits grew by on swaps
+    uint256 public privilegedCalls; // calls by the Admin or a server key that went through
+    uint256 public privilegedChanges; // such calls after which a pool, a Seed Position or a Credit differed
 
     constructor(BooksInvariantBase t_, PoolKey memory key_) {
         t = t_;
@@ -44,17 +50,41 @@ contract BooksHandler is Test {
         donateRouter = new PoolDonateTest(IPoolManager(t.poolManager()));
     }
 
-    function trade(uint256 actorSeed, bool buy, bool exactIn, uint256 amount) external {
-        _trade(actorSeed, buy, exactIn, amount, 0);
+    /// A trade; `refSeed` names no referrer, the ordinary one or the one that refuses payment, with a fee
+    /// from zero to the cap.
+    function trade(uint256 actorSeed, bool buy, bool exactIn, uint256 amount, uint256 refSeed) external {
+        _trade(actorSeed, buy, exactIn, amount, 0, refSeed);
+    }
+
+    /// A trade naming no referrer: the path every swap took before #243 stays well exercised.
+    function tradePlain(uint256 actorSeed, bool buy, bool exactIn, uint256 amount) external {
+        _trade(actorSeed, buy, exactIn, amount, 0, 0);
+    }
+
+    /// A trade always naming a referrer, the ordinary one or the hostile one, with a fee from 1 to the cap.
+    function tradeReferred(uint256 actorSeed, bool buy, bool exactIn, uint256 amount, bool hostile, uint256 feeSeed)
+        external
+    {
+        uint256 feeBps = 1 + feeSeed % t.referrerCapBps();
+        _trade(actorSeed, buy, exactIn, amount, 0, (feeBps << 8) | (hostile ? 2 : 1));
     }
 
     /// The same trade with a price limit of its own a few tick spacings away, which stops many of them
     /// early: those with the Quote Asset as the specified side are refused, the others pay on what moved.
-    function tradeWithLimit(uint256 actorSeed, bool buy, bool exactIn, uint256 amount, uint256 spacings) external {
-        _trade(actorSeed, buy, exactIn, amount, int24(int256(bound(spacings, 1, 20))) * 200);
+    function tradeWithLimit(
+        uint256 actorSeed,
+        bool buy,
+        bool exactIn,
+        uint256 amount,
+        uint256 spacings,
+        uint256 refSeed
+    ) external {
+        _trade(actorSeed, buy, exactIn, amount, int24(int256(bound(spacings, 1, 20))) * 200, refSeed);
     }
 
-    function _trade(uint256 actorSeed, bool buy, bool exactIn, uint256 amount, int24 limitTicks) internal {
+    function _trade(uint256 actorSeed, bool buy, bool exactIn, uint256 amount, int24 limitTicks, uint256 refSeed)
+        internal
+    {
         address who = actors[actorSeed % actors.length];
         uint256 coins = t.coinBalance(who);
         uint256 unit = t.quoteUnit();
@@ -63,34 +93,54 @@ contract BooksHandler is Test {
         else amount = bound(amount, 1e9, exactIn ? coins : 20 * unit);
         t.fund(who);
 
+        (address referrer, uint256 refBps) = t.referralFor(refSeed);
+        bytes memory hookData = referrer == address(0) ? bytes("") : abi.encode(referrer, refBps);
+
         uint256 q0 = t.quoteBalance(who);
         uint256 claims0 = t.hookClaims();
         uint256 credits0 = t.allCredits();
-        try t.swapAs(who, buy, exactIn, amount, limitTicks) {}
+        uint256 ref0 = referrer == address(0) ? 0 : t.creditOf(referrer);
+        try t.swapAs(who, buy, exactIn, amount, limitTicks, hookData) {}
         catch {
-            // A sell asking for more than the pool can give or the actor holds, or a swap with the Quote
-            // Asset specified that its limit stopped early.
+            // A sell asking for more than the pool can give or the actor holds, a swap with the Quote
+            // Asset specified that its limit stopped early, or a sell too small to pay both fees.
             return;
         }
         uint256 q1 = t.quoteBalance(who);
-        uint256 fee = t.hookClaims() - claims0;
-        feesTaken += fee;
+        uint256 taken = t.hookClaims() - claims0;
+        uint256 rf = referrer == address(0) ? 0 : t.creditOf(referrer) - ref0;
+        feesTaken += taken;
         creditsRecorded += t.allCredits() - credits0;
+        referrerCredits += rf;
         swaps++;
         if (limitTicks != 0) limitedSwaps++;
+        if (referrer != address(0)) referredSwaps++;
 
-        uint256 expected;
-        if (buy && exactIn) expected = t.feeOnGross(q0 - q1);
-        else if (buy) expected = t.feeOnNet(q0 - q1 - fee);
-        else if (exactIn) expected = t.feeOnGross(q1 - q0 + fee);
-        else expected = t.feeOnNet(q1 - q0);
-        if (fee != expected) feeFormulaMismatches++;
+        // Both fees are their rates of the Quote Asset's side; with no referrer the Platform Fee alone,
+        // exactly as before #243.
+        uint256 pf;
+        uint256 expectedRf;
+        if (buy && exactIn) {
+            (pf, expectedRf) = (t.feeOnGrossAt(q0 - q1, t.platformBps()), t.feeOnGrossAt(q0 - q1, refBps));
+        } else if (buy) {
+            (pf, expectedRf) =
+            (t.feeOnNetAt(q0 - q1 - taken, t.platformBps(), refBps), t.feeOnNetAt(q0 - q1 - taken, refBps, refBps));
+        } else if (exactIn) {
+            (pf, expectedRf) =
+            (t.feeOnGrossAt(q1 - q0 + taken, t.platformBps()), t.feeOnGrossAt(q1 - q0 + taken, refBps));
+        } else {
+            (pf, expectedRf) = (t.feeOnNetAt(q1 - q0, t.platformBps(), refBps), t.feeOnNetAt(q1 - q0, refBps, refBps));
+        }
+        if (taken != pf + expectedRf || rf != expectedRf) feeFormulaMismatches++;
     }
 
+    /// A stranger's Payout Call for two of the Credit owners (the Creator's, an Admin of any moment, a
+    /// referrer), or one of them twice.
     function payout(uint256 seed) external {
+        address[] memory all = t.owners();
         address[] memory owners = new address[](2);
-        owners[0] = seed % 2 == 0 ? t.creditOwner() : t.platformAddr();
-        owners[1] = seed % 3 == 0 ? t.platformAddr() : actors[seed % actors.length];
+        owners[0] = all[seed % all.length];
+        owners[1] = all[(seed >> 8) % all.length];
         if (t.refusing()) refusedPayouts++;
         uint256 before = t.quoteBalance(owners[0]) + (owners[1] == owners[0] ? 0 : t.quoteBalance(owners[1]));
         t.payoutAs(actors[seed % actors.length], owners);
@@ -103,7 +153,7 @@ contract BooksHandler is Test {
     function pullOwn() external {
         address[] memory owners = new address[](2);
         owners[0] = t.creditOwner();
-        owners[1] = t.platformAddr();
+        owners[1] = t.currentAdmin();
         if (t.refusing()) refusedPayouts++;
         uint256 before = t.quoteBalance(owners[0]) + t.quoteBalance(owners[1]);
         t.payoutAs(owners[0], owners);
@@ -114,6 +164,61 @@ contract BooksHandler is Test {
     /// The Creator's Credit owner starts or stops refusing payment (a blocklist, a reverting contract).
     function setRefusing(bool refuse) external {
         t.setRefusing(refuse);
+    }
+
+    /// The hostile referrer starts or stops refusing payment.
+    function setReferrerRefusing(bool refuse) external {
+        t.setReferrerRefusing(refuse);
+    }
+
+    // ------------------------------------------------ the Admin and the server keys (#243)
+
+    /// A write to the Quote Registry by the Admin of the moment, after some time has passed: a routine
+    /// price write, a scheduled change, its withdrawal, a delisting, or a new Listing. Writes the registry
+    /// refuses (too soon, too far, a change waiting) are simply refused.
+    function adminWrite(uint256 op, uint256 tickSeed, uint256 waitSeed) external {
+        vm.warp(vm.getBlockTimestamp() + bound(waitSeed, 0, 3 days));
+        bytes memory data = t.registryCall(op, tickSeed);
+        _privileged(t.currentAdmin(), address(t.registryAddr()), data);
+    }
+
+    /// The Admin hands over to another of the pool's addresses, which accepts; or proposes and is left.
+    function handOverAdmin(uint256 seed, bool accept) external {
+        address next = t.adminCandidate(seed);
+        _privileged(t.currentAdmin(), t.keysAddr(), abi.encodeCall(StokerKeys.proposeAdmin, (next)));
+        if (accept) _privileged(next, t.keysAddr(), abi.encodeCall(StokerKeys.acceptAdmin, ()));
+    }
+
+    /// The Admin replaces or revokes a server key, the new holder accepting.
+    function replaceKey(uint256 roleSeed, uint256 holderSeed, bool revoke) external {
+        StokerKeys.Role role = StokerKeys.Role(roleSeed % 3);
+        if (revoke) {
+            _privileged(t.currentAdmin(), t.keysAddr(), abi.encodeCall(StokerKeys.revokeKey, (role)));
+            return;
+        }
+        address holder = actors[holderSeed % actors.length];
+        _privileged(t.currentAdmin(), t.keysAddr(), abi.encodeCall(StokerKeys.proposeKey, (role, holder)));
+        _privileged(holder, t.keysAddr(), abi.encodeCall(StokerKeys.acceptKey, (role)));
+    }
+
+    /// A server key's holder tries every privileged call there is; none is theirs, and none goes through.
+    function serverKeyTries(uint256 roleSeed, uint256 op, uint256 tickSeed) external {
+        address holder = t.holderOf(StokerKeys.Role(roleSeed % 3));
+        if (holder == address(0)) return;
+        _privileged(holder, address(t.registryAddr()), t.registryCall(op, tickSeed));
+        _privileged(holder, t.keysAddr(), abi.encodeCall(StokerKeys.proposeAdmin, (holder)));
+        _privileged(holder, t.keysAddr(), abi.encodeCall(StokerKeys.revokeKey, (StokerKeys.Role(op % 3))));
+    }
+
+    /// Makes a privileged call and records whether it went through and whether anything it must not touch
+    /// moved: the pool's price and liquidity, the Seed Position, any Credit, the claims behind them, or the
+    /// launched coin's terms.
+    function _privileged(address who, address target, bytes memory data) internal {
+        bytes32 before = t.fingerprint();
+        vm.prank(who);
+        (bool ok,) = target.call(data);
+        if (ok) privilegedCalls++;
+        if (t.fingerprint() != before) privilegedChanges++;
     }
 
     function tryRemove(uint256 actorSeed, uint256 liquidity) external {
@@ -149,7 +254,7 @@ contract BooksHandler is Test {
     }
 }
 
-/// A Credit owner that refuses the native asset while told to.
+/// A Credit owner that refuses the native asset while told to: a Creator's Destination, or a referrer.
 contract ToggleRecipient {
     bool public refusing;
 
@@ -162,9 +267,11 @@ contract ToggleRecipient {
     }
 }
 
-/// Invariants of the books (#241, #242): the Seed Position never falls, the Credits of every swap sum to
-/// the fee the hook took, which is always 1.00% of the Quote Asset's side, the claims back every Credit,
-/// and every payment was a Credit, whether or not the Creator's Credit owner refuses payment.
+/// Invariants of the books (#241, #242, #243): the Seed Position never falls, the Credits of every swap
+/// sum to what the hook took, which is always 1.00% of the Quote Asset's side plus the Referrer Fee the
+/// trade named, the claims back every Credit, every payment was a Credit, whether or not the Creator's
+/// Credit owner or a referrer refuses payment, and no call by the Admin or a server key changes the pool,
+/// its Seed Position or anyone's Credit.
 abstract contract BooksInvariantBase is LocalBase {
     using StateLibrary for IPoolManager;
 
@@ -191,15 +298,51 @@ abstract contract BooksInvariantBase is LocalBase {
     function creditOwner() public view virtual returns (address);
     function refusing() public view virtual returns (bool);
     function setRefusing(bool refuse) external virtual;
+    function setReferrerRefusing(bool refuse) external virtual;
+    function hostileReferrer() public view virtual returns (address);
     function quoteBalance(address who) public view virtual returns (uint256);
     function fund(address who) external virtual;
-    function swapAs(address who, bool buy, bool exactIn, uint256 amount, int24 limitTicks) external virtual;
+    function swapAs(address who, bool buy, bool exactIn, uint256 amount, int24 limitTicks, bytes memory hookData)
+        external
+        virtual;
+
+    // ------------------------------------------------ the Credit owners
+
+    address internal referrerA = makeAddr("referrerA");
+    address[2] internal nextAdmins = [makeAddr("admin1"), makeAddr("admin2")];
+
+    /// Every address a Credit can be booked to in the campaign: the Creator's, each Admin it may have, and
+    /// the two referrers.
+    function owners() public view returns (address[] memory o) {
+        o = new address[](6);
+        (o[0], o[1], o[2], o[3]) = (creditOwner(), platform, nextAdmins[0], nextAdmins[1]);
+        (o[4], o[5]) = (referrerA, hostileReferrer());
+    }
+
+    /// No referrer, the ordinary one or the hostile one, with a fee from zero to the cap.
+    function referralFor(uint256 refSeed) external view returns (address referrer, uint256 feeBps) {
+        uint256 which = refSeed % 3;
+        if (which == 0) return (address(0), 0);
+        referrer = which == 1 ? referrerA : hostileReferrer();
+        feeBps = (refSeed >> 8) % (REFERRER_FEE_CAP_BPS + 1);
+        if (feeBps == 0) referrer = address(0);
+    }
+
+    function creditOf(address owner) external view returns (uint256) {
+        return hook.creditOf(owner, quoteCurrency());
+    }
 
     // ------------------------------------------------ the invariants
 
     /// The campaign did trade and did pay: a suite whose every swap reverted would prove nothing.
     function afterInvariant() public view {
         assertGt(handler.swaps(), 0, "no swap went through");
+    }
+
+    /// No call by the Admin or a server key changes the launched coin's pool, its Seed Position or anyone's
+    /// Credit (#243).
+    function invariant_noPrivilegedCallTouchesAPoolASeedOrACredit() public view {
+        assertEq(handler.privilegedChanges(), 0, "a privileged call moved a pool, a seed or a Credit");
     }
 
     function invariant_seedLiquidityNeverFalls() public view {
@@ -209,7 +352,7 @@ abstract contract BooksInvariantBase is LocalBase {
 
     function invariant_creditsOfEverySwapSumToTheFeeTaken() public view {
         assertEq(handler.creditsRecorded(), handler.feesTaken());
-        assertEq(handler.feeFormulaMismatches(), 0, "a fee that was not 1.00% of the Quote Asset's side");
+        assertEq(handler.feeFormulaMismatches(), 0, "a fee that was not its rate of the Quote Asset's side");
     }
 
     function invariant_claimsBackEveryCredit() public view {
@@ -244,12 +387,91 @@ abstract contract BooksInvariantBase is LocalBase {
         return pm.balanceOf(address(hook), quoteCurrency().toId());
     }
 
-    function allCredits() public view returns (uint256) {
-        return hook.creditOf(creditOwner(), quoteCurrency()) + hook.creditOf(platform, quoteCurrency());
+    function allCredits() public view returns (uint256 sum) {
+        address[] memory o = owners();
+        for (uint256 i; i < o.length; i++) {
+            sum += hook.creditOf(o[i], quoteCurrency());
+        }
     }
 
-    function platformAddr() external view returns (address) {
-        return platform;
+    function referrerCapBps() external pure returns (uint256) {
+        return REFERRER_FEE_CAP_BPS;
+    }
+
+    function platformBps() external pure returns (uint256) {
+        return PLATFORM_FEE_BPS;
+    }
+
+    /// A rate of a gross amount, rounded up.
+    function feeOnGrossAt(uint256 gross, uint256 feeBps) external pure returns (uint256) {
+        return _feeOnGrossAt(gross, feeBps);
+    }
+
+    /// A rate of a gross known as its net, the Platform Fee and a Referrer Fee of `refBps` taken from it.
+    function feeOnNetAt(uint256 net, uint256 feeBps, uint256 refBps) external pure returns (uint256) {
+        return _feeOnNetWith(net, feeBps, PLATFORM_FEE_BPS + refBps);
+    }
+
+    // ------------------------------------------------ the Admin and the server keys
+
+    function currentAdmin() external view returns (address) {
+        return keys.admin();
+    }
+
+    function adminCandidate(uint256 pick) external view returns (address) {
+        uint256 i = pick % 3;
+        return i == 2 ? platform : nextAdmins[i];
+    }
+
+    function keysAddr() external view returns (address) {
+        return address(keys);
+    }
+
+    function registryAddr() external view returns (address) {
+        return address(registry);
+    }
+
+    function holderOf(StokerKeys.Role role) external view returns (address) {
+        return keys.holderOf(role);
+    }
+
+    /// One of the registry's writes, on the campaign's own Quote Asset or a new one, with figures that are
+    /// often inside its bounds and sometimes not.
+    function registryCall(uint256 op, uint256 tickSeed) external view returns (bytes memory) {
+        address asset = native() ? address(0) : address(quote);
+        int24 current = registry.listingOf(asset).startTick;
+        int24 tick = current + (int24(int256(tickSeed % 31)) - 15) * TICK_SPACING;
+        uint16 multiple = uint16(2 + (tickSeed >> 8) % 60);
+        uint16 cap = uint16((tickSeed >> 16) % 300);
+        uint256 which = op % 5;
+        if (which == 0) return abi.encodeCall(registry.writeStartPrice, (asset, tick));
+        if (which == 1) return abi.encodeCall(registry.scheduleChange, (asset, tick, multiple, cap));
+        if (which == 2) return abi.encodeCall(registry.withdrawChange, (asset));
+        if (which == 3) return abi.encodeCall(registry.delist, (asset));
+        return abi.encodeCall(registry.list, (address(uint160(0x5000 + op % 7)), tick, multiple, cap));
+    }
+
+    /// Everything no privileged call may move: the pool's price and liquidity, the Seed Position, every
+    /// Credit, the claims behind them and the launched coin's terms.
+    function fingerprint() external view returns (bytes32) {
+        (uint160 sqrtPrice, int24 tick,,) = pm.getSlot0(key.toId());
+        bytes memory credits;
+        address[] memory o = owners();
+        for (uint256 i; i < o.length; i++) {
+            credits = abi.encodePacked(credits, hook.creditOf(o[i], quoteCurrency()));
+        }
+        return keccak256(
+            abi.encode(
+                sqrtPrice,
+                tick,
+                pm.getLiquidity(key.toId()),
+                _seedLiquidity(key),
+                credits,
+                hookClaims(),
+                hook.totalCredits(quoteCurrency()),
+                hook.termsOf(key.toId())
+            )
+        );
     }
 
     function seedRangeOf() external view returns (int24, int24) {
@@ -271,9 +493,9 @@ abstract contract BooksInvariantBase is LocalBase {
         vm.stopPrank();
     }
 
-    function payoutAs(address who, address[] memory owners) external {
+    function payoutAs(address who, address[] memory payees) external {
         vm.prank(who);
-        hook.payout(quoteCurrency(), owners);
+        hook.payout(quoteCurrency(), payees);
     }
 
     /// A price limit `limitTicks` from the pool's price in the trade's direction; zero for none.
@@ -315,6 +537,17 @@ contract BooksInvariantTest is BooksInvariantBase {
         mockQuote.setBlocked(creator, refuse);
     }
 
+    /// The hostile referrer of a Stock Token: an address the issuer blocks at times.
+    address internal blockedReferrer = makeAddr("blockedReferrer");
+
+    function hostileReferrer() public view override returns (address) {
+        return blockedReferrer;
+    }
+
+    function setReferrerRefusing(bool refuse) external override {
+        mockQuote.setBlocked(blockedReferrer, refuse);
+    }
+
     function quoteBalance(address who) public view override returns (uint256) {
         return quote.balanceOf(who);
     }
@@ -323,7 +556,10 @@ contract BooksInvariantTest is BooksInvariantBase {
         if (quote.balanceOf(who) < 1_000 ether) mockQuote.mint(who, 10_000 ether);
     }
 
-    function swapAs(address who, bool buy, bool exactIn, uint256 amount, int24 limitTicks) external override {
+    function swapAs(address who, bool buy, bool exactIn, uint256 amount, int24 limitTicks, bytes memory hookData)
+        external
+        override
+    {
         _approveRouter(key, who);
         bool zeroForOne = buy == _isQuote0(key);
         vm.prank(who);
@@ -335,7 +571,7 @@ contract BooksInvariantTest is BooksInvariantBase {
                 sqrtPriceLimitX96: _limitFor(zeroForOne, limitTicks)
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-            ""
+            hookData
         );
     }
 }
@@ -377,6 +613,17 @@ contract NativeBooksInvariantTest is BooksInvariantBase {
         destination.setRefusing(refuse);
     }
 
+    /// The hostile referrer of the native asset: a contract that refuses payment at times.
+    ToggleRecipient internal toggleReferrer = new ToggleRecipient();
+
+    function hostileReferrer() public view override returns (address) {
+        return address(toggleReferrer);
+    }
+
+    function setReferrerRefusing(bool refuse) external override {
+        toggleReferrer.setRefusing(refuse);
+    }
+
     function quoteBalance(address who) public view override returns (uint256) {
         return who.balance;
     }
@@ -385,10 +632,13 @@ contract NativeBooksInvariantTest is BooksInvariantBase {
         if (who.balance < 1_000 ether) vm.deal(who, 10_000 ether);
     }
 
-    function swapAs(address who, bool buy, bool exactIn, uint256 amount, int24 limitTicks) external override {
+    function swapAs(address who, bool buy, bool exactIn, uint256 amount, int24 limitTicks, bytes memory hookData)
+        external
+        override
+    {
         vm.prank(who);
         _coinToken().approve(address(swapRouter), type(uint256).max);
-        _swapNativeApproved(key, who, buy, exactIn, amount, who.balance, _limitFor(buy, limitTicks));
+        _swapNativeWithData(key, who, buy, exactIn, amount, who.balance, _limitFor(buy, limitTicks), hookData);
     }
 
     /// The hook holds no native asset between calls, and the test router keeps none either.

@@ -35,12 +35,17 @@ contract NoReferrerTest is LocalBase {
 
     function _see(PoolKey memory key, bool buy, bool exactIn, uint256 amount) internal returns (Figures memory f) {
         IERC20 coin = _coin(key);
-        (uint256 q0, uint256 c0, uint256 h0) = (quote.balanceOf(trader), coin.balanceOf(trader), _hookClaims());
+        f.quoteMoved = quote.balanceOf(trader);
+        f.coinsMoved = coin.balanceOf(trader);
+        f.fee = _hookClaims();
         _swap(key, trader, buy, exactIn, amount);
-        (uint256 q1, uint256 c1) = (quote.balanceOf(trader), coin.balanceOf(trader));
-        f.quoteMoved = buy ? q0 - q1 : q1 - q0;
-        f.coinsMoved = buy ? c1 - c0 : c0 - c1;
-        f.fee = _hookClaims() - h0;
+        f.quoteMoved = _diff(f.quoteMoved, quote.balanceOf(trader));
+        f.coinsMoved = _diff(f.coinsMoved, coin.balanceOf(trader));
+        f.fee = _hookClaims() - f.fee;
+    }
+
+    function _diff(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a - b : b - a;
     }
 
     /// The four trades in a coin paired with the native asset, after a First Buy of 0.1, as `main` priced them.
@@ -56,12 +61,13 @@ contract NoReferrerTest is LocalBase {
         internal
         returns (Figures memory f)
     {
-        (uint256 q0, uint256 c0, uint256 h0) = (trader.balance, IERC20(coin).balanceOf(trader), _nativeClaims());
+        f.quoteMoved = trader.balance;
+        f.coinsMoved = IERC20(coin).balanceOf(trader);
+        f.fee = _nativeClaims();
         _swapNative(key, trader, buy, exactIn, amount, 100 ether);
-        (uint256 q1, uint256 c1) = (trader.balance, IERC20(coin).balanceOf(trader));
-        f.quoteMoved = buy ? q0 - q1 : q1 - q0;
-        f.coinsMoved = buy ? c1 - c0 : c0 - c1;
-        f.fee = _nativeClaims() - h0;
+        f.quoteMoved = _diff(f.quoteMoved, trader.balance);
+        f.coinsMoved = _diff(f.coinsMoved, IERC20(coin).balanceOf(trader));
+        f.fee = _nativeClaims() - f.fee;
     }
 
     function _assertFigures(Figures[4] memory seen, uint256[3][4] memory recorded) internal pure {
