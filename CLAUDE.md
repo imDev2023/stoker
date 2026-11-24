@@ -18,11 +18,11 @@ Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `ston
 7. `docs/agents/` - this file's long form, read on demand: `code-map.md`, `run-and-test.md`, `settled.md`, `history.md` and `traps/`.
    Read the file the Traps index below names before the work it covers; none of them is loaded for you.
 
-### The frontier (2026-11-23)
+### The frontier (2026-11-24)
 
-- **Running:** relay lane `evm-contracts` on #242 (the native asset), since 2026-11-23; it ends in review for the main session.
+- **Running:** relay lane `evm-contracts` on #243 (the registry), since 2026-11-24; it ends in the main session's review.
 - **Next unit:** Stoker on EVM chains, built here and not in kiln (owner, 2026-11-22): the PRD is #231, rewritten on 2026-11-23 after the grilling with the owner (#235, ADRs 0024 to 0030).
-  #241 (`contracts/`, its `README.md` first) and #249 landed on 2026-11-23; #243 to #248 and #251 follow #242, one at a time.
+  #241 (`contracts/`, its `README.md` first), #249 and #242 have landed; #244 to #248 and #251 follow #243, one at a time.
   The stack's slices (#252 to #257) wait for Solana's go-live (#23).
   The evidence: `docs/evm/research/` and `spike/evm-robinhood-fork/README.md`.
 - **Solana:** the rewards roadmap is built through the Stoke Launch (#215) and the rehearsal's findings (#221 to #224) are fixed and on `main` (`docs/agents/history.md`).
@@ -32,8 +32,8 @@ Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `ston
 - **Mainnet:** `stoker-api` is live on `api.stoker.markets` on its build from before these merges; its database is through `0020` and takes `0021` to `0034` at go-live.
   Go-live is #23: the checklist is `docs/runbooks/mainnet.md` section 12, and #23's latest comment says which item is open.
 - **The owner still owes:** the name Stoke Launch, theirs to overrule; the calls each lane left to overrule on #183, #184, #186, #211, #214, #215 and #221 to #224 (each issue's last comments, and the bodies of PRs #213, #217, #219, #225, #226, #228 and #229); on #23, item 9 (Always Use HTTPS), step 5b's backup disk, Helius Developer, then items 8, 10 and 12 at go-live; a Budget Table version with a share for `rebates` before the rebates pay anything (runbook section 17); the Reward Rounds' version 2 before the first Reward Launch (runbook section 6), and with it or after it the first Holding Weights (section 18); answers on #159; closing #128 and #129; three calls each on #193, #198 and #199 that are theirs to overrule (`docs/agents/settled.md`); and on #201, Supabase's advisor read again on both projects now that devnet has `0030` (mainnet's tables by the block on the issue, or at go-live).
-  On EVM: #250 (the question to Robinhood), a hardware wallet address for the Admin (#251), the agent's calls in #231's Further Notes, PR #260's calls and its secret line, and pushing the knowledge bases' local commits.
-- **Open PRs on 2026-11-23:** #168 (`sign-in`) and #132 (`design-research`: merge its `docs/design/research/` or close it).
+  On EVM: #250 (the question to Robinhood), a hardware wallet address for the Admin (#251), the agent's calls in #231's Further Notes, PR #260's and #264's calls, and pushing the knowledge bases' local commits.
+- **Open PRs on 2026-11-24:** #168 (`sign-in`) and #132 (`design-research`: merge its `docs/design/research/` or close it).
   Check `gh pr list` before starting work, since cloud sessions also push here, and push every working branch.
 - **Site work** (phase 6, #137, and anything in the Playground's design) belongs in kiln unless the owner says otherwise.
 
