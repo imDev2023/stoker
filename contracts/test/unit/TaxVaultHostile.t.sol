@@ -118,6 +118,28 @@ contract TaxVaultHostileTest is TaxLocalBase {
         }
     }
 
+    /// Sandwiching a Support Liquidity piece loses money too: a wallet that lifts the price, has the piece
+    /// placed just below its lifted price and sells into it pays more in fee and tax than the piece gives.
+    function test_hostile_sandwichingASupportPieceLoses() public {
+        for (uint256 o; o < 2; o++) {
+            PoolKey memory key = _rewardWithTax(o == 0);
+            address attacker = makeAddr("attacker");
+            mockQuote.mint(attacker, 10_000 ether);
+            uint256[4] memory sizes = [uint256(0.1 ether), 1 ether, 10 ether, 100 ether];
+            for (uint256 i; i < sizes.length; i++) {
+                uint256 snap = vm.snapshotState();
+                uint256 q0 = quote.balanceOf(attacker);
+                _trade(key, attacker, true, true, sizes[i]);
+                vm.prank(attacker);
+                (uint256 added,) = taxVault.addSupport(key);
+                assertGt(added, 0);
+                _trade(key, attacker, false, true, _coinOfKey(key).balanceOf(attacker));
+                assertLt(quote.balanceOf(attacker), q0, "the sandwich lost money");
+                vm.revertToState(snap);
+            }
+        }
+    }
+
     function test_hostile_aPoolThatIsNotOurs_refused() public {
         PoolKey memory key = _rewardWithTax(true);
         PoolKey memory foreign = key;

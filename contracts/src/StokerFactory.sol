@@ -284,7 +284,7 @@ contract StokerFactory is IUnlockCallback {
                 revert InvalidShares(p.burnShareBps, p.liquidityShareBps);
             }
             if (p.payoutAsset != StokerHook.PayoutAsset.QuoteAsset) revert InvalidPayoutAsset();
-            terms.liquidityShareBps = uint16(BPS);
+            terms.liquidityShareBps = 10_000;
             return;
         }
         if (

@@ -183,7 +183,7 @@ contract TaxVault is IUnlockCallback {
             : LiquidityAmounts.getLiquidityForAmount1(sqrtLower, sqrtUpper, amount);
         if (liquidity == 0) revert NothingToSpend();
 
-        b.lastSupportAt = uint64(block.timestamp);
+        b.lastSupportAt = OZSafeCast.toUint64(block.timestamp);
         // The PoolManager calls back only this vault, and runs only our hook inside; the guard holds.
         // forge-lint: disable-next-line(reentrancy-no-eth)
         bytes memory result = poolManager.unlock(
@@ -206,7 +206,7 @@ contract TaxVault is IUnlockCallback {
         spent = _min(_part(p.booked, p.terms.burnShareBps) - b.burnSpent, _pieceCap(p.id, p.terms.quoteIsCurrency0));
         if (spent == 0) revert NothingToSpend();
         b.burnSpent += spent;
-        b.lastBuyAt = uint64(block.timestamp);
+        b.lastBuyAt = OZSafeCast.toUint64(block.timestamp);
         burned = _buy(key, p, spent);
         // Our own coin: a plain ERC-20 whose `burn` takes the caller's own coins.
         StokerCoin(Currency.unwrap(p.coin)).burn(burned);
@@ -226,7 +226,7 @@ contract TaxVault is IUnlockCallback {
             _min(_part(p.booked, _holdersShare(p.terms)) - b.holdersSpent, _pieceCap(p.id, p.terms.quoteIsCurrency0));
         if (spent == 0) revert NothingToSpend();
         b.holdersSpent += spent;
-        b.lastBuyAt = uint64(block.timestamp);
+        b.lastBuyAt = OZSafeCast.toUint64(block.timestamp);
         bought = _buy(key, p, spent);
         b.holdersCoins += bought;
         // forge-lint: disable-next-line(reentrancy-events)
@@ -314,8 +314,9 @@ contract TaxVault is IUnlockCallback {
         uint128 liquidity,
         uint256 amount
     ) internal returns (uint256 added) {
-        // A new or grown position in a pool with no LP fee and no donations has accrued nothing.
-        // forge-lint: disable-next-line(unused-return)
+        // A new or grown position in a pool with no LP fee and no donations has accrued nothing; any coin in
+        // the delta is refused below in any case.
+        // forge-lint: disable-start(unused-return)
         (BalanceDelta delta,) = poolManager.modifyLiquidity(
             key,
             ModifyLiquidityParams({
@@ -326,6 +327,7 @@ contract TaxVault is IUnlockCallback {
             }),
             ""
         );
+        // forge-lint: disable-end(unused-return)
         (int128 quoteDelta, int128 coinDelta) =
             quoteIsCurrency0 ? (delta.amount0(), delta.amount1()) : (delta.amount1(), delta.amount0());
         if (coinDelta != 0 || quoteDelta >= 0) revert NotSupportShaped();
@@ -378,11 +380,15 @@ contract TaxVault is IUnlockCallback {
         uint256 before = token.balanceOf(address(this));
         token.forceApprove(address(distributor), amount);
         distributor.deposit(coin, asset, amount);
+        // Exactly `amount` must have left: the Distributor is told the amount, and pulls it.
+        // forge-lint: disable-next-line(incorrect-strict-equality)
         if (before - token.balanceOf(address(this)) != amount) revert DepositShort();
         token.forceApprove(address(distributor), 0);
     }
 
     function _checkInterval(uint64 last) internal view {
+        // Time is the only clock these contracts read; a sequencer's skew of seconds moves a piece by as much.
+        // forge-lint: disable-next-line(block-timestamp)
         if (last != 0 && block.timestamp < uint256(last) + pieceInterval) {
             revert TooSoon(uint256(last) + pieceInterval);
         }
@@ -411,6 +417,8 @@ contract TaxVault is IUnlockCallback {
             if (upper > maxUsable) upper = maxUsable;
         } else {
             // A position wholly at or below the tick holds currency1 alone.
+            // Rounded down to the tick spacing on purpose.
+            // forge-lint: disable-next-line(divide-before-multiply)
             upper = compressed * spacing;
             lower = upper - width;
             int24 minUsable = TickMath.minUsableTick(spacing);
