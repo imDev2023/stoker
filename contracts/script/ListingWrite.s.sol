@@ -5,6 +5,7 @@ import {Script, console2} from "forge-std/Script.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {QuoteRegistry} from "../src/QuoteRegistry.sol";
 
@@ -67,8 +68,9 @@ contract ListingWrite is Script {
             console2.log("next write allowed at:", registry.lastWriteAt(quote) + registry.WRITE_INTERVAL());
             return (address(registry), abi.encodeCall(registry.writeStartPrice, (quote, tick)));
         }
-        uint16 multiple = uint16(vm.envUint("MULTIPLE"));
-        uint16 cap = uint16(vm.envUint("CAP_BPS"));
+        // Checked casts: a figure too large for its field reverts rather than wrapping into another Listing.
+        uint16 multiple = SafeCast.toUint16(vm.envUint("MULTIPLE"));
+        uint16 cap = SafeCast.toUint16(vm.envUint("CAP_BPS"));
         if (a == keccak256("list")) {
             return (address(registry), abi.encodeCall(registry.list, (quote, tick, multiple, cap)));
         }

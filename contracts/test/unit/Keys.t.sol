@@ -171,6 +171,45 @@ contract KeysTest is LocalBase {
         keys.acceptKey(StokerKeys.Role.Keeper);
     }
 
+    /// A server-key proposal is the Admin's who made it: a handover voids every one still waiting, so an
+    /// address the old Admin proposed cannot take a role the new Admin never chose (the review of PR #266).
+    function test_keys_adminHandover_voidsWaitingServerKeyProposals() public {
+        for (uint256 i; i < roles.length; i++) {
+            vm.prank(platform);
+            keys.proposeKey(roles[i], roundKey);
+        }
+        vm.prank(platform);
+        keys.proposeAdmin(nextAdmin);
+        vm.prank(nextAdmin);
+        keys.acceptAdmin();
+
+        for (uint256 i; i < roles.length; i++) {
+            assertEq(keys.pendingHolderOf(roles[i]), address(0), "voided by the handover");
+            vm.prank(roundKey);
+            vm.expectRevert(StokerKeys.NotProposed.selector);
+            keys.acceptKey(roles[i]);
+        }
+        // The new Admin proposes afresh, and that proposal stands.
+        vm.prank(nextAdmin);
+        keys.proposeKey(StokerKeys.Role.RoundKey, roundKey);
+        vm.prank(roundKey);
+        keys.acceptKey(StokerKeys.Role.RoundKey);
+        assertEq(keys.holderOf(StokerKeys.Role.RoundKey), roundKey);
+    }
+
+    /// A handover leaves a key already held where it is: only proposals are voided.
+    function test_keys_adminHandover_keepsKeysAlreadyHeld() public {
+        vm.prank(platform);
+        keys.proposeKey(StokerKeys.Role.Keeper, roundKey);
+        vm.prank(roundKey);
+        keys.acceptKey(StokerKeys.Role.Keeper);
+        vm.prank(platform);
+        keys.proposeAdmin(nextAdmin);
+        vm.prank(nextAdmin);
+        keys.acceptAdmin();
+        assertEq(keys.holderOf(StokerKeys.Role.Keeper), roundKey);
+    }
+
     // ------------------------------------------------ the platform's share follows the Admin, forward only
 
     /// The platform's share is paid to the Admin's address (ADR 0030). A Credit is its owner's from the
