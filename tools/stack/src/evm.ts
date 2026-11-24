@@ -30,12 +30,15 @@ const PIECE_BPS = 50;
 const PIECE_INTERVAL = 60;
 const SUPPORT_WIDTH_SPACINGS = 10;
 /**
- * The Tax Vault's Reference Price (#271), as the contracts' tests set it: it rises 2 ticks a minute and falls at once
- * (60,000 ticks a minute), and a Reward Burn or a holders' buy waits while the price stands above it (a band of 0).
+ * The Tax Vault's Reference Price (#271): it rises 2 ticks a minute and falls at once (60,000 ticks a minute), as the
+ * contracts' tests set it, and a Reward Burn or a holders' buy waits while the price stands more than 100 ticks above
+ * it. The tests' band is 0; a band lets a test burn once a pool is back near its opening price (a round trip leaves it
+ * a tick off by rounding) without moving the fork's clock, which would date every later coin in the future. #251 sets
+ * a live deployment's figures.
  */
 const REFERENCE_RISE = 2;
 const REFERENCE_FALL = 60_000;
-const BUY_BAND = 0;
+const BUY_BAND = 100;
 const REFERRER_FEE_CAP_BPS = 100;
 /** The hook's permission bits (StokerHook.getHookPermissions, contracts/test/utils/StokerTestBase.sol's HOOK_FLAGS). */
 const HOOK_FLAGS = (1n << 13n) | (1n << 11n) | (1n << 9n) | (1n << 7n) | (1n << 6n) | (1n << 5n) | (1n << 3n) | (1n << 2n);

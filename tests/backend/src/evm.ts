@@ -83,6 +83,13 @@ export async function listQuote(quote: Address, startTick: number) {
 const routerAbi = parseAbi(["function execute(bytes commands, bytes[] inputs, uint256 deadline) payable"]);
 const permit2Abi = parseAbi(["function approve(address token, address spender, uint160 amount, uint48 expiration)"]);
 const V4_SWAP = 0x10;
+/**
+ * The gas a test's swap is sent with. The hook moves a taxed pool's Reference Price (#271) only on the first swap of a
+ * new second, a storage write that an `eth_estimateGas` made within the previous block's second leaves out, so a swap
+ * sent with the bare estimate can land a second later and run out of gas (met on the fork: 181,453 given, the replay
+ * fine). A wallet's own margin covers it; #253's prepared trades must carry one.
+ */
+export const SWAP_GAS = 1_500_000n;
 const SWAP_EXACT_IN_SINGLE = 0x06;
 const SETTLE_ALL = 0x0c;
 const TAKE_ALL = 0x0f;
@@ -124,9 +131,10 @@ export async function swapExactIn(trader: { key: Hex; address: Address }, l: Evm
     address: router, abi: routerAbi, functionName: "execute",
     args: [encodePacked(["uint8"], [V4_SWAP]), [input], await deadline()],
     value: tokenIn === NATIVE ? amountIn : 0n,
+    gas: SWAP_GAS,
   });
   const receipt = await pub.waitForTransactionReceipt({ hash });
-  if (receipt.status !== "success") throw new Error(`swap reverted: ${hash}`);
+  if (receipt.status !== "success") throw new Error(`swap reverted: ${hash}: ${await whyReverted(hash)}`);
   return { receipt, gas: gas + gasCost(receipt) };
 }
 
@@ -177,14 +185,30 @@ export async function swapExactOut(
     address: router, abi: routerAbi, functionName: "execute",
     args: [encodePacked(["uint8"], [V4_SWAP]), [encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [actions, params])], await deadline()],
     value: tokenIn === NATIVE ? amountIn : 0n,
+    gas: SWAP_GAS,
   });
   const receipt = await pub.waitForTransactionReceipt({ hash });
-  if (receipt.status !== "success") throw new Error(`swap reverted: ${hash}`);
+  if (receipt.status !== "success") throw new Error(`swap reverted: ${hash}: ${await whyReverted(hash)}`);
   return { receipt, amountIn, gas: gas + gasCost(receipt) };
 }
 
 /** An hour after the fork's own latest block: the fork's clock is its own (a test may move it), never the wall clock's. */
 const deadline = async () => (await clients().public.getBlock({ blockTag: "latest" })).timestamp + 3600n;
+
+/**
+ * Why a mined transaction reverted: the same call replayed on the block before it, so the reason is decoded; "it
+ * replays without reverting" points at the gas it was given rather than the state.
+ */
+export async function whyReverted(hash: Hex) {
+  const pub = clients().public;
+  const tx = await pub.getTransaction({ hash });
+  try {
+    await pub.call({ account: tx.from, to: tx.to!, data: tx.input, value: tx.value, blockNumber: tx.blockNumber! - 1n });
+    return `it replays without reverting (gas limit ${tx.gas})`;
+  } catch (e) {
+    return (e as Error).message.split("\n").slice(0, 3).join(" ");
+  }
+}
 
 /** What `who` holds of `asset` (the native asset by the zero address). */
 export async function balanceOf(asset: Address, who: Address) {

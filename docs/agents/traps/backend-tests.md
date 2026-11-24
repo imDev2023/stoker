@@ -38,7 +38,7 @@ The text is the original's, one sentence a line.
 
 ## The EVM side (#252)
 
-- A fork carries on from its block's time (2026-11-22 for L2 block 120,800,000), so its trades would fall outside every "last 24 hours" figure; the stack sets the fork's clock to now before it deploys (`deployStoker` in `tools/stack/src/evm.ts`), and a test that moves the fork's clock must leave it no earlier; a test may move it forward (the Tax Vault's test lets an hour pass for the Reference Price, #271), so a deadline is always the fork's latest block's time plus a margin, never the wall clock's (`deadline` in `tests/backend/src/evm.ts`).
+- A fork carries on from its block's time (2026-11-22 for L2 block 120,800,000), so its trades would fall outside every "last 24 hours" figure; the stack sets the fork's clock to now before it deploys (`deployStoker` in `tools/stack/src/evm.ts`), and a test that moves the fork's clock must leave it no earlier; moving it forward dates every later EVM coin in the future, on top of the shared board, where a Solana test reads its own coin first (`launch.test.ts` failed that way once), so no test moves it; a deadline is still the fork's latest block's time plus a margin (`deadline` in `tests/backend/src/evm.ts`).
 - A wallet's native balance moves by every transaction it sends: a sell through the Universal Router first approves Permit2 and the router, so `swapExactIn` in `tests/backend/src/evm.ts` returns the gas of all three, and a test reads what a trade paid or received net of that, never of the swap's own gas alone (the first run took the approvals' 0.0001 ETH for a wrong figure).
 - EVM coins are on the shared board: a Solana test that counts every coin of `GET /v1/launches` must filter `?chain=solana`.
 
