@@ -23,8 +23,9 @@ contract ClockTest is LocalBase {
         // The registry's clocks (a day between writes, 48 hours to a scheduled change) read the timestamp.
         assertTrue(OpcodeScan.contains(address(registry).code, OpcodeScan.TIMESTAMP), "the registry reads the time");
         assertFalse(OpcodeScan.contains(address(taxVault).code, OpcodeScan.NUMBER), "tax vault");
-        // So do the Graduation Hold (#244) and the Creator Lock's schedule.
-        assertTrue(OpcodeScan.contains(address(hook).code, OpcodeScan.TIMESTAMP), "the hold reads the time");
+        // The Opening Fee (#246) reads the timestamp, in the hook's swap and in the vault's buys.
+        assertTrue(OpcodeScan.contains(address(hook).code, OpcodeScan.TIMESTAMP), "the hook reads the time");
+        assertTrue(OpcodeScan.contains(address(taxVault).code, OpcodeScan.TIMESTAMP), "the vault reads the time");
     }
 
     /// A Creator Lock's runtime (#244) reads the time and never the block number.

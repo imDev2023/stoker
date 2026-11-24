@@ -9,6 +9,7 @@ import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {SafeCast as OZSafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -51,6 +52,11 @@ interface IHoldersPartHolder {
 ///         its swaps have credited its Creator Earnings Destination (`creatorCreditedOf`), so a Destination
 ///         contract that serves many coins can tell their earnings apart.
 ///
+///         Every Launch opens with an Opening Fee (#246, ADR 0026): for its first seconds a buy pays an extra
+///         fee, falling in a straight line to nothing, minted to the Tax Vault as claims with a running total
+///         per pool (`openingFeeBooked`), all of it the coin's Support Liquidity. The Creator's First Buy is
+///         exempt; sells never pay it; no Credit grows by it.
+///
 ///         It keeps a Reference Price for every pool (#271): a price that follows the pool's price slowly,
 ///         by how long each price has stood, so the Tax Vault never spends at a price that was only just
 ///         reached (`referenceTick`). Every pool, since anyone may fund any coin's burn or Support Liquidity
@@ -64,8 +70,8 @@ interface IHoldersPartHolder {
 ///         and for good. A swap inside a transaction is never judged on its own, only the price the whole
 ///         transaction leaves, so a round trip inside one transaction, in either direction, neither forces
 ///         nor resets the hold.
-/// @dev Reads the clock through `block.timestamp` only, never `block.number`, which is an estimate of the
-///      L1 block on Robinhood Chain and Arbitrum.
+/// @dev Reads the clock through `block.timestamp` only (the Opening Fee, #246; the Reference Price, #271), never
+///      `block.number`, which is an estimate of the L1 block on Robinhood Chain and Arbitrum.
 contract StokerHook is BaseHook, IUnlockCallback {
     using SafeCast for uint256;
 
@@ -156,6 +162,11 @@ contract StokerHook is BaseHook, IUnlockCallback {
     /// @param liquidityShareBps The share of the tax that becomes Support Liquidity: the Reward Liquidity's
     ///        on a Reward Launch, all of it on a Stoke Launch. The rest is the holders' part.
     /// @param payoutAsset A Reward Launch's Payout Asset.
+    /// @param launchedAt The Launch's own second, `block.timestamp` when its terms were registered, written by
+    ///        the hook itself whatever the factory passes (#246).
+    /// @param openingFeeStartBps What a buy's fees take together at the launch's own second (99.00%): the
+    ///        Opening Fee is the part above the Launch's standing fees (#246, ADR 0026).
+    /// @param openingFeeDuration The seconds over which the Opening Fee falls in a straight line to nothing.
     /// @param secondTierShareBps The Creator's share on the second Creator Tier (#248).
     /// @param topTierShareBps The Creator's share on the top Creator Tier.
     struct Terms {
@@ -173,6 +184,9 @@ contract StokerHook is BaseHook, IUnlockCallback {
         uint16 burnShareBps;
         uint16 liquidityShareBps;
         PayoutAsset payoutAsset;
+        uint64 launchedAt;
+        uint16 openingFeeStartBps;
+        uint32 openingFeeDuration;
         uint16 secondTierShareBps;
         uint16 topTierShareBps;
     }
@@ -201,6 +215,11 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///         one was minted to the Tax Vault as claims in the same swap, so it is the Tax Vault's exact book
     ///         of what that coin's tax gave it.
     mapping(PoolId => uint256) public taxBooked;
+
+    /// @notice Every Opening Fee a pool's buys have paid, in its Quote Asset, since launch (#246). Each one was
+    ///         minted to the Tax Vault as claims in the same swap, so it is the Tax Vault's exact book of what
+    ///         that coin's Opening Fee gave it, all of it Support Liquidity.
+    mapping(PoolId => uint256) public openingFeeBooked;
 
     /// @notice A pool's Reference Price (#271), as the last swap left it.
     /// @param scaledTick The price, as a pool tick in sixty-thousandths of a tick.
@@ -279,6 +298,11 @@ contract StokerHook is BaseHook, IUnlockCallback {
     event CreatorTierRaised(PoolId indexed poolId, uint8 fromTier, uint8 toTier, uint16 creatorShareBps);
     /// @notice One swap's Reward Tax or Stoke Tax, minted to the Tax Vault as claims.
     event TaxBooked(PoolId indexed poolId, Currency indexed currency, uint256 tax);
+    /// @notice A Launch's Opening Fee terms (#246): from `launchedAt` a buy's fees take `startBps` together,
+    ///         the Opening Fee falling to nothing over `duration` seconds.
+    event OpeningFeeTermsRegistered(PoolId indexed poolId, uint64 launchedAt, uint16 startBps, uint32 duration);
+    /// @notice One buy's Opening Fee, minted to the Tax Vault as claims (#246).
+    event OpeningFeeBooked(PoolId indexed poolId, Currency indexed currency, uint256 fee);
     event CreditPaid(address indexed owner, Currency indexed currency, uint256 amount);
     /// @notice The Quote Asset refused to pay `owner` (a blocklist, a pause); the Credit stays owed to it.
     event CreditRefused(address indexed owner, Currency indexed currency, uint256 amount);
@@ -363,6 +387,8 @@ contract StokerHook is BaseHook, IUnlockCallback {
         if (_terms[id].registered) revert AlreadyRegistered();
         Terms memory t = terms;
         t.registered = true;
+        // The Launch's own second is the hook's to read: the Opening Fee runs from it (#246).
+        t.launchedAt = OZSafeCast.toUint64(block.timestamp);
         _terms[id] = t;
         emit LaunchRegistered(
             id,
@@ -376,6 +402,7 @@ contract StokerHook is BaseHook, IUnlockCallback {
             t.graduationSqrtPriceX96
         );
         emit TaxTermsRegistered(id, t.launchType, t.taxBps, t.burnShareBps, t.liquidityShareBps, t.payoutAsset);
+        emit OpeningFeeTermsRegistered(id, t.launchedAt, t.openingFeeStartBps, t.openingFeeDuration);
         emit CreatorLadderRegistered(id, t.creatorShareBps, t.secondTierShareBps, t.topTierShareBps);
     }
 
@@ -454,7 +481,8 @@ contract StokerHook is BaseHook, IUnlockCallback {
     ///      amount: an exact-in buy (the trader pays the amount, fees included) or an exact-out sell (the
     ///      trader receives the amount, the pool pays the fees on top). A trade's referrer is read here for
     ///      every swap, so a malformed `hookData` or a fee over the cap reverts before the pool runs. The fees
-    ///      are the Platform Fee, the Referrer Fee and the Launch's tax (#245), each its own rate.
+    ///      are the Platform Fee, the Referrer Fee and the Launch's tax (#245), each its own rate, and on a buy
+    ///      inside the Launch's opening seconds the Opening Fee (#246).
     function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
@@ -475,13 +503,18 @@ contract StokerHook is BaseHook, IUnlockCallback {
         if (specifiedIsCurrency0 != t.quoteIsCurrency0) {
             return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
-        (uint256 fee, uint256 referrerFee, uint256 tax) =
-            _feesOnSpecified(params.amountSpecified, t.platformFeeBps, referrerBps, _taxBps(sender, t));
-        uint256 taken = fee + referrerFee + tax;
+        uint256 taxBps = _taxBps(sender, t);
+        // The quote side specified is a buy when exact in; an exact-out sell never pays the Opening Fee.
+        uint256 openingBps = exactIn ? _openingBps(sender, t, taxBps) : 0;
+        referrerBps = _referrerBpsUnderTheStart(t, referrerBps, taxBps, openingBps);
+        (uint256 fee, uint256 referrerFee, uint256 tax, uint256 opening) =
+            _feesOnSpecified(params.amountSpecified, t.platformFeeBps, referrerBps, taxBps, openingBps);
+        uint256 taken = fee + referrerFee + tax + opening;
         // Never consume the whole specified amount: a swap the hook swallowed would be a NoOp swap.
         if (exactIn && taken >= OZSafeCast.toUint256(-params.amountSpecified)) revert SwapTooSmall();
         _book(id, key, t, fee, referrer, referrerFee);
         _bookTax(id, key, t, tax);
+        _bookOpeningFee(id, key, t, opening);
         return (this.beforeSwap.selector, toBeforeSwapDelta(taken.toInt128(), 0), 0);
     }
 
@@ -508,11 +541,19 @@ contract StokerHook is BaseHook, IUnlockCallback {
             // traded all of it. A swap its own price limit stopped early would have paid them on Quote Asset
             // it never traded, so it is refused; the same trade with the coin as the specified side goes
             // through, since its fees are taken below on what really moved.
-            (uint256 feeTaken, uint256 referrerFeeTaken, uint256 taxTaken) =
-                _feesOnSpecified(params.amountSpecified, t.platformFeeBps, referrerBps, taxBps);
+            // The same block, so the same Opening Fee as `_beforeSwap` took, on an exact-in buy alone.
+            uint256 openingBps = exactIn ? _openingBps(sender, t, taxBps) : 0;
+            (uint256 feeTaken, uint256 referrerFeeTaken, uint256 taxTaken, uint256 openingTaken) = _feesOnSpecified(
+                params.amountSpecified,
+                t.platformFeeBps,
+                _referrerBpsUnderTheStart(t, referrerBps, taxBps, openingBps),
+                taxBps,
+                openingBps
+            );
             if (
                 int256(quoteDelta)
-                    != params.amountSpecified + OZSafeCast.toInt256(feeTaken + referrerFeeTaken + taxTaken)
+                    != params.amountSpecified
+                        + OZSafeCast.toInt256(feeTaken + referrerFeeTaken + taxTaken + openingTaken)
             ) {
                 revert SwapStoppedEarly();
             }
@@ -522,29 +563,31 @@ contract StokerHook is BaseHook, IUnlockCallback {
         uint256 fee = 0;
         uint256 referrerFee = 0;
         uint256 tax = 0;
+        uint256 opening = 0;
         if (exactIn) {
-            // A sell: the pool owes the trader `quoteDelta` (positive), the gross, before the fees.
+            // A sell: the pool owes the trader `quoteDelta` (positive), the gross, before the fees. A sell
+            // never pays the Opening Fee.
             if (quoteDelta > 0) {
                 uint256 gross = OZSafeCast.toUint256(quoteDelta);
-                fee = _feeOnGross(gross, t.platformFeeBps);
-                referrerFee = _feeOnGross(gross, referrerBps);
-                tax = _feeOnGross(gross, taxBps);
+                (fee, referrerFee, tax, opening) = _feesOnGross(gross, t.platformFeeBps, referrerBps, taxBps, 0);
                 // Never more than the pool pays out: the trader would pay to sell. Only a referrer's fee or a
                 // tax beside the Platform Fee can reach past a gross of 1, so a swap with neither is untouched.
-                if (fee + referrerFee + tax > gross) revert SwapTooSmall();
+                if (fee + referrerFee + tax + opening > gross) revert SwapTooSmall();
             }
         } else if (quoteDelta < 0) {
-            // A buy: the trader owes the pool `-quoteDelta`, the net, before the fees.
+            // A buy: the trader owes the pool `-quoteDelta`, the net, before the fees, and inside the Launch's
+            // opening seconds the Opening Fee on top.
             uint256 net = OZSafeCast.toUint256(-int256(quoteDelta));
-            uint256 totalBps = uint256(t.platformFeeBps) + referrerBps + taxBps;
-            fee = _feeOnNet(net, t.platformFeeBps, totalBps);
-            referrerFee = _feeOnNet(net, referrerBps, totalBps);
-            tax = _feeOnNet(net, taxBps, totalBps);
+            uint256 openingBps = _openingBps(sender, t, taxBps);
+            (fee, referrerFee, tax, opening) = _feesOnNet(
+                net, t.platformFeeBps, _referrerBpsUnderTheStart(t, referrerBps, taxBps, openingBps), taxBps, openingBps
+            );
         }
-        uint256 taken = fee + referrerFee + tax;
+        uint256 taken = fee + referrerFee + tax + opening;
         if (taken == 0) return (this.afterSwap.selector, 0);
         _book(id, key, t, fee, referrer, referrerFee);
         _bookTax(id, key, t, tax);
+        _bookOpeningFee(id, key, t, opening);
         return (this.afterSwap.selector, taken.toInt128());
     }
 
@@ -631,22 +674,119 @@ contract StokerHook is BaseHook, IUnlockCallback {
         return sender == taxVault ? 0 : t.taxBps;
     }
 
-    /// @dev The three fees when the Quote Asset is the swap's specified currency (the Platform Fee, the
-    ///      Referrer Fee and the tax): of the gross for an exact-in buy (a negative amount), on the net for an
-    ///      exact-out sell (a positive one).
-    function _feesOnSpecified(int256 amountSpecified, uint16 feeBps, uint256 referrerBps, uint256 taxBps)
+    /// @dev The four fees when the Quote Asset is the swap's specified currency (the Platform Fee, the
+    ///      Referrer Fee, the tax and the Opening Fee): of the gross for an exact-in buy (a negative amount), on
+    ///      the net for an exact-out sell (a positive one, whose `openingBps` is zero).
+    function _feesOnSpecified(
+        int256 amountSpecified,
+        uint16 feeBps,
+        uint256 referrerBps,
+        uint256 taxBps,
+        uint256 openingBps
+    ) internal pure returns (uint256, uint256, uint256, uint256) {
+        if (amountSpecified < 0) {
+            return _feesOnGross(OZSafeCast.toUint256(-amountSpecified), feeBps, referrerBps, taxBps, openingBps);
+        }
+        return _feesOnNet(OZSafeCast.toUint256(amountSpecified), feeBps, referrerBps, taxBps, openingBps);
+    }
+
+    /// @dev The four fees of a known gross amount. Outside the window each is its rate of it, rounded up.
+    ///      Inside it (an Opening Fee rate above zero) the Platform Fee and the tax are their rates, rounded
+    ///      up; the Opening Fee is what those two rates and its own take together, rounded up once, less the
+    ///      two as each was rounded; and the Referrer Fee (its rate already held to the room under the start
+    ///      figure) is what adding its rate to the three takes beyond that. So inside the window a buy pays
+    ///      its combined rate rounded up once, the Opening Fee is the same to the wei whether or not a
+    ///      referrer is named, and naming one costs the buyer exactly the referrer's fee.
+    function _feesOnGross(uint256 gross, uint16 feeBps, uint256 referrerBps, uint256 taxBps, uint256 openingBps)
         internal
         pure
-        returns (uint256 fee, uint256 referrerFee, uint256 tax)
+        returns (uint256 fee, uint256 referrerFee, uint256 tax, uint256 opening)
     {
-        if (amountSpecified < 0) {
-            uint256 gross = OZSafeCast.toUint256(-amountSpecified);
-            return (_feeOnGross(gross, feeBps), _feeOnGross(gross, referrerBps), _feeOnGross(gross, taxBps));
-        }
-        uint256 net = OZSafeCast.toUint256(amountSpecified);
-        uint256 totalBps = uint256(feeBps) + referrerBps + taxBps;
-        return
-            (_feeOnNet(net, feeBps, totalBps), _feeOnNet(net, referrerBps, totalBps), _feeOnNet(net, taxBps, totalBps));
+        fee = _feeOnGross(gross, feeBps);
+        tax = _feeOnGross(gross, taxBps);
+        if (openingBps == 0) return (fee, _feeOnGross(gross, referrerBps), tax, 0);
+        uint256 withoutReferrer = _feeOnGross(gross, uint256(feeBps) + taxBps + openingBps);
+        opening = _openingRest(withoutReferrer, fee + tax);
+        referrerFee = _feeOnGross(gross, uint256(feeBps) + taxBps + openingBps + referrerBps) - withoutReferrer;
+    }
+
+    /// @dev The four fees of a gross amount known only as its net: each its rate of net plus every fee, by
+    ///      the same split as `_feesOnGross` inside the window (the Opening Fee from the Platform Fee's, the
+    ///      tax's and its own rates rounded once, the Referrer Fee what its rate adds beyond them). The
+    ///      Platform Fee thus stays 1.00% of what the buyer pays, the Opening Fee included, as on an exact-in
+    ///      buy of the same amount.
+    function _feesOnNet(uint256 net, uint16 feeBps, uint256 referrerBps, uint256 taxBps, uint256 openingBps)
+        internal
+        pure
+        returns (uint256 fee, uint256 referrerFee, uint256 tax, uint256 opening)
+    {
+        uint256 totalBps = uint256(feeBps) + referrerBps + taxBps + openingBps;
+        fee = _feeOnNet(net, feeBps, totalBps);
+        tax = _feeOnNet(net, taxBps, totalBps);
+        if (openingBps == 0) return (fee, _feeOnNet(net, referrerBps, totalBps), tax, 0);
+        uint256 withoutReferrer = _feeOnNet(net, uint256(feeBps) + taxBps + openingBps, totalBps);
+        opening = _openingRest(withoutReferrer, fee + tax);
+        referrerFee = _feeOnNet(net, totalBps, totalBps) - withoutReferrer;
+    }
+
+    /// @dev What the combined rate takes beyond the Platform Fee and the tax, never below zero: on a buy too
+    ///      small for their own roundings to leave room, the Opening Fee is nothing and the buy pays those.
+    function _openingRest(uint256 allTaken, uint256 standing) internal pure returns (uint256) {
+        return allTaken > standing ? allTaken - standing : 0;
+    }
+
+    /// @dev The Opening Fee's rate on a buy at this second (#246, ADR 0026), read from the Launch's own terms
+    ///      and the block's time alone: at the launch's own second the buy's fees together take
+    ///      `openingFeeStartBps`, the Opening Fee being the part above the Platform Fee and the tax the buy
+    ///      pays, and that part falls in a straight line to nothing at `openingFeeDuration` seconds, rounded
+    ///      up to the basis point, so it never rises with time and never passes the start figure. A Referrer
+    ///      Fee is never counted here: it takes only the room the schedule has left (see
+    ///      `_referrerBpsUnderTheStart`), so naming a referrer never lowers the Opening Fee. The Creator's
+    ///      First Buy, the one swap the factory ever makes, inside the launch, is exempt; `sender` is compared
+    ///      with the factory and read for nothing else. Every block of one second reads the same rate.
+    function _openingBps(address sender, Terms memory t, uint256 taxBps) internal view returns (uint256) {
+        if (sender == factory) return 0;
+        uint256 duration = t.openingFeeDuration;
+        uint256 end = uint256(t.launchedAt) + duration;
+        // Time is the only clock these contracts read; a sequencer's skew of seconds moves the fee by as much.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp >= end) return 0;
+        uint256 standing = uint256(t.platformFeeBps) + taxBps;
+        if (t.openingFeeStartBps <= standing) return 0;
+        // Never more than the whole duration, so the start figure bounds the fee even on a clock that ran back.
+        uint256 left = Math.min(end - block.timestamp, duration);
+        return Math.ceilDiv((t.openingFeeStartBps - standing) * left, duration);
+    }
+
+    /// @dev The Referrer Fee a buy pays, its rate: outside the window (an Opening Fee rate of zero) the rate
+    ///      the trade named, whole; inside it no more than the room the Platform Fee, the tax and the Opening
+    ///      Fee leave under the start figure. So at the launch's own second it is nothing, it grows as the
+    ///      schedule falls, it is whole once the schedule has fallen far enough, and the fees together never
+    ///      pass the start figure. A referrer is credited only what the buyer pays on top for naming it, and
+    ///      never a share of the Opening Fee (#246 review).
+    function _referrerBpsUnderTheStart(Terms memory t, uint256 referrerBps, uint256 taxBps, uint256 openingBps)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (openingBps == 0) return referrerBps;
+        // `_openingBps` returned above zero, so the start figure is above the Platform Fee and the tax, and
+        // never below them and the Opening Fee together.
+        uint256 room = uint256(t.openingFeeStartBps) - t.platformFeeBps - taxBps - openingBps;
+        return Math.min(referrerBps, room);
+    }
+
+    /// @dev Mints `opening` of the Quote Asset to the Tax Vault as claims, against the delta the hook is owed
+    ///      by the swap, and adds it to the pool's running total of Opening Fees, which the vault adds to the
+    ///      coin's Support Liquidity alone. No Credit grows by it.
+    function _bookOpeningFee(PoolId id, PoolKey calldata key, Terms memory t, uint256 opening) internal {
+        if (opening == 0) return;
+        Currency currency = t.quoteIsCurrency0 ? key.currency0 : key.currency1;
+        poolManager.mint(taxVault, currency.toId(), opening);
+        openingFeeBooked[id] += opening;
+        // The only call before it is the PoolManager's own `mint`.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit OpeningFeeBooked(id, currency, opening);
     }
 
     /// @dev A rate of a known gross amount, rounded up in the platform's favour.
@@ -761,10 +901,12 @@ contract StokerHook is BaseHook, IUnlockCallback {
 
     // ------------------------------------------------------------------ the Reference Price (#271)
 
-    /// @dev Called by every swap in a pool of ours before the pool moves. Every pool keeps a Reference Price,
-    ///      a standard coin's too: the Tax Vault spends for any coin that anyone has funded (#248), and a
-    ///      reference begun only once a coin was funded would begin at whatever price stood then, a lifted
-    ///      one among them. The pool's price now is the one that
+    /// @dev Called by every swap in a pool of ours before the pool moves. Every pool keeps a Reference Price
+    ///      for its whole life, a standard coin's too. #271 kept one for taxed pools, and #246 for every pool
+    ///      while its Opening Fee ran and after it only if one was booked. Since #248 the Tax Vault spends
+    ///      for any coin that anyone has funded, at any time, and a reference that stopped being followed
+    ///      would, when next read, have caught up with whatever price stood then, a lifted one among them. So
+    ///      it is followed from the pool's first swap and never stops. The pool's price now is the one that
     ///      has stood since the last swap (nothing else moves it: no removal, no donation, and the Tax Vault
     ///      adds Support Liquidity only beside the price), so the time since then is credited to it. A swap
     ///      in the same second as the last moves nothing, so a price lifted or dropped and undone inside one

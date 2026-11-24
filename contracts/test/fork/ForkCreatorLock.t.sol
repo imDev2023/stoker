@@ -40,6 +40,8 @@ contract ForkCreatorLockTest is ForkGraduationBase {
     function _aFifthSeedsFourFifths(uint256 pairing) internal {
         vm.prank(creator);
         (address coin, PoolId id) = factory.launch(_lockedParams(pairing, A_FIFTH, 7 days, 23 days));
+        // Past the Opening Fee (#246), so the crossing buy below trades as it would after the first seconds.
+        _pastOpening();
         PoolKey memory key = _keyOf(pairing, coin);
         StokerCreatorLock lock = StokerCreatorLock(factory.creatorLockOf(id));
         IERC20 c = IERC20(coin);

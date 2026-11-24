@@ -455,7 +455,18 @@ contract LadderTest is LadderTestBase {
     {
         return abi.encodePacked(
             type(StokerFactory).creationCode,
-            abi.encode(pm, registry, PLATFORM_FEE_BPS, first, second, top, bytes32(0), vault)
+            abi.encode(
+                pm,
+                registry,
+                PLATFORM_FEE_BPS,
+                first,
+                second,
+                top,
+                bytes32(0),
+                vault,
+                OPENING_FEE_START_BPS,
+                OPENING_FEE_DURATION
+            )
         );
     }
 }

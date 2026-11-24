@@ -54,6 +54,12 @@ interface IStokerLaunches {
 ///         claims, the native asset included; only the holders' part leaves the PoolManager, and only to the
 ///         Distributor.
 ///
+///         Every Launch's Opening Fee (#246, ADR 0026) reaches this vault the same way, as claims with a running
+///         total of its own per pool (`openingFeeBooked`), and all of it is added to that coin's Support
+///         Liquidity part, whatever the Launch's type: a standard coin's only income is its Opening Fee, which
+///         `addSupport` places as it places a Stoke Launch's tax. While a Launch's Opening Fee runs, this vault
+///         makes no buy in its pool, so neither the burn's nor the holders' part pays it.
+///
 ///         Anyone may also fund a coin's burn or its Support Liquidity with that coin's Quote Asset
 ///         (`fundBurn`, `fundSupport`, #248): a Creator Earnings Destination of the burn or of the liquidity
 ///         does so with its coin's earnings. What was funded joins what `burn` and `addSupport` spend, under
@@ -126,6 +132,7 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         Currency quote;
         Currency coin;
         uint256 booked;
+        uint256 openingBooked;
         StokerHook hook;
     }
 
@@ -245,8 +252,9 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         Books storage b = _books[p.id];
         _checkInterval(b.lastSupportAt);
         Prices memory px = _prices(p);
-        // The coin's tax first, then what was funded for it (#248): one piece, one position, one cap.
-        uint256 taxWaiting = _part(p.booked, p.terms.liquidityShareBps) - b.supportSpent;
+        // The coin's own part first (its tax's share and every Opening Fee, #246), then what was funded for
+        // it (#248): one piece, one position, one cap.
+        uint256 taxWaiting = _supportPart(p) - b.supportSpent;
         uint256 amount = _min(taxWaiting + (b.supportFunded - b.supportFundedSpent), _pieceCap(p, px));
         if (amount == 0) revert NothingToSpend();
 
@@ -281,6 +289,7 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
     ///         the Platform Fee like any buy and no tax (see the hook's `_taxBps`).
     function burn(PoolKey calldata key) external nonReentrant returns (uint256 spent, uint256 burned) {
         Pool memory p = _load(key);
+        _checkOpeningOver(p.terms);
         Books storage b = _books[p.id];
         _checkInterval(b.lastBuyAt);
         Prices memory px = _prices(p);
@@ -310,6 +319,7 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
     function buyForHolders(PoolKey calldata key) external nonReentrant returns (uint256 spent, uint256 bought) {
         Pool memory p = _load(key);
         if (p.terms.payoutAsset != StokerHook.PayoutAsset.Coin) revert NothingToSpend();
+        _checkOpeningOver(p.terms);
         Books storage b = _books[p.id];
         _checkInterval(b.lastHoldersBuyAt);
         Prices memory px = _prices(p);
@@ -503,7 +513,24 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         if (!p.terms.registered) revert NotAStokerPool();
         (p.quote, p.coin) = p.terms.quoteIsCurrency0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
         p.booked = h.taxBooked(p.id);
+        p.openingBooked = h.openingFeeBooked(p.id);
         p.hook = h;
+    }
+
+    /// @dev The coin's Support Liquidity part so far: its share of the tax, rounded down, and every Opening Fee
+    ///      its buys paid (#246), which is Support Liquidity alone. It only ever grows.
+    function _supportPart(Pool memory p) internal pure returns (uint256) {
+        return _part(p.booked, p.terms.liquidityShareBps) + p.openingBooked;
+    }
+
+    /// @dev No buy of this vault's runs while the Launch's Opening Fee does, checked first in `burn` and
+    ///      `buyForHolders`, before the Reference Price's band (#271): it would pay up to the start figure,
+    ///      moving the burn's or the holders' Quote Asset into Support Liquidity, mixing parts the Launch fixed,
+    ///      and no buy but the Creator's First Buy is exempt from it (ADR 0026). The first may come at the end.
+    function _checkOpeningOver(StokerHook.Terms memory t) internal view {
+        uint256 openAt = uint256(t.launchedAt) + t.openingFeeDuration;
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp < openAt) revert TooSoon(openAt);
     }
 
     /// @dev The pool's price and its Reference Price, read from the hook as the next swap would find it.
@@ -643,8 +670,8 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         return _pieceCap(p, _prices(p));
     }
 
-    /// @notice What waits for each path of one coin's tax: the Reward Burn's, the Support Liquidity's and the
-    ///         holders' Quote Asset, and the coins bought for the holders.
+    /// @notice What waits for each path of one coin's tax: the Reward Burn's, the Support Liquidity's (every
+    ///         Opening Fee among it, #246) and the holders' Quote Asset, and the coins bought for the holders.
     function waiting(PoolKey calldata key)
         external
         view
@@ -653,7 +680,7 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         Pool memory p = _load(key);
         Books storage b = _books[p.id];
         burnPart = _part(p.booked, p.terms.burnShareBps) - b.burnSpent;
-        supportPart = _part(p.booked, p.terms.liquidityShareBps) - b.supportSpent;
+        supportPart = _supportPart(p) - b.supportSpent;
         holdersPart = _part(p.booked, _holdersShare(p.terms)) - b.holdersSpent;
         holdersCoins = b.holdersCoins;
     }

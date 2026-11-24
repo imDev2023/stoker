@@ -84,10 +84,10 @@ contract TaxReferenceGasTest is TaxLocalBase {
     }
 
     /// What a swap costs against `main` before the Reference Price, measured and bounded. Until #248 a
-    /// standard coin's swap skipped the reference and cost what it did (80 to 159 gas more); since #248 every
-    /// pool keeps one, since anyone may fund any coin's burn or Support Liquidity, and every swap also reads
-    /// the coin's Creator Tier and adds to its book of Creator Credits. So a standard swap and a taxed one
-    /// now pay the same sum over what each cost on `main`.
+    /// standard coin's swap skipped the reference once its Opening Fee window had passed with nothing booked;
+    /// since #248 every pool keeps one for life, since anyone may fund any coin's burn or Support Liquidity,
+    /// and every swap also reads the coin's Creator Tier and adds to its book of Creator Credits. So a
+    /// standard swap and a taxed one now pay about the same sum over what each cost on `main`.
     function test_gas_everySwapMeasured_andBounded() public {
         uint256 worst;
         uint256 least = type(uint256).max;
@@ -109,17 +109,19 @@ contract TaxReferenceGasTest is TaxLocalBase {
                 if (uint256(delta) < least) least = uint256(delta);
             }
         }
-        assertLe(worst, SWAP_BOUND, "a swap's reference and its Creator book are bounded");
-        assertLe(worst - least, 200, "a standard swap and a taxed one pay the same for them");
+        assertLe(worst, SWAP_BOUND, "a swap's reference, its Creator book and its Opening Fee terms are bounded");
+        assertLe(worst - least, 1_100, "a standard swap and a taxed one pay about the same for them");
     }
 
-    /// Measured on 2026-11-24 with #248: 15,816 to 15,916 gas more than on `main` at 6c33d3f for every kind
-    /// and every swap type once #244's hold is taken off (15,921 to 16,020 before #244 was merged in), each swap in a new second with every account cold. About 7,800 of it is the
-    /// Reference Price (#271: its slot read cold and written, and the pool's price read from the
-    /// PoolManager), which a taxed swap has paid since #271 and a standard one pays since #248; about 8,200
-    /// is #248's own: the coin's tier and book (one slot read cold and written, 5,000) and the Launch's terms
-    /// reaching a third slot for the top tier's share (2,200), the rest the arithmetic and the larger hook.
-    uint256 internal constant SWAP_BOUND = 16_500;
+    /// Measured on 2026-11-24 with #248, #246 and #244 merged in: 16,685 to 17,588 gas more than on `main` at
+    /// 6c33d3f for every kind and every swap type once #244's hold is taken off, each swap in a new second with
+    /// every account cold. About 7,800 of it is the Reference Price (#271: its slot read cold and written, and
+    /// the pool's price read from the PoolManager), which every pool pays since #248; about 5,000 is the coin's
+    /// Creator Tier and its book of Creator Credits (#248: one slot read cold and written); and the rest is the
+    /// terms' third slot, which the Opening Fee's terms (#246) and the ladder's shares (#248) share, with #246's
+    /// schedule and the arithmetic of a larger hook. Before #246 was merged in the same harness read 15,816 to
+    /// 15,916.
+    uint256 internal constant SWAP_BOUND = 18_000;
     /// What #244's Graduation Hold adds to a pool's first swap in a transaction, standard or taxed: the hold's
     /// record read cold and written (`lastSwapAt`), the pool's price read, and a transient flag set. Measured
     /// on 2026-11-24 at 8,713 to 8,793 gas by #244, and taken off each figure above.
