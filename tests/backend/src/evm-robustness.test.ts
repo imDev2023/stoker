@@ -6,7 +6,7 @@ import { ChainList, LaunchSummary, TradeList } from "@launchpad/contract";
 import { NATIVE, ROBINHOOD_CHAIN, taxVaultAbi } from "@launchpad/evm";
 import { startApi, freePort, GRADUATION_WATCH_CRON } from "@launchpad/stack";
 import { env } from "./client";
-import { clients, evmWallet, launchCoin, listQuote, operatorAlerts, runIndexer, strictRpc, swapExactIn } from "./evm";
+import { balanceOf, clients, evmWallet, launchCoin, listQuote, operatorAlerts, runIndexer, strictRpc, swapExactIn } from "./evm";
 
 const hasEvm = inject("harness").evm !== null;
 const operator = () => ({ authorization: `Bearer ${env().operatorToken}` });
@@ -91,6 +91,11 @@ describe.skipIf(!hasEvm)("EVM chain: the Indexer stays up", () => {
     const stranger = await evmWallet();
     const l = await launchCoin(await evmWallet(), { reward: { taxBps: 500, burnShareBps: 5000, liquidityShareBps: 0 } });
     await swapExactIn(trader, l, "buy", 5n * 10n ** 16n);
+    // A burn waits while the price stands above the Reference Price (#271), which rises toward a dearer coin by 2 ticks a
+    // minute: an hour later the trader sells it all back, the reference has followed the bought-up price by 120 ticks,
+    // and the pool, back near its opening price, stands well under it. Both trades paid the tax.
+    await clients().test.increaseTime({ seconds: 3600 });
+    await swapExactIn(trader, l, "sell", await balanceOf(l.coin, trader.address));
     const vault = inject("harness").evm!.taxVault;
     const hash = await clients().wallet(stranger.key).writeContract({ address: vault, abi: taxVaultAbi, functionName: "burn", args: [l.key] });
     expect((await clients().public.waitForTransactionReceipt({ hash })).status).toBe("success");
@@ -105,8 +110,8 @@ describe.skipIf(!hasEvm)("EVM chain: the Indexer stays up", () => {
     const coin = LaunchSummary.parse(await api(`/v1/launches/${l.coin}`));
     expect(coin.supply).toBe(supply.toString());
     expect(BigInt(coin.supply)).toBeLessThan(10n ** 30n - BigInt(burnBuy.baseAmount) + 1n);
-    // The vault is never a holder: the trader alone holds the coin by its trades.
-    expect(coin.market.holders).toBe(1);
+    // The vault is never a holder, and the trader sold out: nobody holds the coin by its trades.
+    expect(coin.market.holders).toBe(0);
   });
 
   test("every Solana job succeeds with EVM coins on the board, whatever the order of the files", async () => {

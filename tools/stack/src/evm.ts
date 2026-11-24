@@ -29,6 +29,13 @@ const GRADUATION_MULTIPLE = 20;
 const PIECE_BPS = 50;
 const PIECE_INTERVAL = 60;
 const SUPPORT_WIDTH_SPACINGS = 10;
+/**
+ * The Tax Vault's Reference Price (#271), as the contracts' tests set it: it rises 2 ticks a minute and falls at once
+ * (60,000 ticks a minute), and a Reward Burn or a holders' buy waits while the price stands above it (a band of 0).
+ */
+const REFERENCE_RISE = 2;
+const REFERENCE_FALL = 60_000;
+const BUY_BAND = 0;
 const REFERRER_FEE_CAP_BPS = 100;
 /** The hook's permission bits (StokerHook.getHookPermissions, contracts/test/utils/StokerTestBase.sol's HOOK_FLAGS). */
 const HOOK_FLAGS = (1n << 13n) | (1n << 11n) | (1n << 9n) | (1n << 7n) | (1n << 6n) | (1n << 5n) | (1n << 3n) | (1n << 2n);
@@ -100,7 +107,7 @@ export async function deployStoker(rpcUrl: string): Promise<EvmStackEnv> {
   const [distributorAt, vaultAt, factoryAt] = [0, 1, 2].map((i) => getContractAddress({ from: admin.address, nonce: BigInt(nonce + i) }));
   const distributor = (await deployed(await wallet.deployContract({ abi: distributorAbi, bytecode: distributorBytecode, args: [keys, vaultAt!] }))).contractAddress!;
   const taxVault = (
-    await deployed(await wallet.deployContract({ abi: taxVaultAbi, bytecode: taxVaultBytecode, args: [poolManager, factoryAt!, distributorAt!, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS] }))
+    await deployed(await wallet.deployContract({ abi: taxVaultAbi, bytecode: taxVaultBytecode, args: [poolManager, factoryAt!, distributorAt!, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS, REFERENCE_RISE, REFERENCE_FALL, BUY_BAND] }))
   ).contractAddress!;
   if (distributor.toLowerCase() !== distributorAt!.toLowerCase() || taxVault.toLowerCase() !== vaultAt!.toLowerCase()) {
     throw new Error("the Distributor and the Tax Vault did not land at the addresses they were made for");

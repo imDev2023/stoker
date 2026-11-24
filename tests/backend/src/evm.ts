@@ -122,7 +122,7 @@ export async function swapExactIn(trader: { key: Hex; address: Address }, l: Evm
   const input = encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [actions, params]);
   const hash = await wallet.writeContract({
     address: router, abi: routerAbi, functionName: "execute",
-    args: [encodePacked(["uint8"], [V4_SWAP]), [input], BigInt(Math.floor(Date.now() / 1000) + 3600)],
+    args: [encodePacked(["uint8"], [V4_SWAP]), [input], await deadline()],
     value: tokenIn === NATIVE ? amountIn : 0n,
   });
   const receipt = await pub.waitForTransactionReceipt({ hash });
@@ -175,13 +175,16 @@ export async function swapExactOut(
   ];
   const hash = await wallet.writeContract({
     address: router, abi: routerAbi, functionName: "execute",
-    args: [encodePacked(["uint8"], [V4_SWAP]), [encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [actions, params])], BigInt(Math.floor(Date.now() / 1000) + 3600)],
+    args: [encodePacked(["uint8"], [V4_SWAP]), [encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [actions, params])], await deadline()],
     value: tokenIn === NATIVE ? amountIn : 0n,
   });
   const receipt = await pub.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") throw new Error(`swap reverted: ${hash}`);
   return { receipt, amountIn, gas: gas + gasCost(receipt) };
 }
+
+/** An hour after the fork's own latest block: the fork's clock is its own (a test may move it), never the wall clock's. */
+const deadline = async () => (await clients().public.getBlock({ blockTag: "latest" })).timestamp + 3600n;
 
 /** What `who` holds of `asset` (the native asset by the zero address). */
 export async function balanceOf(asset: Address, who: Address) {

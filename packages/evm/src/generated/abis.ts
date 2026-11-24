@@ -1603,6 +1603,25 @@ export const stokerHookAbi = [
   },
   {
     "type": "function",
+    "name": "referenceTick",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "int24",
+        "internalType": "int24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "registerLaunch",
     "inputs": [
       {
@@ -2206,12 +2225,44 @@ export const stokerHookAbi = [
   },
   {
     "type": "error",
+    "name": "SafeCastOverflowedIntDowncast",
+    "inputs": [
+      {
+        "name": "bits",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "value",
+        "type": "int256",
+        "internalType": "int256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "SafeCastOverflowedIntToUint",
     "inputs": [
       {
         "name": "value",
         "type": "int256",
         "internalType": "int256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SafeCastOverflowedUintDowncast",
+    "inputs": [
+      {
+        "name": "bits",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "value",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },
@@ -3486,6 +3537,21 @@ export const taxVaultAbi = [
         "name": "supportWidthSpacings_",
         "type": "int24",
         "internalType": "int24"
+      },
+      {
+        "name": "referenceRiseTicksPerMinute_",
+        "type": "uint24",
+        "internalType": "uint24"
+      },
+      {
+        "name": "referenceFallTicksPerMinute_",
+        "type": "uint24",
+        "internalType": "uint24"
+      },
+      {
+        "name": "buyBandTicks_",
+        "type": "uint24",
+        "internalType": "uint24"
       }
     ],
     "stateMutability": "nonpayable"
@@ -3590,6 +3656,11 @@ export const taxVaultAbi = [
             "name": "lastSupportAt",
             "type": "uint64",
             "internalType": "uint64"
+          },
+          {
+            "name": "lastHoldersBuyAt",
+            "type": "uint64",
+            "internalType": "uint64"
           }
         ]
       }
@@ -3646,6 +3717,19 @@ export const taxVaultAbi = [
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "buyBandTicks",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint24",
+        "internalType": "uint24"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -3862,6 +3946,32 @@ export const taxVaultAbi = [
   },
   {
     "type": "function",
+    "name": "referenceFallTicksPerMinute",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint24",
+        "internalType": "uint24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "referenceRiseTicksPerMinute",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint24",
+        "internalType": "uint24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "supportWidthSpacings",
     "inputs": [],
     "outputs": [
@@ -4070,6 +4180,22 @@ export const taxVaultAbi = [
       }
     ],
     "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AboveReference",
+    "inputs": [
+      {
+        "name": "tick",
+        "type": "int24",
+        "internalType": "int24"
+      },
+      {
+        "name": "referenceTick",
+        "type": "int24",
+        "internalType": "int24"
+      }
+    ]
   },
   {
     "type": "error",
