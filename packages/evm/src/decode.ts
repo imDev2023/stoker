@@ -30,6 +30,8 @@ export type LaunchEvent = {
   burnShareBps: number;
   liquidityShareBps: number;
   payoutAsset: "quote" | "coin";
+  /** The Creator Lock the factory held out of the Seed Position (#244): its contract, its coins and its schedule; null without one. */
+  creatorLock: { lock: Address; amount: bigint; cliff: number; unlock: number } | null;
   logIndex: number;
 };
 
@@ -70,7 +72,9 @@ type Decoded =
   | { kind: "tax"; logIndex: number; poolId: Hex; tax: bigint }
   | { kind: "taxTerms"; logIndex: number; args: { poolId: Hex; launchType: number; taxBps: number; burnShareBps: number; liquidityShareBps: number; payoutAsset: number } }
   | { kind: "swap"; logIndex: number; poolId: Hex; sender: Address; amount0: bigint; amount1: bigint; sqrtPriceX96: bigint; feePips: number }
-  | { kind: "burned"; logIndex: number; poolId: Hex; coinsBurned: bigint };
+  | { kind: "burned"; logIndex: number; poolId: Hex; coinsBurned: bigint }
+  | { kind: "locked"; logIndex: number; poolId: Hex; lock: Address; amount: bigint; cliff: number; unlock: number }
+  | { kind: "graduated"; logIndex: number; poolId: Hex; graduatedAt: bigint };
 
 /** A receipt the decoder cannot read as our contracts log a swap: it can never be written, whatever the retries. */
 export class EvmDecodeError extends Error {}
@@ -86,10 +90,12 @@ function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
     try {
       if (isAddressEqual(log.address, c.factory)) {
         const e = decodeEventLog({ abi: stokerFactoryAbi, data: log.data, topics });
-        if (e.eventName === "Launched") out.push({ kind: "launched", logIndex, args: { ...e.args, coin: checksum(e.args.coin), creator: checksum(e.args.creator), quote: checksum(e.args.quote), creatorDestination: checksum(e.args.creatorDestination) } });
+        if (e.eventName === "CreatorLocked") out.push({ kind: "locked", logIndex, poolId: e.args.poolId, lock: checksum(e.args.lock), amount: e.args.amount, cliff: e.args.cliff, unlock: e.args.unlock });
+        else if (e.eventName === "Launched") out.push({ kind: "launched", logIndex, args: { ...e.args, coin: checksum(e.args.coin), creator: checksum(e.args.creator), quote: checksum(e.args.quote), creatorDestination: checksum(e.args.creatorDestination) } });
       } else if (isAddressEqual(log.address, c.hook)) {
         const e = decodeEventLog({ abi: stokerHookAbi, data: log.data, topics });
-        if (e.eventName === "LaunchRegistered") out.push({ kind: "registered", logIndex, args: e.args });
+        if (e.eventName === "Graduated") out.push({ kind: "graduated", logIndex, poolId: e.args.poolId, graduatedAt: e.args.graduatedAt });
+        else if (e.eventName === "LaunchRegistered") out.push({ kind: "registered", logIndex, args: e.args });
         else if (e.eventName === "FeeCredited") out.push({ kind: "fee", logIndex, poolId: e.args.poolId, fee: e.args.fee, creatorCredit: e.args.creatorCredit });
         else if (e.eventName === "TaxBooked") out.push({ kind: "tax", logIndex, poolId: e.args.poolId, tax: e.args.tax });
         else if (e.eventName === "TaxTermsRegistered") out.push({ kind: "taxTerms", logIndex, args: e.args });
@@ -117,6 +123,7 @@ export function decodeLaunches(logs: readonly Log[], c: ChainContracts): LaunchE
   const events = decodeLogs(logs, c);
   const terms = new Map(events.flatMap((e) => (e.kind === "registered" ? [[e.args.poolId, e.args] as const] : [])));
   const taxes = new Map(events.flatMap((e) => (e.kind === "taxTerms" ? [[e.args.poolId, e.args] as const] : [])));
+  const locks = new Map(events.flatMap((e) => (e.kind === "locked" ? [[e.poolId, e] as const] : [])));
   return events.flatMap((e) => {
     if (e.kind !== "launched") return [];
     const t = terms.get(e.args.poolId);
@@ -126,6 +133,7 @@ export function decodeLaunches(logs: readonly Log[], c: ChainContracts): LaunchE
       ...e.args, quoteIsCurrency0: t.quoteIsCurrency0, platformFeeBps: t.platformFeeBps, creatorShareBps: t.creatorShareBps, referrerFeeCapBps: t.referrerFeeCapBps,
       graduationMultiple: t.graduationMultiple, launchType: LAUNCH_TYPES[x.launchType]!, taxBps: x.taxBps, burnShareBps: x.burnShareBps,
       liquidityShareBps: x.liquidityShareBps, payoutAsset: PAYOUT_ASSETS[x.payoutAsset]!, logIndex: e.logIndex,
+      creatorLock: ((l) => (l ? { lock: l.lock, amount: l.amount, cliff: l.cliff, unlock: l.unlock } : null))(locks.get(e.args.poolId)),
     }];
   });
 }
@@ -213,4 +221,9 @@ export function decodeTrades(logs: readonly Log[], c: ChainContracts, pools: Rea
 /** The coins the Tax Vault burned in a receipt (#245's Reward Burn), by pool: each lowers its coin's supply. */
 export function decodeBurns(logs: readonly Log[], c: ChainContracts): { poolId: Hex; coinsBurned: bigint }[] {
   return decodeLogs(logs, c).flatMap((e) => (e.kind === "burned" ? [{ poolId: e.poolId, coinsBurned: e.coinsBurned }] : []));
+}
+
+/** The Graduations a receipt records (#244): a coin whose price held its Graduation Target for the Graduation Hold, once for good. */
+export function decodeGraduations(logs: readonly Log[], c: ChainContracts): { poolId: Hex; graduatedAt: bigint }[] {
+  return decodeLogs(logs, c).flatMap((e) => (e.kind === "graduated" ? [{ poolId: e.poolId, graduatedAt: e.graduatedAt }] : []));
 }

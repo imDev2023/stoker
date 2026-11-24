@@ -39,6 +39,64 @@ export const stokerFactoryAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_CREATOR_LOCK_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_CREATOR_LOCK_PART",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_CREATOR_LOCK_TIME",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "creatorLockOf",
+    "inputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "creatorShareBps",
     "inputs": [],
     "outputs": [
@@ -126,6 +184,21 @@ export const stokerFactoryAbi = [
             "name": "payoutAsset",
             "type": "uint8",
             "internalType": "enum StokerHook.PayoutAsset"
+          },
+          {
+            "name": "creatorLockBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "creatorLockCliff",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "creatorLockUnlock",
+            "type": "uint32",
+            "internalType": "uint32"
           }
         ]
       }
@@ -253,6 +326,21 @@ export const stokerFactoryAbi = [
             "name": "payoutAsset",
             "type": "uint8",
             "internalType": "enum StokerHook.PayoutAsset"
+          },
+          {
+            "name": "creatorLockBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "creatorLockCliff",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "creatorLockUnlock",
+            "type": "uint32",
+            "internalType": "uint32"
           }
         ]
       },
@@ -395,6 +483,49 @@ export const stokerFactoryAbi = [
   },
   {
     "type": "event",
+    "name": "CreatorLocked",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "lock",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "creator",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "cliff",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      },
+      {
+        "name": "unlock",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Launched",
     "inputs": [
       {
@@ -480,6 +611,27 @@ export const stokerFactoryAbi = [
     "type": "error",
     "name": "FailedInnerCall",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidCreatorLock",
+    "inputs": [
+      {
+        "name": "bps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "cliff",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "unlock",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
   },
   {
     "type": "error",
@@ -621,6 +773,19 @@ export const stokerHookAbi = [
   {
     "type": "receive",
     "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "GRADUATION_HOLD",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1546,6 +1711,91 @@ export const stokerHookAbi = [
   },
   {
     "type": "function",
+    "name": "graduate",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "graduationNow",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct StokerHook.Graduation",
+        "components": [
+          {
+            "name": "holdSince",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "graduatedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "lastSwapAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "graduationOf",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct StokerHook.Graduation",
+        "components": [
+          {
+            "name": "holdSince",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "graduatedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "lastSwapAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "keys",
     "inputs": [],
     "outputs": [
@@ -1993,6 +2243,69 @@ export const stokerHookAbi = [
   },
   {
     "type": "event",
+    "name": "Graduated",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "graduatedAt",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "holdSince",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "GraduationHoldCleared",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "since",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "GraduationHoldStarted",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "since",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "LaunchRegistered",
     "inputs": [
       {
@@ -2153,6 +2466,11 @@ export const stokerHookAbi = [
   },
   {
     "type": "error",
+    "name": "AlreadyGraduated",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "AlreadyRegistered",
     "inputs": []
   },
@@ -2160,6 +2478,17 @@ export const stokerHookAbi = [
     "type": "error",
     "name": "DonationsRefused",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "GraduationHoldNotComplete",
+    "inputs": [
+      {
+        "name": "holdSince",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
@@ -2290,6 +2619,11 @@ export const stokerHookAbi = [
   {
     "type": "error",
     "name": "SwapTooSmall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SwappedThisTransaction",
     "inputs": []
   },
   {

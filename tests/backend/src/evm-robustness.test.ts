@@ -4,9 +4,11 @@ import { afterAll, beforeAll, describe, expect, inject, test } from "vitest";
 import { erc20Abi, parseAbi, type Address } from "viem";
 import { ChainList, LaunchSummary, TradeList } from "@launchpad/contract";
 import { NATIVE, ROBINHOOD_CHAIN, taxVaultAbi } from "@launchpad/evm";
-import { startApi, freePort, GRADUATION_WATCH_CRON } from "@launchpad/stack";
+import { spawn, type ChildProcess } from "node:child_process";
+import postgres from "postgres";
+import { deployStoker, deploymentOf, forkArgs, freePort, GRADUATION_WATCH_CRON, runMigrations, startApi, type EvmStackEnv } from "@launchpad/stack";
 import { env } from "./client";
-import { balanceOf, clients, SWAP_GAS, whyReverted, evmWallet, launchCoin, listQuote, operatorAlerts, runIndexer, strictRpc, swapExactIn } from "./evm";
+import { balanceOf, clients, onFork, SWAP_GAS, whyReverted, evmWallet, launchCoin, listQuote, operatorAlerts, runIndexer, strictRpc, swapExactIn } from "./evm";
 
 const hasEvm = inject("harness").evm !== null;
 const operator = () => ({ authorization: `Bearer ${env().operatorToken}` });
@@ -222,5 +224,72 @@ describe.skipIf(!hasEvm)("EVM chain: a stricter RPC, a run's budget, and a deplo
     // (each API names its own URL in a coin's image, so the coins are compared by address)
     const mints = async (base: string) => ((await api("/v1/launches?chain=solana&limit=20", base)) as { launches: { mint: string }[] }).launches.map((x) => x.mint);
     expect(await mints(brokenApi.url)).toEqual(await mints(env().apiUrl));
+  });
+});
+
+/**
+ * Graduation (#244) needs the price held at the Graduation Target for an hour of the chain's own time, and moving the
+ * stack's fork's clock would date every later coin in the future on the shared board; so this runs on a fork, a
+ * database and an API of its own.
+ */
+describe.skipIf(!hasEvm || !process.env.ROBINHOOD_RPC_URL)("EVM chain: Graduation, on a fork of its own", () => {
+  let anvil: ChildProcess;
+  let fork: EvmStackEnv;
+  let api3: Awaited<ReturnType<typeof startApi>>;
+  const database = `launchpad_graduation_${process.pid}`;
+
+  beforeAll(async () => {
+    const e = inject("harness");
+    const port = await freePort();
+    anvil = spawn("anvil", forkArgs(process.env.ROBINHOOD_RPC_URL!, port), { stdio: "ignore" });
+    const rpcUrl = `http://127.0.0.1:${port}`;
+    for (let i = 0; i < 400; i++) {
+      const up = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }) })
+        .then((r) => r.ok)
+        .catch(() => false);
+      if (up) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    fork = await deployStoker(rpcUrl);
+    const admin = postgres(e.databaseAdminUrl, { max: 1, onnotice: () => {} });
+    await admin.unsafe(`create database "${database}" owner launchpad_stack`);
+    await admin.end();
+    const url = new URL(e.databaseUrl);
+    url.pathname = `/${database}`;
+    await runMigrations(url.toString());
+    const apiPort = await freePort();
+    api3 = await startApi({
+      port: apiPort, databaseUrl: url.toString(),
+      vars: { ...e.apiVars, PUBLIC_API_URL: `http://127.0.0.1:${apiPort}`, ROBINHOOD_RPC_URL: rpcUrl, EVM_DEPLOYMENTS: JSON.stringify(deploymentOf(fork)) },
+    });
+  }, 300_000);
+
+  afterAll(async () => {
+    await api3?.stop();
+    anvil?.kill("SIGTERM");
+    const admin = postgres(inject("harness").databaseAdminUrl, { max: 1, onnotice: () => {} });
+    await admin.unsafe(`drop database if exists "${database}" with (force)`).catch(() => undefined);
+    await admin.end();
+  });
+
+  test("a coin that holds its Graduation Target for the Graduation Hold is graduated, with the transaction that recorded it", async () => {
+    await onFork(fork, async () => {
+      const trader = await evmWallet(1_000n);
+      const l = await launchCoin(await evmWallet());
+      // Well past twenty times the start price: the whole supply opens worth about 1.7 ETH.
+      await swapExactIn(trader, l, "buy", 50n * 10n ** 18n);
+      await runIndexer(api3.url);
+      expect(LaunchSummary.parse(await api(`/v1/launches/${l.coin}`, api3.url)).graduation).toBeNull();
+
+      // An hour of the fork's time later, the next swap records Graduation, once.
+      await clients().test.increaseTime({ seconds: 3_601 });
+      await clients().test.mine({ blocks: 1 });
+      const { receipt } = await swapExactIn(trader, l, "buy", 10n ** 15n);
+      const run = (await runIndexer(api3.url)) as { summary: { chains: { graduated: number }[] } };
+      expect(run.summary.chains[0]!.graduated).toBe(1);
+      const coin = LaunchSummary.parse(await api(`/v1/launches/${l.coin}`, api3.url));
+      expect(coin.graduation).toMatchObject({ pool: l.poolId, signature: receipt.transactionHash, fee: null, creatorTier: null });
+      expect(coin.curve.status).toBe("graduated");
+    });
   });
 });

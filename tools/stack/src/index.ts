@@ -19,6 +19,8 @@ import { startXStandIn } from "./x";
 import { deployStoker, deploymentOf, forkArgs, type EvmStackEnv } from "./evm";
 
 export type { EvmStackEnv } from "./evm";
+export { deployStoker, deploymentOf, forkArgs } from "./evm";
+export { runMigrations } from "@launchpad/db/migrate";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 

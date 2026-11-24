@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Chain, ChainAddress } from "./chains";
+import { Chain, ChainAddress, PoolRef } from "./chains";
 import { CoinCreatorTier } from "./ladder";
 
 /**
@@ -257,7 +257,8 @@ export const GraduationFee = z.object({
 export type GraduationFee = z.infer<typeof GraduationFee>;
 
 export const Graduation = z.object({
-  pool: base58,
+  /** Its Raydium CPMM pool on Solana; on an EVM chain the coin's own v4 pool id, where it has traded from launch (#244). */
+  pool: PoolRef,
   /** Raydium's migration of the curve into the pool. */
   signature: z.string(),
   graduatedAt: z.iso.datetime(),

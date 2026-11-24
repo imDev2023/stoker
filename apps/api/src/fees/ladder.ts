@@ -129,6 +129,8 @@ export async function recordCreatorTiers(db: Db, connection: Connection, daySeco
       .select({ mint: graduations.mint, counted: graduations.activeDays, tier: sql<number>`coalesce(max(${creatorTiers.tier}), 1)::int` })
       .from(graduations)
       .leftJoin(creatorTiers, eq(creatorTiers.mint, graduations.mint))
+      // Solana's graduated coins alone: an EVM coin's tier is raised by the ladder key on its chain (#248).
+      .where(eq(graduations.chain, "solana"))
       .groupBy(graduations.mint, graduations.activeDays)
       .having(sql`coalesce(max(${creatorTiers.tier}), 1) < ${TOP_TIER}::int`)
       .orderBy(asc(graduations.mint)),

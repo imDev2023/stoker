@@ -189,7 +189,8 @@ async function findMigrationFeeKeys(db: Db, connection: Connection, cfg: Config,
     .from(graduations)
     // Our own additions are a Creator's buybacks (ADR 0011) and the Burn's and the Flywheel's (#184), whose locked
     // position is the destination of the coins' entry on the Ledger.
-    .where(sql`not exists (
+    // Solana's pools alone: an EVM coin's pool has no Fee Key (ADR 0027, #252).
+    .where(sql`${graduations.chain} = 'solana' and not exists (
       select 1 from ${feeKeys} where ${feeKeys.pool} = ${graduations.pool}
         and ${feeKeys.nftMint} not in (select ${creatorBuybacks.feeKey} from ${creatorBuybacks} where ${isNotNull(creatorBuybacks.feeKey)})
         and ${feeKeys.lockedLiquidity} not in (

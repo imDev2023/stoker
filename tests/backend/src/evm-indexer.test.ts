@@ -213,6 +213,15 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork", () => 
     expect(Number(referrerFee) / Number(amountIn)).toBeCloseTo(0.005, 6);
   });
 
+  test("a Creator Lock is on the coin as the factory held it out of the Seed Position", async () => {
+    const week = 7 * 86_400;
+    const l = await launchCoin(await evmWallet(), { lock: { bps: 1000, cliff: week, unlock: week } });
+    await runIndexer();
+    const coin = LaunchSummary.parse(await api(`/v1/launches/${l.coin}`));
+    expect(coin.creatorLock).toEqual({ bps: 1000, amount: (10n ** 29n).toString(), cliffSeconds: week, unlockSeconds: week });
+    expect(coin.graduation).toBeNull();
+  });
+
   test("an exact-out sell appears with exactly what the wallet received and the coins it gave", async () => {
     const trader = await evmWallet();
     const l = await launchCoin(await evmWallet());

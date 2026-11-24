@@ -8,7 +8,19 @@ import { privateKeyToAccount } from "viem/accounts";
 import { quoteRegistryAbi, stokerFactoryAbi, NATIVE, ROBINHOOD_CHAIN } from "@launchpad/evm";
 import { env } from "./client";
 
-export const evm = () => env().evm;
+let otherFork: NonNullable<ReturnType<typeof env>["evm"]> | null = null;
+/** The fork every helper here acts on: the stack's, or another one while `onFork` runs. */
+export const evm = () => otherFork ?? env().evm;
+
+/** Runs `work` with every helper here acting on another fork (one a test started for itself), then back on the stack's. */
+export async function onFork<T>(fork: NonNullable<ReturnType<typeof env>["evm"]>, work: () => Promise<T>): Promise<T> {
+  otherFork = fork;
+  try {
+    return await work();
+  } finally {
+    otherFork = null;
+  }
+}
 
 /** The fork's chain, as viem needs it. */
 const chainOf = (rpcUrl: string) => ({
@@ -19,7 +31,8 @@ const chainOf = (rpcUrl: string) => ({
 export function clients() {
   const e = evm()!;
   const chain = chainOf(e.rpcUrl);
-  const transport = http(e.rpcUrl);
+  // A fork under a loaded Mac can take more than viem's 10 seconds to mine a hundred blocks.
+  const transport = http(e.rpcUrl, { timeout: 60_000 });
   return {
     public: createPublicClient({ chain, transport }),
     test: createTestClient({ chain, transport, mode: "anvil" }).extend(publicActions).extend(walletActions),
@@ -46,7 +59,10 @@ export const LAUNCH_TYPE = { standard: 0, reward: 1, liquidity: 2 } as const;
 
 export async function launchCoin(
   creator: { key: Hex },
-  opts: { quote?: Address; firstBuy?: bigint; name?: string; symbol?: string; reward?: { taxBps: number; burnShareBps: number; liquidityShareBps: number } } = {},
+  opts: {
+    quote?: Address; firstBuy?: bigint; name?: string; symbol?: string; reward?: { taxBps: number; burnShareBps: number; liquidityShareBps: number };
+    lock?: { bps: number; cliff: number; unlock: number };
+  } = {},
 ): Promise<EvmLaunch> {
   const e = evm()!;
   const quote = opts.quote ?? NATIVE;
@@ -57,7 +73,9 @@ export async function launchCoin(
     address: e.factory, abi: stokerFactoryAbi, functionName: "launch",
     args: [{ name: opts.name ?? `Fork Coin ${tag}`, symbol: opts.symbol ?? `F${tag}`, quote, salt: keccak256(toHex(tag)), creatorDestination: NATIVE, firstBuy,
       launchType: opts.reward ? LAUNCH_TYPE.reward : LAUNCH_TYPE.standard, taxBps: opts.reward?.taxBps ?? 0, burnShareBps: opts.reward?.burnShareBps ?? 0,
-      liquidityShareBps: opts.reward?.liquidityShareBps ?? 0, payoutAsset: 0 }],
+      liquidityShareBps: opts.reward?.liquidityShareBps ?? 0, payoutAsset: 0,
+      creatorLockBps: opts.lock?.bps ?? 0, creatorLockCliff: opts.lock?.cliff ?? 0, creatorLockUnlock: opts.lock?.unlock ?? 0 }],
+    gas: SWAP_GAS,
     value: quote === NATIVE ? firstBuy : 0n,
   });
   const receipt = await clients().public.waitForTransactionReceipt({ hash });

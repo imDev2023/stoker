@@ -4,10 +4,10 @@ import {
 } from "viem";
 import { and, eq, ne, sql } from "drizzle-orm";
 import {
-  checksum, decodeBurns, decodeLaunches, decodeTrades, EvmDecodeError, NATIVE, priceFromSqrtX96, priceFromStartTick, type ChainContracts, type LaunchEvent,
+  checksum, decodeBurns, decodeGraduations, decodeLaunches, decodeTrades, EvmDecodeError, NATIVE, priceFromSqrtX96, priceFromStartTick, type ChainContracts, type LaunchEvent,
   type PoolInfo,
 } from "@launchpad/evm";
-import { chainCursors, evmQuoteAssets, launches, launchMarkets, operatorAlerts, type Db } from "@launchpad/db";
+import { chainCursors, evmQuoteAssets, graduations, launches, launchMarkets, operatorAlerts, type Db } from "@launchpad/db";
 import { insertTrade, openMarket } from "../../market";
 import type { EvmChainConfig } from "./config";
 
@@ -29,6 +29,7 @@ export type EvmIndexRun = {
   launched: number;
   traded: number;
   burned: number;
+  graduated: number;
   /** Transactions that could never be written, each with why; each raised an `indexer_skipped` alert and the run went on. */
   skipped: { hash: string; error: string }[];
   /** The `eth_getLogs` range the run ended on, which the next starts from. */
@@ -93,7 +94,7 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig, client: PublicCli
   const from = cursor ? cursor.indexedBlock + 1 : c.fromBlock;
   let range = cursor?.logBlockRange ?? c.logBlockRange ?? c.profile.logBlockRange;
   const run: EvmIndexRun = {
-    chain: c.chain, from: from <= target ? from : null, to: null, head: Number(head.number), launched: 0, traded: 0, burned: 0, skipped: [], logBlockRange: range,
+    chain: c.chain, from: from <= target ? from : null, to: null, head: Number(head.number), launched: 0, traded: 0, burned: 0, graduated: 0, skipped: [], logBlockRange: range,
     leftForLater: false,
   };
   const pools = await knownPools(db, c);
@@ -133,6 +134,7 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig, client: PublicCli
         run.launched += written.launched;
         run.traded += written.traded;
         run.burned += written.burned;
+        run.graduated += written.graduated;
       } catch (e) {
         if (!isPermanent(e)) throw e;
         const error = (e as Error).message.split("\n")[0]!.slice(0, 300);
@@ -156,7 +158,7 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig, client: PublicCli
 async function writeTransaction(
   db: Db, c: EvmChainConfig, client: PublicClient, hash: Hex, contracts: ChainContracts, pools: Map<Hex, Pool>, timeOf: (block: bigint) => Promise<Date>,
 ) {
-  const written = { launched: 0, traded: 0, burned: 0 };
+  const written = { launched: 0, traded: 0, burned: 0, graduated: 0 };
   const receipt = await client.getTransactionReceipt({ hash });
   if (receipt.status !== "success") return written;
   const blockTime = await timeOf(receipt.blockNumber);
@@ -169,6 +171,17 @@ async function writeTransaction(
     const supply = await client.readContract({ address: pool.coin, abi: erc20Abi, functionName: "totalSupply", blockNumber: receipt.blockNumber });
     await db.update(launches).set({ supply: supply.toString() }).where(and(eq(launches.chain, c.chain), eq(launches.mint, pool.coin)));
     written.burned++;
+  }
+  // Graduation (#244): recorded once by the hook and never undone; it moves nothing and takes no fee (ADR 0024, 0027).
+  for (const g of decodeGraduations(receipt.logs, contracts)) {
+    const pool = pools.get(g.poolId);
+    if (!pool) continue;
+    const inserted = await db
+      .insert(graduations)
+      .values({ chain: c.chain, mint: pool.coin, pool: g.poolId, signature: receipt.transactionHash, slot: Number(receipt.blockNumber), graduatedAt: new Date(Number(g.graduatedAt) * 1000) })
+      .onConflictDoNothing()
+      .returning({ mint: graduations.mint });
+    written.graduated += inserted.length;
   }
   return written;
 }
@@ -231,8 +244,10 @@ async function writeLaunch(db: Db, c: EvmChainConfig, client: PublicClient, e: L
       metadataUri: "",
       decimals,
       supply: supply.toString(),
-      // The whole supply is the Seed Position's: there is no curve to sell from.
-      totalBaseSell: supply.toString(),
+      // The Seed Position holds the whole supply but a Creator Lock (#244): there is no curve to sell from.
+      totalBaseSell: (supply - (e.creatorLock?.amount ?? 0n)).toString(),
+      // A Creator Lock as the factory held it out (ADR 0023, #244): the coins, and its cliff and unlock time from Graduation.
+      ...(e.creatorLock ? { lockedAmount: e.creatorLock.amount.toString(), lockCliffSeconds: e.creatorLock.cliff, lockUnlockSeconds: e.creatorLock.unlock } : {}),
       // On an EVM chain the Graduation Target is a price (ADR 0024), written into the Launch's terms; Graduation is #244.
       graduationTarget: "0",
       // The tax terms the hook registered (#245): a Reward Launch's tax and shares, or a Stoke Launch's tax alone.
