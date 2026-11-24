@@ -96,8 +96,10 @@ contract TaxReferenceGasTest is TaxLocalBase {
             uint256[4] memory was = _onMain(Kind(k));
             emit log_named_uint("kind", k);
             for (uint256 i; i < 4; i++) {
+                // #244's Graduation Hold landed after these figures were recorded: every swap here is a
+                // pool's first in its transaction, and judges the hold (HOLD_JUDGEMENT), standard or taxed.
                 // forge-lint: disable-next-line(unsafe-typecast)
-                int256 delta = int256(g[i]) - int256(was[i]);
+                int256 delta = int256(g[i]) - int256(was[i]) - int256(HOLD_JUDGEMENT);
                 emit log_named_uint("  gas", g[i]);
                 emit log_named_int("  against main", delta);
                 assertGt(delta, 0, "no swap got cheaper");
@@ -118,4 +120,8 @@ contract TaxReferenceGasTest is TaxLocalBase {
     /// is #248's own: the coin's tier and book (one slot read cold and written, 5,000) and the Launch's terms
     /// reaching a third slot for the top tier's share (2,200), the rest the arithmetic and the larger hook.
     uint256 internal constant SWAP_BOUND = 16_500;
+    /// What #244's Graduation Hold adds to a pool's first swap in a transaction, standard or taxed: the hold's
+    /// record read cold and written (`lastSwapAt`), the pool's price read, and a transient flag set. Measured
+    /// on 2026-11-24 at 8,713 to 8,793 gas by #244, and taken off each figure above.
+    uint256 internal constant HOLD_JUDGEMENT = 8_750;
 }
