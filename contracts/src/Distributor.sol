@@ -104,19 +104,15 @@ contract Distributor is IHoldersPart {
         bytes32[] proof;
     }
 
-    /// @notice What this contract holds for each coin's holders, by asset: raised by a deposit, lowered by
-    ///         a payment, and by nothing else.
-    mapping(address coin => mapping(Currency asset => uint256)) public potOf;
-    /// @dev What a new root for the coin may owe: its pot less what its live roots still owe. Kept rather
-    ///      than what is reserved, so a payment, which lowers the pot and what is reserved alike, writes the
-    ///      pot alone.
-    mapping(address coin => mapping(Currency asset => uint256)) internal _available;
-    /// @notice What this contract holds of each coin's Creator earnings for its holders, by asset (#248):
-    ///         raised by its Destination's deposit, lowered by a payment of an earnings round, and by
-    ///         nothing else. Apart from `potOf`, the Reward Tax's.
-    mapping(address coin => mapping(Currency asset => uint256)) public earningsPotOf;
-    /// @dev What a new earnings root for the coin may owe.
-    mapping(address coin => mapping(Currency asset => uint256)) internal _earningsAvailable;
+    /// @dev What this contract holds for each coin's holders, by the pot's source and by asset: raised by a
+    ///      deposit of that source, lowered by a payment of a round of that source, and by nothing else.
+    ///      Nothing ever moves between a coin's Reward Tax pot and its earnings pot (#248). Read through
+    ///      `potOf` and `earningsPotOf`.
+    mapping(Source source => mapping(address coin => mapping(Currency asset => uint256))) internal _pots;
+    /// @dev What a new root of a source may owe for the coin: that pot less what its live roots still owe.
+    ///      Kept rather than what is reserved, so a payment, which lowers the pot and what is reserved alike,
+    ///      writes the pot alone.
+    mapping(Source source => mapping(address coin => mapping(Currency asset => uint256))) internal _available;
     /// @notice The number of roots ever posted; rounds are numbered from 1.
     uint256 public roundCount;
     mapping(uint256 round => Round) internal _rounds;
@@ -255,11 +251,11 @@ contract Distributor is IHoldersPart {
         uint256 next = roundCount + 1;
         if (round != next) revert WrongRound(round, next);
         if (coin == address(0) || root == bytes32(0) || total == 0) revert InvalidRoot();
-        uint256 available = _availableIn(source)[coin][asset];
+        uint256 available = _available[source][coin][asset];
         if (total > available) revert RootExceedsPot(total, available);
 
         roundCount = round;
-        _availableIn(source)[coin][asset] = available - total;
+        _available[source][coin][asset] = available - total;
         _rounds[round] = Round({
             coin: coin,
             // Timestamps fit a uint40 until the year 36812.
@@ -314,7 +310,7 @@ contract Distributor is IHoldersPart {
     function _cancel(uint256 round, Round storage r) internal {
         r.cancelled = true;
         uint256 released = r.total - r.paid;
-        _availableIn(r.source)[r.coin][r.asset] += released;
+        _available[r.source][r.coin][r.asset] += released;
         // The call before it is our own keys' view.
         // forge-lint: disable-next-line(reentrancy-events)
         emit RootCancelled(round, released);
@@ -362,7 +358,7 @@ contract Distributor is IHoldersPart {
                 // forge-lint: disable-next-line(unsafe-typecast)
                 r.paid = uint128(paid);
                 // What it reserved is paid: the pot falls, and what a new root may owe stays as it was.
-                _potIn(r.source)[r.coin][asset] -= c.amount;
+                _pots[r.source][r.coin][asset] -= c.amount;
                 sum += c.amount;
                 took[end] = true;
             }
@@ -386,25 +382,8 @@ contract Distributor is IHoldersPart {
     /// @dev Raises one of a coin's pots and what a new root of that source may owe from it, together, so every
     ///      unit deposited can be reserved by a root.
     function _addToPot(Source source, address coin, Currency asset, uint256 amount) internal {
-        _potIn(source)[coin][asset] += amount;
-        _availableIn(source)[coin][asset] += amount;
-    }
-
-    /// @dev A source's pots: the Reward Tax's or the Creator earnings', which nothing ever moves between.
-    function _potIn(Source source)
-        internal
-        view
-        returns (mapping(address coin => mapping(Currency asset => uint256)) storage)
-    {
-        return source == Source.Tax ? potOf : earningsPotOf;
-    }
-
-    function _availableIn(Source source)
-        internal
-        view
-        returns (mapping(address coin => mapping(Currency asset => uint256)) storage)
-    {
-        return source == Source.Tax ? _available : _earningsAvailable;
+        _pots[source][coin][asset] += amount;
+        _available[source][coin][asset] += amount;
     }
 
     /// @dev Puts a refused claim back as it was: owed to the same holder, by the same round, from the same
@@ -415,7 +394,7 @@ contract Distributor is IHoldersPart {
         // It was added by this call's own claim, so it fits.
         // forge-lint: disable-next-line(unsafe-typecast)
         r.paid -= uint128(amount);
-        _potIn(r.source)[r.coin][asset] += amount;
+        _pots[r.source][r.coin][asset] += amount;
         // forge-lint: disable-next-line(reentrancy-events)
         emit ClaimRefused(round, holder, asset, amount);
     }
@@ -498,23 +477,36 @@ contract Distributor is IHoldersPart {
         return _rounds[round];
     }
 
+    /// @notice What this contract holds of `coin`'s Reward Tax for its holders, in `asset`: raised by the Tax
+    ///         Vault's deposit, lowered by a payment of a Reward Round, and by nothing else.
+    function potOf(address coin, Currency asset) external view returns (uint256) {
+        return _pots[Source.Tax][coin][asset];
+    }
+
+    /// @notice What this contract holds of `coin`'s Creator earnings for its holders, in `asset` (#248):
+    ///         raised by its Destination's deposit, lowered by a payment of a round of source `earnings`, and
+    ///         by nothing else. Apart from `potOf`, the Reward Tax's.
+    function earningsPotOf(address coin, Currency asset) external view returns (uint256) {
+        return _pots[Source.Earnings][coin][asset];
+    }
+
     /// @notice What a new root for `coin` in `asset` may owe at most: its pot less what its live roots owe.
     function availableOf(address coin, Currency asset) external view returns (uint256) {
-        return _available[coin][asset];
+        return _available[Source.Tax][coin][asset];
     }
 
     /// @notice What a new earnings root for `coin` in `asset` may owe at most (#248).
     function earningsAvailableOf(address coin, Currency asset) external view returns (uint256) {
-        return _earningsAvailable[coin][asset];
-    }
-
-    /// @notice What `coin`'s live earnings roots still owe from its earnings pot in `asset`.
-    function earningsReservedOf(address coin, Currency asset) external view returns (uint256) {
-        return earningsPotOf[coin][asset] - _earningsAvailable[coin][asset];
+        return _available[Source.Earnings][coin][asset];
     }
 
     /// @notice What `coin`'s live roots still owe from its pot in `asset`: never more than the pot.
     function reservedOf(address coin, Currency asset) external view returns (uint256) {
-        return potOf[coin][asset] - _available[coin][asset];
+        return _pots[Source.Tax][coin][asset] - _available[Source.Tax][coin][asset];
+    }
+
+    /// @notice What `coin`'s live earnings roots still owe from its earnings pot in `asset`.
+    function earningsReservedOf(address coin, Currency asset) external view returns (uint256) {
+        return _pots[Source.Earnings][coin][asset] - _available[Source.Earnings][coin][asset];
     }
 }

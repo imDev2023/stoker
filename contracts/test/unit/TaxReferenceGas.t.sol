@@ -113,8 +113,8 @@ contract TaxReferenceGasTest is TaxLocalBase {
         assertLe(worst - least, 200, "a standard swap and a taxed one pay the same for them");
     }
 
-    /// Measured on 2026-11-24 with #248: 15,921 to 16,020 gas more than on `main` at 6c33d3f for every kind
-    /// and every swap type, each swap in a new second with every account cold. About 7,800 of it is the
+    /// Measured on 2026-11-24 with #248: 15,816 to 15,916 gas more than on `main` at 6c33d3f for every kind
+    /// and every swap type once #244's hold is taken off (15,921 to 16,020 before #244 was merged in), each swap in a new second with every account cold. About 7,800 of it is the
     /// Reference Price (#271: its slot read cold and written, and the pool's price read from the
     /// PoolManager), which a taxed swap has paid since #271 and a standard one pays since #248; about 8,200
     /// is #248's own: the coin's tier and book (one slot read cold and written, 5,000) and the Launch's terms

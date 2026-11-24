@@ -276,7 +276,7 @@ The vault now never spends a coin's tax at a price that was only just reached.
   The band is 0 because the fuzz found that a band of 200 let three of the vault's own buys go through back to back, each at the price the last one had just made; at 0 the vault's own buy is judged like anyone's, and on a quiet coin its buys raise the price by one piece and then no faster than the reference follows.
 - **What it costs.** A swap pays about 7,800 gas for its reference in a new second (one slot read cold and written, and the pool's price read from the PoolManager); a second swap in the same second reads the slot alone.
   Until #248 a standard coin's swap skipped it, for 80 to 159 gas; since #248 every pool keeps one, so a standard swap pays it too.
-  `TaxReferenceGas.t.sol` measures each of the four swap types in a standard and a taxed coin in every pool kind against figures recorded from `main` at 6c33d3f by the same harness: 15,921 to 16,020 gas more for every one of them, about 7,800 the reference and about 8,200 #248's own (the coin's tier and book of Creator Credits, one slot read cold and written, and the Launch's terms reaching a third slot).
+  `TaxReferenceGas.t.sol` measures each of the four swap types in a standard and a taxed coin in every pool kind against figures recorded from `main` at 6c33d3f by the same harness: 15,816 to 15,916 gas more for every one of them once #244's hold is taken off (15,921 to 16,020 before #244 was merged in), about 7,800 the reference and about 8,200 #248's own (the coin's tier and book of Creator Credits, one slot read cold and written, and the Launch's terms reaching a third slot).
   `addSupport` costs about 238,000 gas and `burn` about 245,000.
 
 The issue's table, the wallet's result in the mock Stock Token (the whole supply opens worth about 24.8), before and after:
@@ -421,7 +421,7 @@ REGISTRY=0x... ACTION=list QUOTE=0x... OPENING_VALUE=5000000000 MULTIPLE=20 CAP_
   The first run reads the chain; later runs read Foundry's cache under `~/.foundry/cache/rpc/4663/`.
 - CI (`.github/workflows/ci.yml`, job `contracts`) checks the format, builds with sizes, lints `src`, and runs every test that needs no RPC on every push, with deeper fuzz and invariant campaigns (`FOUNDRY_PROFILE=ci`); it runs the fork tests only where the repository has the `ROBINHOOD_RPC_URL` secret.
 
-Results on 2026-11-24 with #248, the Creator Ladder's key and the Destinations, with #271 merged in: 327 local tests (76 of #248's: the ladder, the vault's funding, the earnings pot, the Destinations and their guards, the held-price reproduction for earnings, the ladder's two campaigns and the Destinations' one, each with a test that drives its handler by hand) and 79 fork tests (15 of #248's) pass, the local ones under `FOUNDRY_PROFILE=ci` too; each of the 44 guards #248 adds, removed in turn, fails a named test (the PR lists them).
+Results on 2026-11-24 with #248, the Creator Ladder's key and the Destinations, with #271 and #244 merged in as each landed: 490 local tests (76 of #248's: the ladder, the vault's funding, the earnings pot, the Destinations and their guards, the held-price reproduction for earnings, the ladder's two campaigns and the Destinations' one, each with a test that drives its handler by hand) and 105 fork tests (15 of #248's) pass, the local ones under `FOUNDRY_PROFILE=ci` too; each of the 44 guards #248 adds, removed in turn, fails a named test (the PR lists them).
 Results on 2026-11-24, #244 with #243, #245, #247 and #271 merged in and the hold judged per transaction: 414 local tests (unit, fuzz, and every campaign's invariants, three of Graduation and the Creator Lock among them, one campaign per pairing) and 90 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too.
 Each of #244's guards, removed in turn, fails a named test (the PR lists them): fifteen in the hook as reworked, and the lock's and the factory's six; one was first missed and its test added.
 Results on 2026-11-24, #271 as its lane pushed it, with #247 merged in: 251 local tests (unit, fuzz, every invariant campaign, the held-price reproduction, its fuzz and the Reference Price's tests) and 64 fork tests pass, the local ones under `FOUNDRY_PROFILE=ci` too; the held-price fuzz also passed 60,000 runs.
@@ -437,8 +437,8 @@ Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test
 
 | Contract | Runtime | Initcode | #244, with #271 | #245 | #243 | #242 | #241 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `StokerFactory` | SIZE_FACTORY | 15,293 / 31,645 | 12,155 / 25,463 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
-| `StokerHook` | SIZE_HOOK | 14,247 / 15,483 | 11,461 / 12,447 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
+| `StokerFactory` | 16,008 | 33,990 | 15,293 / 31,645 | 12,155 / 25,463 | 11,267 / 22,852 | 10,397 / 20,389 | 10,228 / 18,059 |
+| `StokerHook` | 15,423 | 16,821 | 14,247 / 15,483 | 11,461 / 12,447 | 9,979 / 10,880 | 8,571 / 9,451 | 6,430 / 7,290 |
 | `StokerCreatorLock` | 1,955 | 2,288 | unchanged | new | new | new | new |
 | `TaxVault` | 14,824 | 15,545 | 12,128 / 12,835 | 11,417 / 11,947 | new | new | new |
 | `QuoteRegistry` | 3,740 | 3,965 | unchanged | unchanged | new | new | new |
@@ -448,13 +448,14 @@ Each of the 19 guards #243 adds or rests on, removed in turn, fails a named test
 | `StokerCoin` | 1,705 | 2,774 | unchanged | unchanged | unchanged | unchanged | unchanged |
 
 The factory grew by the lock's creation code, which it carries to deploy a lock, and #245's tax terms; it stays 9,283 bytes under the 24,576 limit, and the hook, with #271's Reference Price beside the hold, 10,329.
+With #248 the factory is 8,568 bytes under the limit and the hook 9,153; the Tax Vault, with its funding calls, is 9,752 under.
 
 Launch gas on the fork, a standard Launch: about 1.23M with a permit First Buy in NVDA, about 1.07M with a native First Buy (#245, the tax terms written beside the rest; #243: 1.22M and 1.06M; #242: 1.18M and 1.03M; the Listing's three figures and the Graduation Target are read and written into the terms).
 A swap costs about 8,000 gas more than in #242: the terms take a second slot and the Admin is read from the keys.
 A launch with a Creator Lock costs about 470,000 gas more than one without (882k against 1.36M with no First Buy, the coin as currency0; the same in the other pairings), almost all of it the lock's own code; a minimal-proxy clone would cost about a quarter of that, at the price of terms read from storage or code rather than immutables, which this slice does not take for a few cents on Robinhood Chain (`test_fork_lock_launchGas`).
 #244's hold adds 5,814 gas to a transaction's first swap that changes nothing, and up to 12,213 to one that starts, clears or records it (the table under "Graduation and the Creator Lock").
 Since #271 a taxed swap costs about 7,800 gas more in a new second (its Reference Price), and a standard one 80 to 159 (above).
-Since #248 every swap costs about 16,000 gas more than on `main` before #271, a standard coin's too: about 7,800 for the Reference Price every pool now keeps, and about 8,200 for the coin's Creator Tier, its book of Creator Credits and the terms' third slot. A standard swap through the test router is about 193,000 gas where it was 177,000.
+Since #248 every swap costs about 16,000 gas more than on `main` before #271, a standard coin's too, beside what #244's hold adds to a transaction's first swap: about 7,800 for the Reference Price every pool now keeps, and about 8,200 for the coin's Creator Tier, its book of Creator Credits and the terms' third slot. A standard swap through the test router is about 193,000 gas where it was 177,000.
 A native Payout Call to eight owners, five of them refusing (each spending its whole 50,000), took 321,867 gas on the fork.
 
 The Distributor's claims on the fork (#247), measured as #232 measured its minimal distributor (`docs/evm/research/robinhood-chain.md`, section 5): a round of 16,384 holders, every account and slot the claim touches marked cold, holders with no prior balance, and each total counting the 21,000 base and the calldata's gas beside the execution (`test/fork/ForkDistributorGas.t.sol`).
