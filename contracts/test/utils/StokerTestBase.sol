@@ -24,6 +24,7 @@ import {StokerKeys} from "../../src/StokerKeys.sol";
 import {QuoteRegistry} from "../../src/QuoteRegistry.sol";
 import {TaxVault} from "../../src/TaxVault.sol";
 import {HoldersPartStandIn} from "./HoldersPartStandIn.sol";
+import {IHoldersPart} from "../../src/interfaces/IHoldersPart.sol";
 
 /// @notice What the local tests and the fork tests share: deploying our contracts against a PoolManager,
 ///         launching, swapping, and reading the books from outside.
@@ -87,11 +88,13 @@ abstract contract StokerTestBase is Test {
         (creator, creatorKey) = makeAddrAndKey("creator");
         keys = new StokerKeys(platform);
         registry = new QuoteRegistry(keys, TICK_SPACING);
-        holdersPart = new HoldersPartStandIn();
+        // What the Tax Vault hands the holders' part to, made for the vault's future address (the next
+        // deployment after it): the stand-in here, the real Distributor in the Distributor's fixtures.
+        IHoldersPart part = _deployHoldersPart(vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1));
 
-        // The Tax Vault first, made for the factory's future address (the next deployment after it).
+        // The Tax Vault next, made for the factory's future address (the next deployment after it).
         address factoryAddr = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        taxVault = new TaxVault(pm, factoryAddr, holdersPart, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS);
+        taxVault = new TaxVault(pm, factoryAddr, part, PIECE_BPS, PIECE_INTERVAL, SUPPORT_WIDTH_SPACINGS);
 
         // Mine the hook's salt for the factory's future address with plain arithmetic: HookMiner also
         // reads each candidate's code, which on a fork is one RPC call per salt.
@@ -121,7 +124,7 @@ abstract contract StokerTestBase is Test {
     /// Deploys `initCode` from this contract through an external call, so `vm.expectRevert` sees the
     /// creation revert one call deep. A `new` in the test's own frame is a cheatcode deployment at the test's
     /// depth: an expected revert there ends the whole test as a pass, and every case after the first is never
-    /// run (gotcha 18).
+    /// run (gotcha 21).
     function create(bytes memory initCode) external returns (address a) {
         assembly ("memory-safe") {
             a := create(0, add(initCode, 0x20), mload(initCode))
@@ -130,6 +133,14 @@ abstract contract StokerTestBase is Test {
                 revert(0, returndatasize())
             }
         }
+    }
+
+    /// Deploys what the Tax Vault hands the holders' part to, in exactly one deployment, for the vault at
+    /// `taxVault_`, which is deployed next. The tax tests use the stand-in, which counts each deposit; the
+    /// Distributor's fixtures override this with the real Distributor (#247).
+    function _deployHoldersPart(address) internal virtual returns (IHoldersPart) {
+        holdersPart = new HoldersPartStandIn();
+        return holdersPart;
     }
 
     // ---------------------------------------------------------------- launching
