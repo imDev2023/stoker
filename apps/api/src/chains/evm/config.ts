@@ -22,7 +22,10 @@ function deployment(raw: unknown, i: number): EvmDeployment {
     if (!Number.isSafeInteger(v) || (v as number) < 1) throw fail(`${key} must be a whole number above zero`);
     return v as number;
   };
+  const quotes = d.quotes;
+  if (quotes !== undefined && !(Array.isArray(quotes) && quotes.every((q) => typeof q === "string" && ADDRESS.test(q)))) throw fail("quotes must be a list of addresses");
   return {
+    quotes: (quotes as string[] | undefined)?.map(checksum),
     chain: d.chain, factory: addr("factory"), hook: addr("hook"), registry: addr("registry"), keys: addr("keys"), taxVault: addr("taxVault"),
     fromBlock: d.fromBlock as number, logBlockRange: positive("logBlockRange"), maxRangesPerRun: positive("maxRangesPerRun"), maxRunSeconds: positive("maxRunSeconds"),
   };

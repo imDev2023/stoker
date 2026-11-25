@@ -6,7 +6,7 @@
  * Creator may reuse their own coins' name, ticker and image.
  */
 import { and, desc, gt, ne, sql } from "drizzle-orm";
-import type { CopyKind, CopyVerdict, ProtectedCoin } from "@launchpad/contract";
+import type { Chain, CopyKind, CopyVerdict, ProtectedCoin } from "@launchpad/contract";
 import { launches, type Db } from "@launchpad/db";
 import type { Config } from "../env";
 import { COPY_DISTANCE, hashDistance } from "./imageHash";
@@ -24,7 +24,7 @@ export type Candidate = {
 export type CopyVerdicts = { name: CopyVerdict | null; symbol: CopyVerdict | null; image: CopyVerdict | null };
 
 /** The launches inside their window at `now`, newest first, with everything the matcher reads. */
-type ProtectedRow = { mint: string; name: string; symbol: string; nameKey: string; symbolKey: string; imageHash: string | null; creator: string; createdAt: Date };
+type ProtectedRow = { mint: string; chain: string; name: string; symbol: string; nameKey: string; symbolKey: string; imageHash: string | null; creator: string; createdAt: Date };
 
 /** How many protected launches one check reads at most: well above a week of launches, and bounded if it is not. */
 const WINDOW_ROWS = 20_000;
@@ -37,7 +37,7 @@ export async function checkCopies(db: Db, cfg: Config, c: Candidate, now = new D
   const since = window ? new Date(now.getTime() - cfg.copyProtectionSeconds * 1000) : new Date(0);
   const rows: ProtectedRow[] = await db
     .select({
-      mint: launches.mint, name: launches.name, symbol: launches.symbol, nameKey: launches.nameKey, symbolKey: launches.symbolKey,
+      mint: launches.mint, chain: launches.chain, name: launches.name, symbol: launches.symbol, nameKey: launches.nameKey, symbolKey: launches.symbolKey,
       imageHash: launches.imageHash, creator: launches.creator, createdAt: launches.createdAt,
     })
     .from(launches)
@@ -46,7 +46,7 @@ export async function checkCopies(db: Db, cfg: Config, c: Candidate, now = new D
     .limit(WINDOW_ROWS);
   const until = (r: ProtectedRow) => new Date(r.createdAt.getTime() + cfg.copyProtectionSeconds * 1000);
   const coin = (r: ProtectedRow): ProtectedCoin => ({
-    mint: r.mint, symbol: r.symbol, name: r.name, launchedAt: r.createdAt.toISOString(), protectedUntil: until(r).toISOString(),
+    mint: r.mint, chain: r.chain as Chain, symbol: r.symbol, name: r.name, launchedAt: r.createdAt.toISOString(), protectedUntil: until(r).toISOString(),
   });
   const free: CopyVerdict = { status: "free", kind: null, of: null, reason: null };
   const taken = (kind: CopyKind, r: ProtectedRow, reason: string): CopyVerdict => ({ status: "taken", kind, of: coin(r), reason });

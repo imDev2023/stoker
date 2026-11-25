@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { Connection, PublicKey, type ParsedAccountData } from "@solana/web3.js";
 import { alias } from "drizzle-orm/pg-core";
-import { and, asc, count, desc, eq, ilike, like, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, like, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { cpmmPdas, launchlabPdas, programsFor } from "@launchpad/chain";
 import {
   LaunchListQuery, LINK_KINDS, SPARKLINE_POINTS, type CoinCreatorTier, type Holder, type HolderKind, type HolderList, type LaunchLinks, type LaunchList, type LaunchQuoteList,
@@ -22,7 +22,7 @@ import { curveProgress } from "./trades";
 /** The read API for Launches: the board's sorted and filtered list, one Launch, the Quote Assets in use, and holders. */
 export const launchRoutes = new Hono<AppEnv>();
 
-type Filters = Omit<LaunchListQuery, "limit" | "offset" | "sort"> & { mint?: string };
+type Filters = Omit<LaunchListQuery, "limit" | "offset" | "sort" | "chains"> & { mint?: string; chains?: LaunchListQuery["chains"] };
 
 /** A LIKE pattern that matches the text itself: its `%`, `_` and `\` are escaped, so "100%" finds a coin called that. */
 const likeText = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -103,6 +103,8 @@ async function queryLaunches(db: Db, notHolders: string[], given: Filters, sort:
     filters.q ? searchClause(filters.q) : undefined,
     filters.quote ? eq(launches.quoteMint, filters.quote) : undefined,
     filters.chain ? eq(launches.chain, filters.chain) : undefined,
+    // The chains a site shows (#253): a chain it did not name is left out, whatever else was asked.
+    filters.chains ? inArray(launches.chain, filters.chains) : undefined,
     filters.category ? sql`coalesce(${quoteAssets.category}, ${evmQuoteAssets.category}) = ${filters.category}` : undefined,
     filters.issuer ? eq(quoteAssets.issuer, filters.issuer) : undefined,
     filters.status ? sql`${status} = ${filters.status}` : undefined,
@@ -235,6 +237,7 @@ function toSummary(cfg: Config, r: Row, creatorTier: CoinCreatorTier | null = nu
       l.copyOf && l.copyKind && r.original
         ? {
             mint: r.original.mint,
+            chain: r.original.chain as Chain,
             symbol: r.original.symbol,
             name: r.original.name,
             launchedAt: r.original.createdAt.toISOString(),

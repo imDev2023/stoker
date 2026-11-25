@@ -25,6 +25,8 @@ import {
 import { runJob, toJobRun } from "./jobs";
 import { runIndexers } from "./chains/indexers";
 import { chainRoutes } from "./routes/chains";
+import { evmLaunchRoutes } from "./evm/launchRoutes";
+import { evmTradeRoutes } from "./evm/tradeRoutes";
 import { arweaveUrl, metadataDocument, signedItems, signMetadataItems, uploadMetadata } from "./metadata";
 import { refreshQuoteRegistry } from "./quotes/registry";
 import { lockRewardTaxes } from "./rewardTax";
@@ -260,6 +262,8 @@ app.use("/v1/launches/:mint/:part{.+}", async (c, next) => {
 });
 
 app.route("/v1", chainRoutes);
+app.route("/v1", evmLaunchRoutes);
+app.route("/v1", evmTradeRoutes);
 app.route("/v1", launchRoutes);
 app.route("/v1", launchModeRoutes);
 app.route("/v1", copyRoutes);
