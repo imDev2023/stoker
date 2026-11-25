@@ -105,7 +105,8 @@ async function planWeek(db: Db, excluded: string[], spans: Span[], index: number
     .select({ wallet: trades.trader, mint: launches.quoteMint, amount: sql<string>`sum(${trades.platformFee})::text` })
     .from(trades)
     .innerJoin(launches, eq(launches.mint, trades.mint))
-    .where(and(or(...earning.map((s) => and(gte(trades.blockTime, new Date(s.from)), lt(trades.blockTime, new Date(s.to))))), notInArray(trades.trader, excluded)))
+    // Solana's trades alone, paid in SOL; an EVM chain's are rebated on that chain (#254).
+    .where(and(eq(trades.chain, "solana"), or(...earning.map((s) => and(gte(trades.blockTime, new Date(s.from)), lt(trades.blockTime, new Date(s.to))))), notInArray(trades.trader, excluded)))
     .groupBy(trades.trader, launches.quoteMint);
   const prices = await quotePrices(db);
   const feesOf = new Map<string, bigint>();

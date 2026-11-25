@@ -3,7 +3,8 @@ import { HTTPException } from "hono/http-exception";
 import { PublicKey } from "@solana/web3.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { WSOL_MINT } from "@launchpad/chain";
-import type { CoinEarnings, CreatorBuyback, CreatorEarnings, CreatorForwardList, GraduationFee, QuoteRef } from "@launchpad/contract";
+import type { Chain, CoinEarnings, CreatorBuyback, CreatorEarnings, CreatorForwardList, GraduationFee, QuoteRef } from "@launchpad/contract";
+import { chainFilter, chainIs } from "../chains/filter";
 import { creatorBuybacks, creatorForwards, curves, graduations, launches, launchMetadata, quoteAssets, rewardRounds, type Db } from "@launchpad/db";
 import type { AppEnv } from "../env";
 import { collectedSharesByLaunch, committedForwards, creatorShares, creatorSharesByLaunch, rulePots, withheldGraduationFees } from "../fees/creatorShares";
@@ -39,7 +40,7 @@ async function quoteRefs(db: Db, decimals: Map<string, number>) {
   const rows = mints.length ? await db.select().from(quoteAssets).where(inArray(quoteAssets.mint, mints)) : [];
   const listed = new Map(rows.map((r) => [r.mint, toQuoteRef(r)]));
   return (mint: string): QuoteRef =>
-    listed.get(mint) ?? { mint, symbol: null, name: null, decimals: decimals.get(mint)!, logo: null, category: "community", issuer: null };
+    listed.get(mint) ?? { chain: "solana", multiplier: null, mint, symbol: null, name: null, decimals: decimals.get(mint)!, logo: null, category: "community", issuer: null };
 }
 
 /** A graduated coin's Graduation Fee as the API shows it (ADR 0015); null before Graduation and for a coin that was charged none. */
@@ -132,7 +133,7 @@ creatorEarningsRoutes.get("/creators/:address/forwards", async (c) => {
   const rows = await db
     .select()
     .from(creatorForwards)
-    .where(and(eq(creatorForwards.creator, creator), inArray(creatorForwards.status, ["sending", "paid"])))
+    .where(and(eq(creatorForwards.creator, creator), inArray(creatorForwards.status, ["sending", "paid"]), chainIs(creatorForwards.chain, chainFilter(c))))
     // Newest first by when the platform sent it: the row's own clock, which is strictly ordered, where the chain's block
     // time is whole seconds and two forwards of one run tie or not by chance (seen on 2026-10-30; the same line as #158).
     .orderBy(desc(creatorForwards.createdAt), desc(creatorForwards.signature))
@@ -140,6 +141,7 @@ creatorEarningsRoutes.get("/creators/:address/forwards", async (c) => {
   const quote = await quoteRefs(db, new Map(rows.map((r) => [r.assetMint, r.assetDecimals])));
   const res: CreatorForwardList = {
     forwards: rows.map((r) => ({
+      chain: r.chain as Chain,
       signature: r.signature,
       quote: quote(r.assetMint),
       amount: r.amount,

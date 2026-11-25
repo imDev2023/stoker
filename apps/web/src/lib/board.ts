@@ -42,6 +42,7 @@ export const CATEGORY_LABELS: Record<QuoteCategory, string> = {
   collectible: "Collectibles",
   meme: "Memes",
   community: "Community",
+  native: "Native coins",
 };
 
 /** The categories in the order the site lists them: the money first, then what it buys, the long tail last. */
@@ -150,6 +151,7 @@ const KIND_WORDS: Record<QuoteCategory, string> = {
   collectible: "Collectible",
   meme: "Meme coin",
   community: "Community coin",
+  native: "Native coin",
 };
 export const kindOf = (q: Pick<QuoteRef, "category" | "issuer">) => (q.issuer ? `${ISSUER_LABELS[q.issuer]} stock` : KIND_WORDS[q.category]);
 

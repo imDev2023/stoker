@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Chain } from "./chains";
 import { QuoteRef } from "./quotes";
 
 /**
@@ -62,10 +63,12 @@ export type LedgerKind = z.infer<typeof LedgerKind>;
  * An asset revenue arrives in: a Quote Asset, or a graduated coin (a Fee Key pays out both of its pool's tokens).
  * Coins carry their image as `logo`. Quote Asset categories don't apply to coins, so there is none.
  */
-export const RevenueAsset = QuoteRef.omit({ category: true, issuer: true });
+export const RevenueAsset = QuoteRef.omit({ category: true, issuer: true, chain: true, multiplier: true });
 export type RevenueAsset = z.infer<typeof RevenueAsset>;
 
 export const LedgerEntry = z.object({
+  /** The chain the payment was made on (#252). */
+  chain: Chain,
   signature: z.string(),
   /** Position among the entries of the same transaction. */
   index: z.number().int(),
@@ -96,6 +99,8 @@ export const LedgerQuery = z.object({
   /** A `next` cursor from a previous page: the slot, the moment the Ledger recorded the entry, the signature and the position. */
   before: z.string().regex(/^\d+\.\d+\.[1-9A-HJ-NP-Za-km-z]{64,88}\.\d+$/, "must be a cursor from a previous page").optional(),
   kind: LedgerKind.optional(),
+  /** Only the entries of this chain (#252). */
+  chain: Chain.optional(),
 });
 export type LedgerQuery = z.infer<typeof LedgerQuery>;
 
@@ -152,7 +157,7 @@ export type Revenue = z.infer<typeof Revenue>;
 // ---------------------------------------------------------------------------------------------------------------------
 // Operator: scheduled job runs.
 
-export const JobName = z.enum(["quote-registry", "graduation-watch", "fee-collector", "creator-forward", "reward-tax-lock", "reward-rounds", "burn", "metadata-upload", "mentions", "rebates"]);
+export const JobName = z.enum(["quote-registry", "graduation-watch", "fee-collector", "creator-forward", "reward-tax-lock", "reward-rounds", "burn", "metadata-upload", "mentions", "rebates", "indexer"]);
 export type JobName = z.infer<typeof JobName>;
 
 export const JobRun = z.object({

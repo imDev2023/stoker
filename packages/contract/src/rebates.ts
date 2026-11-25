@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Chain } from "./chains";
 
 /**
  * Volume rebates (ADR 0021): the Budget Table's `rebates` row (ADR 0019) paid back to traders. A Rebate Week's trades
@@ -71,6 +72,8 @@ export type RebateStatus = z.infer<typeof RebateStatus>;
 
 /** One wallet's rebate for one settled week. */
 export const WalletRebate = z.object({
+  /** The chain the rebate is paid on (#252), in its native asset. */
+  chain: Chain,
   weekStart: z.iso.datetime(),
   weekEnd: z.iso.datetime(),
   /** The Platform Fees the wallet's trades paid in the week, valued like the week's total. */

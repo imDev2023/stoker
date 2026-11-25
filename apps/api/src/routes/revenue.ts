@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Chain } from "@launchpad/contract";
 import { desc, eq, inArray, sql } from "drizzle-orm";
 import { WSOL_MINT } from "@launchpad/chain";
 import {
@@ -86,7 +87,7 @@ revenueRoutes.get("/revenue", async (c) => {
 revenueRoutes.get("/ledger", async (c) => {
   const q = LedgerQuery.safeParse(c.req.query());
   if (!q.success) return c.json({ error: "invalid ledger query", details: q.error.issues }, 400);
-  const { limit, before, kind } = q.data;
+  const { limit, before, kind, chain } = q.data;
   const db = c.get("db");
   const [slot, recorded, signature, index] = before?.split(".") ?? [];
   // Within a slot the entries list in the order the platform recorded them (two transactions of one job can land in
@@ -99,6 +100,7 @@ revenueRoutes.get("/ledger", async (c) => {
     .leftJoin(launches, eq(launches.mint, ledgerEntries.launchMint))
     .where(sql`true
       ${kind ? sql`and ${ledgerEntries.kind} = ${kind}` : sql``}
+      ${chain ? sql`and ${ledgerEntries.chain} = ${chain}` : sql``}
       ${before ? sql`and (${ledgerEntries.slot}, ${recordedMicros}, ${ledgerEntries.signature}, ${ledgerEntries.eventIndex}) < (${Number(slot)}, ${recorded}::bigint, ${signature}, ${Number(index)})` : sql``}`)
     .orderBy(desc(ledgerEntries.slot), desc(recordedMicros), desc(ledgerEntries.signature), desc(ledgerEntries.eventIndex))
     .limit(limit + 1);
@@ -107,6 +109,7 @@ revenueRoutes.get("/ledger", async (c) => {
   const last = page.at(-1);
   const res: LedgerPage = {
     entries: page.map(({ e, symbol, name }) => ({
+      chain: e.chain as Chain,
       signature: e.signature,
       index: e.eventIndex,
       kind: e.kind as LedgerKind,

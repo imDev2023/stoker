@@ -46,7 +46,8 @@ export async function runHoldingChecks(
     .select({ mint: launches.mint, symbol: launches.symbol, taxed: sql<boolean>`${launches.rewardTaxBps} is not null` })
     .from(launches)
     .leftJoin(latest, eq(latest.mint, launches.mint))
-    .where(and(or(eq(launches.taxKind, "reward"), eq(launches.earningsDestination, "holders")), or(isNull(latest.day), lt(latest.day, day))))
+    // Solana's coins alone: an EVM chain's holdings are read with its Reward Engine (#255).
+    .where(and(eq(launches.chain, "solana"), or(eq(launches.taxKind, "reward"), eq(launches.earningsDestination, "holders")), or(isNull(latest.day), lt(latest.day, day))))
     .orderBy(sql`${latest.day} asc nulls first`, asc(launches.createdSlot), asc(launches.mint));
   const summary: HoldingChecksSummary = { day, checked: [], leftForLater: Math.max(0, due.length - limit) };
   for (const coin of due.slice(0, limit)) {

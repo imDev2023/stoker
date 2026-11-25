@@ -37,7 +37,8 @@ export async function withholdGraduationFees(db: Db, connection: Connection, ope
     .from(graduations)
     .innerJoin(launches, eq(launches.mint, graduations.mint))
     .innerJoin(quoteAssets, eq(quoteAssets.mint, launches.quoteMint))
-    .where(and(isNull(graduations.feeSettledAt), sql`${graduations.feeLamports} > 0`))
+    // Solana's coins alone (#252): an EVM chain's are its own jobs' (#254).
+    .where(and(eq(launches.chain, "solana"), isNull(graduations.feeSettledAt), sql`${graduations.feeLamports} > 0`))
     .orderBy(graduations.slot, graduations.mint);
   if (open.length === 0) return [];
 

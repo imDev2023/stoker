@@ -96,7 +96,8 @@ async function countActiveDays(db: Db, daySeconds: number, floorBps: number) {
     .select({ mint: trades.mint, day: day.as("day") })
     .from(trades)
     .innerJoin(launches, eq(launches.mint, trades.mint))
-    .where(sql`${trades.venue} = 'pool' and not exists (select 1 from ${creatorTiers} ct where ct.mint = ${trades.mint} and ct.tier = ${TOP_TIER}::int)`)
+    // Solana's pools alone: an EVM coin's Active Days are counted with its chain's jobs (#254), against its own target.
+    .where(sql`${trades.chain} = 'solana' and ${trades.venue} = 'pool' and not exists (select 1 from ${creatorTiers} ct where ct.mint = ${trades.mint} and ct.tier = ${TOP_TIER}::int)`)
     .groupBy(trades.mint, day, launches.graduationTarget)
     .having(sql`sum(${trades.quoteAmount}) * 10000 >= ${launches.graduationTarget} * ${floorBps}::int`)
     .as("active");
@@ -128,6 +129,8 @@ export async function recordCreatorTiers(db: Db, connection: Connection, daySeco
       .select({ mint: graduations.mint, counted: graduations.activeDays, tier: sql<number>`coalesce(max(${creatorTiers.tier}), 1)::int` })
       .from(graduations)
       .leftJoin(creatorTiers, eq(creatorTiers.mint, graduations.mint))
+      // Solana's graduated coins alone: an EVM coin's tier is raised by the ladder key on its chain (#248).
+      .where(eq(graduations.chain, "solana"))
       .groupBy(graduations.mint, graduations.activeDays)
       .having(sql`coalesce(max(${creatorTiers.tier}), 1) < ${TOP_TIER}::int`)
       .orderBy(asc(graduations.mint)),

@@ -12,13 +12,15 @@
     "@launchpad/chain": "workspace:*",
     "@launchpad/contract": "workspace:*",
     "@launchpad/db": "workspace:*",
+    "@launchpad/evm": "workspace:*",
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.99.0",
     "bn.js": "^5.2.2",
     "bs58": "^6.0.0",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.13.9",
-    "jpeg-js": "^0.4.4"
+    "jpeg-js": "^0.4.4",
+    "viem": "^2.58.6"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260927.1",

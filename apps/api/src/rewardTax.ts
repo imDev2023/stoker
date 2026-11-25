@@ -29,7 +29,8 @@ export async function lockRewardTaxes(db: Db, cfg: Config, operations: Keypair):
     .select({ mint: launches.mint, symbol: launches.symbol, graduatedSignature: graduations.signature })
     .from(launches)
     .innerJoin(graduations, eq(graduations.mint, launches.mint))
-    .where(and(isNotNull(launches.rewardTaxBps), isNull(launches.rewardTaxLockedSignature)));
+    // Solana's coins alone: an EVM coin's tax is fixed in its hook's terms from launch, with nothing to lock (#245).
+    .where(and(eq(launches.chain, "solana"), isNotNull(launches.rewardTaxBps), isNull(launches.rewardTaxLockedSignature)));
   if (due.length === 0) return result;
   const connection = new Connection(cfg.rpcUrl, "confirmed");
   const ops = operations.publicKey;

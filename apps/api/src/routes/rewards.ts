@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { chainFilter, chainIs } from "../chains/filter";
+import type { Chain } from "@launchpad/contract";
 import { HTTPException } from "hono/http-exception";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
@@ -40,6 +42,7 @@ export const payoutRef = (coin: { mint: string; symbol: string; decimals: number
     : { asset: "quote", mint: payoutMint, symbol: payoutMint === WSOL_MINT.toBase58() ? "SOL" : (quoteSymbol ?? `${payoutMint.slice(0, 4)}...`), decimals: payoutDecimals };
 
 export const roundSummary = (r: typeof rewardRounds.$inferSelect, payout: RewardPayoutAssetRef): RewardRoundSummary => ({
+  chain: r.chain as Chain,
   id: r.id,
   mint: r.mint,
   rulesVersion: r.rulesVersion,
@@ -207,12 +210,13 @@ rewardRoutes.get("/wallets/:address/rewards", async (c) => {
     .innerJoin(rewardRounds, eq(rewardRounds.id, rewardPayouts.roundId))
     .innerJoin(launches, eq(launches.mint, rewardRounds.mint))
     .leftJoin(quoteAssets, eq(quoteAssets.mint, rewardRounds.payoutMint))
-    .where(eq(rewardPayouts.wallet, wallet))
+    .where(and(eq(rewardPayouts.wallet, wallet), chainIs(rewardRounds.chain, chainFilter(c))))
     .orderBy(desc(rewardRounds.startedAt))
     .limit(200);
   const res: WalletRewards = {
     wallet,
     rewards: rows.map((r) => ({
+      chain: r.round.chain as Chain,
       round: r.round.id,
       mint: r.round.mint,
       symbol: r.symbol,

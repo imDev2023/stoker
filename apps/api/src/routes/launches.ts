@@ -2,13 +2,17 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { Connection, PublicKey, type ParsedAccountData } from "@solana/web3.js";
 import { alias } from "drizzle-orm/pg-core";
-import { and, asc, count, desc, eq, ilike, like, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, like, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { cpmmPdas, launchlabPdas, programsFor } from "@launchpad/chain";
 import {
   LaunchListQuery, LINK_KINDS, SPARKLINE_POINTS, type CoinCreatorTier, type Holder, type HolderKind, type HolderList, type LaunchLinks, type LaunchList, type LaunchQuoteList,
-  type CreatorLockTerms, type LaunchSummary, type MarketValue,
+  type Chain, type CreatorLockTerms, type LaunchSummary, type MarketValue,
 } from "@launchpad/contract";
-import { curves, graduations, launches, launchMarkets, launchMetadata, quoteAssets, trades, type Db } from "@launchpad/db";
+import { curves, evmQuoteAssets, graduations, launches, launchMarkets, launchMetadata, quoteAssets, trades, type Db } from "@launchpad/db";
+import { chainFilter } from "../chains/filter";
+import { canonicalAddress } from "../chains/address";
+import { evmQuoteRef } from "../chains/evm/quotes";
+import { evmBuyers } from "../chains/evm/config";
 import { operationsKey, type AppEnv, type Config } from "../env";
 import { coinTiers } from "../fees/ladder";
 import { toQuoteRef } from "../quotes/assets";
@@ -35,7 +39,14 @@ function searchClause(q: string) {
  * price from its latest trade on the curve or in its pool (launch_markets), the volume from its trades, and SOL and USD
  * values from the Quote Registry's prices.
  */
-async function queryLaunches(db: Db, operations: string, filters: Filters, sort: LaunchListQuery["sort"] = "new", limit = 1, offset = 0) {
+async function queryLaunches(db: Db, notHolders: string[], given: Filters, sort: LaunchListQuery["sort"] = "new", limit = 1, offset = 0) {
+  // A caller's EVM address in any case finds the checksummed one the Indexer wrote (#252).
+  const filters: Filters = {
+    ...given,
+    ...(given.mint ? { mint: canonicalAddress(given.mint) } : {}),
+    ...(given.quote ? { quote: canonicalAddress(given.quote) } : {}),
+    ...(given.creator ? { creator: canonicalAddress(given.creator) } : {}),
+  };
   // The protected coin a copy launched against (Copy Protection, #120), for its label.
   const original = alias(launches, "original");
   const volume = db.$with("volume").as(
@@ -53,7 +64,7 @@ async function queryLaunches(db: Db, operations: string, filters: Filters, sort:
     db
       .select({ mint: trades.mint, trader: trades.trader })
       .from(trades)
-      .where(ne(trades.trader, operations))
+      .where(notInArray(trades.trader, notHolders))
       .groupBy(trades.mint, trades.trader)
       .having(sql`sum(case when ${trades.side} = 'buy' then ${trades.baseAmount} else -${trades.baseAmount} end) > 0`),
   );
@@ -65,7 +76,9 @@ async function queryLaunches(db: Db, operations: string, filters: Filters, sort:
     sql`(${raw}::double precision / power(10::double precision, ${decimals}))`;
   const capQuote = sql`(${launchMarkets.price} * ${whole(launches.supply, launches.decimals)})`;
   const volRaw = sql`coalesce(${volume.raw}, 0)`;
-  const volQuote = whole(volRaw, sql`${quoteAssets.decimals}`);
+  // A Solana coin's Quote Asset is in the Quote Registry; an EVM coin's in its chain's (#252), which has no prices yet.
+  const quoteDecimals = sql`coalesce(${quoteAssets.decimals}, ${evmQuoteAssets.decimals})`;
+  const volQuote = whole(volRaw, quoteDecimals);
   const inSol = (v: SQL) => sql<number | null>`${v} * ${quoteAssets.priceSol}::double precision`;
   const inUsd = (v: SQL) => sql<number | null>`${v} * ${quoteAssets.priceUsd}::double precision`;
   const progress = sql`coalesce(${curves.realQuote}, 0) / nullif(${launches.graduationTarget}, 0)`;
@@ -89,7 +102,8 @@ async function queryLaunches(db: Db, operations: string, filters: Filters, sort:
     filters.mint ? eq(launches.mint, filters.mint) : undefined,
     filters.q ? searchClause(filters.q) : undefined,
     filters.quote ? eq(launches.quoteMint, filters.quote) : undefined,
-    filters.category ? eq(quoteAssets.category, filters.category) : undefined,
+    filters.chain ? eq(launches.chain, filters.chain) : undefined,
+    filters.category ? sql`coalesce(${quoteAssets.category}, ${evmQuoteAssets.category}) = ${filters.category}` : undefined,
     filters.issuer ? eq(quoteAssets.issuer, filters.issuer) : undefined,
     filters.status ? sql`${status} = ${filters.status}` : undefined,
     filters.creator ? eq(launches.creator, filters.creator) : undefined,
@@ -104,6 +118,7 @@ async function queryLaunches(db: Db, operations: string, filters: Filters, sort:
       curve: curves,
       graduation: graduations,
       quote: quoteAssets,
+      evmQuote: evmQuoteAssets,
       market: launchMarkets,
       capQuote: sql<number | null>`${capQuote}`,
       capSol: inSol(capQuote),
@@ -125,15 +140,25 @@ async function queryLaunches(db: Db, operations: string, filters: Filters, sort:
     .leftJoin(volume, eq(volume.mint, launches.mint))
     .leftJoin(holders, eq(holders.mint, launches.mint))
     // Amounts need the Quote Asset's decimals, so a Launch shows once the registry lists its Quote Asset. Every Launch the API
-    // built already is; only one sent straight to a GlobalConfig newer than the last refresh waits for the next one.
-    .innerJoin(quoteAssets, eq(quoteAssets.mint, launches.quoteMint))
-    .where(where)
-    .orderBy(...order[sort], desc(launches.createdSlot), asc(launches.mint))
+    // built already is; only one sent straight to a GlobalConfig newer than the last refresh waits for the next one. An
+    // EVM coin's Quote Asset is read by its chain's Indexer before the coin is written (#252).
+    .leftJoin(quoteAssets, and(eq(launches.chain, "solana"), eq(quoteAssets.mint, launches.quoteMint)))
+    .leftJoin(evmQuoteAssets, and(eq(evmQuoteAssets.chain, launches.chain), eq(evmQuoteAssets.address, launches.quoteMint)))
+    .where(and(where, sql`(${quoteAssets.mint} is not null or ${evmQuoteAssets.address} is not null)`))
+    // Newest first by time across chains, since a slot and a block number cannot be compared; within Solana the order is
+    // the slot's as before, a later slot never having an earlier block time.
+    .orderBy(...order[sort], desc(launches.createdAt), desc(launches.createdSlot), asc(launches.mint))
     .limit(limit)
     .offset(offset);
 }
 
 type Row = Awaited<ReturnType<typeof queryLaunches>>[number];
+
+/**
+ * Wallets the board never counts as holders: the operations wallet (what it buys for a Creator it burns or locks) and
+ * each EVM chain's Tax Vault (what it buys it burns or hands to the holders, #245).
+ */
+const notHolders = (env: AppEnv["Bindings"]) => [operationsKey(env).publicKey.toBase58(), ...evmBuyers(env)];
 
 /** Postgres returns doubles computed from numerics as numbers or strings depending on the path; normalise to a number. */
 const num = (v: number | string | null) => (v === null ? null : Number(v));
@@ -161,10 +186,11 @@ function toSummary(cfg: Config, r: Row, creatorTier: CoinCreatorTier | null = nu
   const m = r.metadata;
   const cap: MarketValue | null = r.capQuote === null ? null : { quote: num(r.capQuote)!, sol: num(r.capSol), usd: num(r.capUsd) };
   return {
+    chain: l.chain as Chain,
     mint: l.mint,
     pool: l.pool,
     creator: l.creator,
-    quote: toQuoteRef(r.quote),
+    quote: r.quote ? toQuoteRef(r.quote) : evmQuoteRef(r.evmQuote!),
     name: l.name,
     symbol: l.symbol,
     metadataUri: l.metadataUri,
@@ -252,7 +278,7 @@ launchRoutes.get("/launches", async (c) => {
   if (!query.success) return c.json({ error: "invalid launch list query", details: query.error.issues }, 400);
   const { sort, limit, offset, fields = [], ...filters } = query.data;
   const db = c.get("db");
-  const found = await queryLaunches(db, operationsKey(c.env).publicKey.toBase58(), filters, sort, limit + 1, offset);
+  const found = await queryLaunches(db, notHolders(c.env), filters, sort, limit + 1, offset);
   const rows = found.slice(0, limit);
   const lines = fields.includes("sparkline") ? await sparklines(db, rows.map((r) => r.launch.mint)) : null;
   const body: LaunchList = {
@@ -299,18 +325,54 @@ launchRoutes.get("/launches/quotes", async (c) => {
     .leftJoin(volume, eq(volume.quoteMint, launches.quoteMint))
     .groupBy(quoteAssets.mint, volume.raw)
     .orderBy(desc(launchCount), sql`${quoteAssets.symbol} asc nulls last`, asc(quoteAssets.mint));
+  const chain = chainFilter(c);
+  const solana = chain === undefined || chain === "solana" ? rows : [];
+  const evm = chain === "solana" ? [] : await evmLaunchQuotes(db, chain);
   const body: LaunchQuoteList = {
-    quotes: rows.map((r) => ({ ...toQuoteRef(r.quote), launches: r.launches, volume24h: { quote: num(r.volQuote)!, sol: num(r.volSol), usd: num(r.volUsd) } })),
+    quotes: [
+      ...solana.map((r) => ({ ...toQuoteRef(r.quote), launches: r.launches, volume24h: { quote: num(r.volQuote)!, sol: num(r.volSol), usd: num(r.volUsd) } })),
+      ...evm,
+    ].sort((a, b) => b.launches - a.launches),
   };
   return c.json(body);
 });
 
+/**
+ * The EVM chains' Quote Assets in use, with their coins' count and the day's volume (#252); no SOL or USD value until an
+ * EVM chain's Quote Assets are priced (#254).
+ */
+async function evmLaunchQuotes(db: Db, chain: Chain | undefined) {
+  const launchCount = count(launches.mint);
+  const volume = db.$with("evm_quote_volume").as(
+    db
+      .select({ chain: launches.chain, quoteMint: launches.quoteMint, raw: sql<string>`sum(${trades.quoteAmount})`.as("raw") })
+      .from(trades)
+      .innerJoin(launches, eq(launches.mint, trades.mint))
+      .where(sql`${trades.blockTime} > now() - interval '24 hours' and ${launches.chain} <> 'solana'`)
+      .groupBy(launches.chain, launches.quoteMint),
+  );
+  const rows = await db
+    .with(volume)
+    .select({
+      quote: evmQuoteAssets,
+      launches: launchCount,
+      volQuote: sql<number>`(coalesce(${volume.raw}, 0)::double precision / power(10::double precision, ${evmQuoteAssets.decimals}))`,
+    })
+    .from(launches)
+    .innerJoin(evmQuoteAssets, and(eq(evmQuoteAssets.chain, launches.chain), eq(evmQuoteAssets.address, launches.quoteMint)))
+    .leftJoin(volume, and(eq(volume.chain, launches.chain), eq(volume.quoteMint, launches.quoteMint)))
+    .where(chain ? eq(launches.chain, chain) : undefined)
+    .groupBy(evmQuoteAssets.chain, evmQuoteAssets.address, volume.raw);
+  return rows.map((r) => ({ ...evmQuoteRef(r.quote), launches: r.launches, volume24h: { quote: num(r.volQuote)!, sol: null, usd: null } }));
+}
+
 launchRoutes.get("/launches/:mint", async (c) => {
-  const [row] = await queryLaunches(c.get("db"), operationsKey(c.env).publicKey.toBase58(), { mint: c.req.param("mint") });
+  const [row] = await queryLaunches(c.get("db"), notHolders(c.env), { mint: c.req.param("mint") });
   if (!row) return c.json({ error: "launch not found" }, 404);
   const cfg = c.get("cfg");
   // A graduated coin's place on the Creator Ladder (ADR 0020), which only this answer carries.
-  const tier = row.graduation ? (await coinTiers(c.get("db"), [row.launch.mint])).get(row.launch.mint)! : null;
+  // Solana's Creator Ladder alone: an EVM coin's tier is raised by the ladder key on its chain (#248).
+  const tier = row.graduation && row.launch.chain === "solana" ? (await coinTiers(c.get("db"), [row.launch.mint])).get(row.launch.mint)! : null;
   return c.json(toSummary(cfg, row, tier));
 });
 
@@ -375,6 +437,8 @@ launchRoutes.get("/launches/:mint/holders", async (c) => {
 
   const held = creatorAccounts.value.reduce((sum, a) => sum + BigInt((a.account.data.parsed as { info: { tokenAmount: { amount: string } } }).info.tokenAmount.amount), 0n);
   const body: HolderList = {
+    // Read from Solana: an EVM coin's holders come with its chain's own reads (`app.use` in index.ts answers 404 meanwhile).
+    chain: "solana",
     slot: largest.context.slot,
     supply: total.toString(),
     holders,

@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import type { Chain } from "@launchpad/contract";
+import { canonicalAddress } from "../chains/address";
 import { HTTPException } from "hono/http-exception";
 import { Connection, PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
@@ -46,11 +48,14 @@ tradeRoutes.get("/launches/:mint/trades", async (c) => {
     .get("db")
     .select()
     .from(trades)
-    .where(eq(trades.mint, c.req.param("mint")))
-    .orderBy(desc(trades.slot), desc(trades.signature), desc(trades.eventIndex))
+    .where(eq(trades.mint, canonicalAddress(c.req.param("mint"))))
+    // Within a slot Solana's trades order by transaction as before; within an EVM block by the log's place in the block,
+    // which is the order they ran in (#252): every trade there is written with its `Swap` log's index.
+    .orderBy(desc(trades.slot), desc(sameBlockOrder), desc(trades.eventIndex))
     .limit(limit);
   const res: TradeList = {
     trades: rows.map((t) => ({
+      chain: t.chain as Chain,
       signature: t.signature,
       venue: t.venue,
       trader: t.trader,
@@ -65,6 +70,9 @@ tradeRoutes.get("/launches/:mint/trades", async (c) => {
   };
   return c.json(res);
 });
+
+/** The tie-break inside one slot or block: the signature on Solana, as before; nothing on an EVM chain, whose log index orders it. */
+const sameBlockOrder = sql`(case when ${trades.chain} = 'solana' then ${trades.signature} else '' end)`;
 
 export const BUCKET: Record<CandleInterval, string> = {
   "1m": "1 minute", "5m": "5 minutes", "15m": "15 minutes", "1h": "1 hour", "4h": "4 hours", "1d": "1 day",
@@ -86,13 +94,13 @@ tradeRoutes.get("/launches/:mint/candles", async (c) => {
   const earlier = before === undefined ? sql`` : sql`and ${bucket} < to_timestamp(${before}::double precision)`;
   const rows = await c.get("db").execute<{ time: string; open: number; close: number; max: number; min: number; volume: string }>(sql`
     select extract(epoch from ${bucket})::bigint as time,
-      (array_agg(price_before order by slot, signature, event_index))[1] as open,
-      (array_agg(price_after order by slot desc, signature desc, event_index desc))[1] as close,
+      (array_agg(price_before order by slot, ${sameBlockOrder}, event_index))[1] as open,
+      (array_agg(price_after order by slot desc, ${sameBlockOrder} desc, event_index desc))[1] as close,
       max(price_after) as max,
       min(price_after) as min,
       sum(quote_amount)::text as volume
     from ${trades}
-    where mint = ${c.req.param("mint")} ${earlier}
+    where mint = ${canonicalAddress(c.req.param("mint"))} ${earlier}
     group by ${bucket}
     order by ${bucket} desc
     limit ${limit}`);

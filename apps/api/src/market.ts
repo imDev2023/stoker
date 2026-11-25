@@ -5,8 +5,8 @@ import { launchMarkets, trades, type Db } from "@launchpad/db";
  * Opens a Launch's market at its curve's starting price, so the board has a market cap for it before anyone trades.
  * A trade indexed before its launch (webhooks don't promise order) already opened it at a later price, which stays.
  */
-export async function openMarket(db: Db, mint: string, price: number, slot: number) {
-  await db.insert(launchMarkets).values({ mint, price, priceSlot: slot }).onConflictDoNothing();
+export async function openMarket(db: Db, mint: string, price: number, slot: number, chain = "solana") {
+  await db.insert(launchMarkets).values({ chain, mint, price, priceSlot: slot }).onConflictDoNothing();
 }
 
 /**
@@ -21,7 +21,7 @@ export async function insertTrade(db: Db, row: typeof trades.$inferInsert) {
   if (inserted.length === 0) return false;
   await db
     .insert(launchMarkets)
-    .values({ mint: row.mint, price: row.priceAfter, priceSlot: row.slot, lastTradeAt: row.blockTime })
+    .values({ chain: row.chain ?? "solana", mint: row.mint, price: row.priceAfter, priceSlot: row.slot, lastTradeAt: row.blockTime })
     .onConflictDoUpdate({
       target: launchMarkets.mint,
       set: {
