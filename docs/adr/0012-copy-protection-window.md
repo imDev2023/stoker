@@ -30,3 +30,20 @@ The owner wants the protection, but not a permanent registry: a dead coin would 
 - The test stack's window is 45 seconds, so a test can see a copy refused and then, after the window, landed with its label; every test launch gets a name and ticker of its own, and every UI launch a picture of its own, or they would be copies of each other.
 - Which coins outside Stoker are protected (a Quote Asset's own ticker, Jupiter-verified tokens) is not decided here: the owner's proposed defaults (refuse the first always, label the second) are a follow-up on #120.
 - The embedding Top-pad measured (SSCD) can follow if the hash misses too many copies; the hash's threshold is a starting value to re-measure on real launches.
+
+## Amended on 2026-11-25 (#253): the window covers every chain
+
+Stoker runs on a second chain family (PRD #231), and story 11 asks that a copy cannot appear on a neighbouring chain.
+
+- A coin's name, ticker and image are protected on every chain Stoker runs on for the window: a name protected on Solana cannot be launched on an EVM chain, and the reverse.
+  One check serves every chain (`checkCopies`), with the same keys and the same image hash, and a verdict names the chain of the coin it found.
+- Every Solana coin is protected, as before this amendment, a pool created without our API included: such a launch pays Solana's rent and fees.
+- A coin on an EVM chain is protected only when it was launched through our API, which is to say when Stoker holds its prepared record (the keys, the image's hash, the metadata).
+  A coin sent straight to the factory costs a few cents of gas on a rollup, and protecting it would let anyone lock names on every chain for the price of a transaction (#279, item 1).
+  Such a coin is never refused, since nothing can refuse it, never protected, and lands with the label when it copies a protected coin, as a Solana pool created without our API does.
+- An EVM coin's address is fixed by its Creator, its salt, its name and its ticker (CREATE2 over the coin's own constructor arguments), so a record stored under that address at prepare time describes the coin that launches there and no other; the EVM Indexer writes the keys from it when the launch lands.
+- A Creator may reuse their own coins' name, ticker and image on the chain where they launched them.
+  The same person's wallet on another chain family is another address, so across families they are refused like anyone else until the window ends; no proof ties a Solana wallet to an EVM one.
+
+Considered and not taken: protecting every EVM coin (the cheap lock above); protecting none across chains and only labelling (story 11 asks for the refusal); a chain filter on Solana's check alone (what #279 first proposed for its own defect, which would leave an EVM original unprotected on Solana).
+
