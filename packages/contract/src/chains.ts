@@ -28,6 +28,28 @@ export const PoolRef = z.string().refine((s) => base58.test(s) || /^0x[0-9a-fA-F
 
 /** The chain filter every list endpoint takes: only that chain's items; absent, every chain's. An unknown chain is a 400. */
 export const ChainFilter = z.object({ chain: Chain.optional() });
+
+/**
+ * Several chains at once, comma separated (`?chains=solana,robinhood`): only those chains' items (#253). A site names
+ * the chains it shows on every list it asks for, so a chain the API has begun to read never appears on a site that is
+ * not ready for it. With `chain` as well, only that chain when it is among them.
+ */
+export const ChainsParam = z
+  .string()
+  .optional()
+  .transform((text, ctx) => {
+    if (text === undefined || text === "") return undefined;
+    const out: Chain[] = [];
+    for (const part of text.split(",")) {
+      const chain = Chain.safeParse(part.trim());
+      if (!chain.success) {
+        ctx.addIssue({ code: "custom", message: `unknown chain "${part.trim()}"` });
+        return z.NEVER;
+      }
+      if (!out.includes(chain.data)) out.push(chain.data);
+    }
+    return out;
+  });
 export type ChainFilter = z.infer<typeof ChainFilter>;
 
 /**
