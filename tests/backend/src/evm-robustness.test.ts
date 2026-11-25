@@ -125,7 +125,14 @@ describe.skipIf(!hasEvm)("EVM chain: the Indexer stays up", () => {
     await launchCoin(await evmWallet(), { firstBuy: 10n ** 15n });
     await swapExactIn(trader, reward, "buy", 10n ** 16n);
     await runIndexer();
-    for (const job of ["quote-registry", "fee-collector", "creator-forward", "rebates", "reward-rounds", "burn", "metadata-upload", "mentions"]) {
+    // Every job other files run freely. The Burn and the rebates are not run here: a run spends the Burn's and the
+    // Flywheel's budgets and settles Rebate Weeks, which `burn.test.ts` and `rebates.test.ts` assert from their own
+    // first run (the first run of this test before them failed `burn.test.ts`). Their pages read through the same
+    // scoped queries (the Flywheel's picks, the week being traded), and must answer with no EVM coin in them.
+    const burns = (await api("/v1/burns")) as { nextFlywheel: { mint: string }[] };
+    expect(burns.nextFlywheel.every((p) => !p.mint.startsWith("0x"))).toBe(true);
+    expect((await fetch(`${env().apiUrl}/v1/rebates`)).status).toBe(200);
+    for (const job of ["quote-registry", "fee-collector", "creator-forward", "reward-rounds", "metadata-upload", "mentions"]) {
       const res = await fetch(`${env().apiUrl}/v1/operator/jobs/${job}`, { method: "POST", headers: operator() });
       expect(res.status, `${job}: ${await res.clone().text()}`).toBe(200);
       expect(((await res.json()) as { status: string }).status, job).toMatch(/succeeded|skipped/);
