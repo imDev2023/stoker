@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import type { Chain } from "@launchpad/contract";
+import { chainFilter, chainIs } from "../chains/filter";
 import { PublicKey } from "@solana/web3.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { RebatesPage, WalletRebates } from "@launchpad/contract";
@@ -18,12 +20,15 @@ rebateRoutes.get("/rebates", async (c) => {
   const db = c.get("db");
   const cfg = c.get("cfg");
   const now = new Date();
+  // Rebate Weeks are settled in SOL on Solana; an EVM chain's are its own (#254), so `?chain=` of one lists none yet.
+  const chain = chainFilter(c);
+  const elsewhere = chain !== undefined && chain !== "solana";
   const [{ inForce, upcoming }, row, owed, current, weeks] = [
     split(await budgetVersions(db), now),
     (await budgets(db, now)).rows.rebates,
     await rebatesOwed(db),
     await currentWeek(db, cfg, operationsKey(c.env).publicKey, now),
-    await db.select().from(rebateWeeks).orderBy(desc(rebateWeeks.weekStart)).limit(PAGE),
+    chain === undefined || chain === "solana" ? await db.select().from(rebateWeeks).orderBy(desc(rebateWeeks.weekStart)).limit(PAGE) : [],
   ];
   // How much of each listed week has reached its wallets.
   const paid = weeks.length
@@ -41,12 +46,12 @@ rebateRoutes.get("/rebates", async (c) => {
       upcoming: next ? { shareBps: next.rebatesBps, effectiveAt: next.effectiveAt.toISOString() } : null,
       weekSeconds: cfg.rebateWeekSeconds,
       minPayoutLamports: cfg.rebateMinLamports.toString(),
-      current: current && {
+      current: elsewhere ? null : current && {
         start: current.start.toISOString(), end: current.end.toISOString(), capBps: current.capBps, budgetLamports: current.budget.toString(),
         feesLamports: current.fees.toString(), potLamports: current.pot.toString(),
       },
-      paidLamports: row.spent.toString(),
-      waitingLamports: owed.toString(),
+      paidLamports: elsewhere ? "0" : row.spent.toString(),
+      waitingLamports: elsewhere ? "0" : owed.toString(),
     },
     weeks: weeks.map((w) => ({
       start: w.weekStart.toISOString(), end: w.weekEnd.toISOString(), capBps: w.capBps, budgetLamports: w.budget, feesLamports: w.fees, potLamports: w.pot,
@@ -64,14 +69,16 @@ rebateRoutes.get("/wallets/:address/rebates", async (c) => {
     return c.json({ error: "not a wallet address" }, 400);
   }
   const db = c.get("db");
+  const chain = chainFilter(c);
+  const onChain = chainIs(rebates.chain, chain);
   const [totals] = await db
     .select({
       waiting: sql<string>`coalesce(sum(${rebates.amount}) filter (where ${rebates.status} in ('waiting', 'sending')), 0)::text`,
       paid: sql<string>`coalesce(sum(${rebates.amount}) filter (where ${rebates.status} = 'paid'), 0)::text`,
     })
     .from(rebates)
-    .where(eq(rebates.wallet, address));
-  const mine = await db.select().from(rebates).where(eq(rebates.wallet, address)).orderBy(desc(rebates.weekStart)).limit(PAGE);
+    .where(and(eq(rebates.wallet, address), onChain));
+  const mine = await db.select().from(rebates).where(and(eq(rebates.wallet, address), onChain)).orderBy(desc(rebates.weekStart)).limit(PAGE);
   const ends = mine.length
     ? await db.select({ start: rebateWeeks.weekStart, end: rebateWeeks.weekEnd }).from(rebateWeeks).where(inArray(rebateWeeks.weekStart, mine.map((r) => r.weekStart)))
     : [];
@@ -82,8 +89,10 @@ rebateRoutes.get("/wallets/:address/rebates", async (c) => {
     wallet: address,
     waitingLamports: totals!.waiting,
     paidLamports: totals!.paid,
-    current: current && { feesLamports: (share?.fees ?? 0n).toString(), estimateLamports: (share?.amount ?? 0n).toString() },
+    // The week being traded is Solana's (paid in SOL); an EVM chain's are its own (#254).
+    current: chain !== undefined && chain !== "solana" ? null : current && { feesLamports: (share?.fees ?? 0n).toString(), estimateLamports: (share?.amount ?? 0n).toString() },
     rebates: mine.map((r) => ({
+      chain: r.chain as Chain,
       weekStart: r.weekStart.toISOString(), weekEnd: endOf.get(r.weekStart.getTime())!.toISOString(), feesLamports: r.fees, amountLamports: r.amount,
       status: r.status, signature: r.signature, paidAt: r.paidAt?.toISOString() ?? null,
     })),

@@ -85,7 +85,8 @@ export async function collectFees({ db, cfg, operations }: CollectorDeps): Promi
   };
 
   // The Platform Fee: one vault per Quote Asset, shared by every Launch against it.
-  const quoteMints = (await db.selectDistinct({ mint: launches.quoteMint }).from(launches).orderBy(launches.quoteMint))
+  // Solana's Launches alone: an EVM chain's coins pay their fees into its hook, never a LaunchLab vault (#252).
+  const quoteMints = (await db.selectDistinct({ mint: launches.quoteMint }).from(launches).where(eq(launches.chain, "solana")).orderBy(launches.quoteMint))
     .map((r) => new PublicKey(r.mint));
   for (const v of await readPlatformFeeVaults(connection, cfg.launchlab, cfg.platformConfig, quoteMints)) {
     if (v.balance === 0n) continue;
@@ -103,6 +104,8 @@ export async function collectFees({ db, cfg, operations }: CollectorDeps): Promi
     .select({ pool: graduations.pool, quoteMint: launches.quoteMint })
     .from(graduations)
     .innerJoin(launches, eq(launches.mint, graduations.mint))
+    // Solana's coins alone (#252): an EVM chain's are its own jobs' (#254).
+    .where(eq(launches.chain, "solana"))
     .orderBy(graduations.slot, graduations.pool);
   const quoteOf = new Map(graduated.map((g) => [g.pool, g.quoteMint]));
   const pools = await readPoolKeys(connection, graduated.map((g) => new PublicKey(g.pool)));
@@ -186,7 +189,8 @@ async function findMigrationFeeKeys(db: Db, connection: Connection, cfg: Config,
     .from(graduations)
     // Our own additions are a Creator's buybacks (ADR 0011) and the Burn's and the Flywheel's (#184), whose locked
     // position is the destination of the coins' entry on the Ledger.
-    .where(sql`not exists (
+    // Solana's pools alone: an EVM coin's pool has no Fee Key (ADR 0027, #252).
+    .where(sql`${graduations.chain} = 'solana' and not exists (
       select 1 from ${feeKeys} where ${feeKeys.pool} = ${graduations.pool}
         and ${feeKeys.nftMint} not in (select ${creatorBuybacks.feeKey} from ${creatorBuybacks} where ${isNotNull(creatorBuybacks.feeKey)})
         and ${feeKeys.lockedLiquidity} not in (

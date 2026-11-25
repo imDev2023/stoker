@@ -314,7 +314,8 @@ async function indexPoolTrade(db: Db, e: PoolSwapExecuted) {
     .select({ mint: graduations.mint, quoteMint: launches.quoteMint })
     .from(graduations)
     .innerJoin(launches, eq(launches.mint, graduations.mint))
-    .where(eq(graduations.pool, e.pool.toBase58()))
+    // A pool on Solana: an EVM coin's v4 pool is read by its chain's Indexer (#252).
+    .where(and(eq(launches.chain, "solana"), eq(graduations.pool, e.pool.toBase58())))
     .limit(1);
   if (!g) return 0;
   const buy = e.inputMint.toBase58() === g.quoteMint;

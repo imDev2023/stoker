@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Chain } from "./chains";
 import { CoinCreatorTier } from "./ladder";
 import { CreatorEarningsDestination } from "./launchModes";
 import { QuoteRef } from "./quotes";
@@ -79,6 +80,8 @@ export type CreatorEarnings = z.infer<typeof CreatorEarnings>;
 
 /** One Creator Forward: a payment of the Creator's share from the operations wallet, landed or on its way. */
 export const CreatorForward = z.object({
+  /** The chain it was paid on (#252). */
+  chain: Chain,
   signature: z.string(),
   quote: QuoteRef,
   amount: raw,

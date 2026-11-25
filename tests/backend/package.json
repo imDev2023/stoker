@@ -11,6 +11,7 @@
     "@launchpad/chain": "workspace:*",
     "@launchpad/contract": "workspace:*",
     "@launchpad/db": "workspace:*",
+    "@launchpad/evm": "workspace:*",
     "@launchpad/localnet": "workspace:*",
     "@launchpad/mainnet": "workspace:*",
     "@launchpad/stack": "workspace:*",
@@ -20,6 +21,7 @@
     "@types/node": "^24.0.0",
     "bn.js": "^5.2.2",
     "postgres": "^3.4.9",
+    "viem": "^2.58.6",
     "vitest": "^5.0.2"
   }
 }

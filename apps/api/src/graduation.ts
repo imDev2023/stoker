@@ -32,7 +32,8 @@ export async function watchGraduations(db: Db, cfg: Config, now = new Date()): P
     .from(curves)
     .innerJoin(launches, eq(launches.mint, curves.mint))
     .leftJoin(graduations, eq(graduations.mint, curves.mint))
-    .where(and(eq(curves.status, "graduating"), isNull(graduations.mint), sql`coalesce(${curves.completedAt}, ${curves.updatedAt}) < ${cutoff.toISOString()}::timestamptz`));
+    // Solana's coins alone (#252): an EVM chain's are its own jobs' (#254).
+    .where(and(eq(launches.chain, "solana"), eq(curves.status, "graduating"), isNull(graduations.mint), sql`coalesce(${curves.completedAt}, ${curves.updatedAt}) < ${cutoff.toISOString()}::timestamptz`));
 
   const result: GraduationWatch = { recovered: [], alerted: [], backfilled: [] };
   const connection = new Connection(cfg.rpcUrl, "confirmed");
@@ -97,7 +98,8 @@ async function backfillPools(db: Db, cfg: Config, connection: Connection, now: D
   const open = await db
     .select({ mint: graduations.mint, pool: graduations.pool, until: graduations.backfilledUntil, indexedAt: graduations.indexedAt })
     .from(graduations)
-    .where(isNull(graduations.backfillClosedAt))
+    // Solana's pools alone: an EVM coin never moves pools, and its chain's Indexer reads its pool from launch (#252).
+    .where(and(eq(graduations.chain, "solana"), isNull(graduations.backfillClosedAt)))
     .orderBy(graduations.slot);
   let budget = POOL_BACKFILL_PER_RUN;
   for (const g of open) {

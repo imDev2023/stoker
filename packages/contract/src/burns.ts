@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Chain } from "./chains";
 import { RevenueAsset } from "./revenue";
 
 /**
@@ -11,6 +12,8 @@ const raw = z.string().regex(/^\d+$/, "must be a whole number of raw units");
 
 /** One buy-and-burn: the SOL it spent and the coins it destroyed, in one transaction. */
 export const BurnEvent = z.object({
+  /** The chain it was made on (#252); the Platform Token lives on Solana alone (ADR 0030). */
+  chain: Chain,
   signature: z.string(),
   /** `burn` is the Platform Token; `flywheel` a top Launch. */
   kind: z.enum(["burn", "flywheel"]),
@@ -34,6 +37,8 @@ export type BudgetDestination = z.infer<typeof BudgetDestination>;
 
 /** One addition of protocol-owned liquidity: the SOL a budget put into a coin's pool, and the locked position it opened. */
 export const LiquidityAdditionEvent = z.object({
+  /** The chain it was made on (#252); the Platform Token lives on Solana alone (ADR 0030). */
+  chain: Chain,
   signature: z.string(),
   /** The budget that paid for it: `burn` (the Platform Token) or `flywheel` (a top Launch). */
   kind: z.enum(["burn", "flywheel"]),

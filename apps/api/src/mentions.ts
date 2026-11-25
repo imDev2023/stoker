@@ -67,6 +67,8 @@ export async function pollMentions(deps: { db: Db; cfg: Config; bucket: R2Bucket
     join (select mint, max(block_time) as last from trades
           where block_time > now() - make_interval(secs => ${m.activeSeconds}) group by mint) t on t.mint = l.mint
     left join mention_polls p on p.mint = l.mint
+    -- Solana's coins: the EVM chains' are not searched until a slice brings their marks (#256).
+    where l.chain = 'solana'
     order by p.polled_at asc nulls first, t.last desc
     limit ${m.coinsMax}`);
 

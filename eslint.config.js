@@ -39,6 +39,7 @@ export default tseslint.config(
             { group: ["@launchpad/chain", "@launchpad/chain/*"], message: "Transactions are built by the API (ADR 0003); the web app calls it." },
             { group: ["@raydium-io/*"], message: "The Raydium SDK is GPL and server-only (ADR 0003)." },
             { group: ["@coral-xyz/anchor", "@coral-xyz/anchor/*"], message: "Instruction building is server-only (ADR 0003)." },
+            { group: ["@launchpad/evm", "@launchpad/evm/*"], message: "The EVM chains' transactions and reads are the API's (ADR 0003, #252); the web app calls it." },
           ],
         },
       ],

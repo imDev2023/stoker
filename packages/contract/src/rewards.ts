@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Chain } from "./chains";
 import { RewardPayoutAsset } from "./launchModes";
 
 /**
@@ -117,6 +118,8 @@ export const RewardRoundStatus = z.enum(["paying", "paid"]);
 export type RewardRoundStatus = z.infer<typeof RewardRoundStatus>;
 
 export const RewardRoundSummary = z.object({
+  /** The chain the round pays on (#252). */
+  chain: Chain,
   id: z.string(),
   mint: base58,
   rulesVersion: z.number().int(),
@@ -282,6 +285,8 @@ export const WalletRewards = z.object({
   wallet: base58,
   rewards: z.array(
     RewardPayout.omit({ wallet: true }).extend({
+      /** The chain the round pays on (#252). */
+      chain: Chain,
       round: z.string(),
       mint: base58,
       /** The coin: its ticker, name and decimals (the holding is in it). */

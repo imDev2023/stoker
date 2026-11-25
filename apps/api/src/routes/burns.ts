@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import type { Chain } from "@launchpad/contract";
+import { chainFilter, chainIs } from "../chains/filter";
 import { PublicKey } from "@solana/web3.js";
 import { and, countDistinct, desc, eq, inArray, sql } from "drizzle-orm";
 import { WSOL_MINT } from "@launchpad/chain";
@@ -34,8 +36,14 @@ burnRoutes.get("/burns", async (c) => {
   const db = c.get("db");
   const cfg = c.get("cfg");
   const token = await platformToken(db);
+  // The events of one chain, `?chain=` (#252); the budgets and the shares are the platform's, whichever chain is asked.
+  const chain = chainFilter(c);
+  const onChain = chainIs(ledgerEntries.chain, chain);
+  // The Burn and the Flywheel are Solana's: an EVM chain's Burn budget builds up at its Admin's address there (ADR 0030),
+  // so asked for one, the page's figures are that chain's, none yet (#254).
+  const elsewhere = chain !== undefined && chain !== "solana";
   const [entries, picks, b, destinations, additions, [added]] = await Promise.all([
-    db.select().from(ledgerEntries).where(inArray(ledgerEntries.kind, ["burn", "flywheel"])).orderBy(desc(ledgerEntries.slot), desc(ledgerEntries.signature), desc(ledgerEntries.eventIndex)).limit(400),
+    db.select().from(ledgerEntries).where(and(inArray(ledgerEntries.kind, ["burn", "flywheel"]), onChain)).orderBy(desc(ledgerEntries.slot), desc(ledgerEntries.signature), desc(ledgerEntries.eventIndex)).limit(400),
     flywheelPicks(db, cfg.flywheelTopN),
     budgets(db),
     budgetDestinations(db),
@@ -44,7 +52,7 @@ burnRoutes.get("/burns", async (c) => {
       .select({ entry: ledgerEntries, feeKey: feeKeys.nftMint })
       .from(ledgerEntries)
       .leftJoin(feeKeys, and(eq(ledgerEntries.eventIndex, 1), eq(feeKeys.lockedLiquidity, ledgerEntries.destination)))
-      .where(inArray(ledgerEntries.kind, ADDITION_KINDS))
+      .where(and(inArray(ledgerEntries.kind, ADDITION_KINDS), onChain))
       .orderBy(desc(ledgerEntries.slot), desc(ledgerEntries.signature), desc(ledgerEntries.eventIndex))
       .limit(ADDITIONS_SHOWN * 2),
     db
@@ -54,7 +62,7 @@ burnRoutes.get("/burns", async (c) => {
         pools: countDistinct(ledgerEntries.destination),
       })
       .from(ledgerEntries)
-      .where(and(inArray(ledgerEntries.kind, ADDITION_KINDS), eq(ledgerEntries.assetMint, WSOL))),
+      .where(and(inArray(ledgerEntries.kind, ADDITION_KINDS), eq(ledgerEntries.assetMint, WSOL), onChain)),
   ]);
   const shares = { burnBps: b.rows.burn.shareBps, flywheelBps: b.rows.flywheel.shareBps };
   const asset = await revenueAssets(
@@ -64,7 +72,7 @@ burnRoutes.get("/burns", async (c) => {
   const bySignature = new Map<string, BurnEvent>();
   for (const e of entries) {
     const event = bySignature.get(e.signature) ?? {
-      signature: e.signature, kind: e.kind as "burn" | "flywheel", coin: asset(e.assetMint), lamports: "0", amount: "0", slot: e.slot, time: e.blockTime.toISOString(),
+      chain: e.chain as Chain, signature: e.signature, kind: e.kind as "burn" | "flywheel", coin: asset(e.assetMint), lamports: "0", amount: "0", slot: e.slot, time: e.blockTime.toISOString(),
     };
     if (e.assetMint === WSOL_MINT.toBase58()) event.lamports = e.amount;
     else {
@@ -79,7 +87,7 @@ burnRoutes.get("/burns", async (c) => {
   const bySignatureAdded = new Map<string, LiquidityAdditionEvent>();
   for (const { entry: e, feeKey } of additions) {
     const event = bySignatureAdded.get(e.signature) ?? {
-      signature: e.signature, kind: e.kind === LIQUIDITY_KIND.burn ? "burn" as const : "flywheel" as const, coin: asset(e.launchMint ?? e.assetMint),
+      chain: e.chain as Chain, signature: e.signature, kind: e.kind === LIQUIDITY_KIND.burn ? "burn" as const : "flywheel" as const, coin: asset(e.launchMint ?? e.assetMint),
       lamports: "0", amount: "0", position: e.destination, feeKey: null, slot: e.slot, time: e.blockTime.toISOString(),
     };
     if (e.assetMint === WSOL) event.lamports = e.amount;
@@ -92,11 +100,13 @@ burnRoutes.get("/burns", async (c) => {
     shares: { ...shares, flywheelTopN: cfg.flywheelTopN },
     destinations,
     rule: ruleText(shares, cfg.flywheelTopN, destinations),
-    budgets: (({ revenueLamports, burn, flywheel }) => ({
-      revenueLamports, burn: { spent: burn.spent, available: burn.available }, flywheel: { spent: flywheel.spent, available: flywheel.available },
-    }))(budgetsView(b)),
+    budgets: elsewhere
+      ? { revenueLamports: "0", burn: { spent: "0", available: "0" }, flywheel: { spent: "0", available: "0" } }
+      : (({ revenueLamports, burn, flywheel }) => ({
+          revenueLamports, burn: { spent: burn.spent, available: burn.available }, flywheel: { spent: flywheel.spent, available: flywheel.available },
+        }))(budgetsView(b)),
     burned: [...burnedByCoin].map(([mint, amount]) => ({ coin: asset(mint), amount: amount.toString() })),
-    nextFlywheel: picks.map((p) => ({ mint: p.mint, symbol: p.symbol })),
+    nextFlywheel: elsewhere ? [] : picks.map((p) => ({ mint: p.mint, symbol: p.symbol })),
     events,
     liquidity: { lamports: added!.lamports, count: added!.count, pools: added!.pools, additions: [...bySignatureAdded.values()].slice(0, ADDITIONS_SHOWN) },
   };

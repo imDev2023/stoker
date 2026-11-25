@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { chainFilter, chainIs } from "../chains/filter";
 import { eq } from "drizzle-orm";
 import type { QuoteAssetList } from "@launchpad/contract";
 import { quoteAssets } from "@launchpad/db";
@@ -9,7 +10,9 @@ import { byPickerOrder, toQuoteAsset } from "../quotes/assets";
 export const quotes = new Hono<AppEnv>();
 
 quotes.get("/quotes", async (c) => {
-  const rows = await c.get("db").select().from(quoteAssets);
+  // Solana's Quote Registry; an EVM chain's Listings are on-chain and come here with its jobs (#254), so `?chain=` of an
+  // EVM chain answers an empty list until then.
+  const rows = await c.get("db").select().from(quoteAssets).where(chainIs(quoteAssets.chain, chainFilter(c)));
   const body: QuoteAssetList = { quotes: rows.map((r) => toQuoteAsset(c.get("cfg"), r)).sort(byPickerOrder) };
   return c.json(body);
 });

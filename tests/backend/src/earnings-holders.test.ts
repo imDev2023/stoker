@@ -180,7 +180,7 @@ describe("a standard coin whose Creator Earnings go to its holders", () => {
     const paying = await coinEarnings(mint);
     expect(paying).toMatchObject({ collected: share.toString(), applied: distributable.toString(), waiting: (share - distributable).toString(), totals: { paidToHolders: "0" } });
     expect(paying.rounds).toEqual([{
-      id: dividend!.round, mint, rulesVersion: rules.version, status: "paying", source: "earnings", snapshotSlot: expect.any(Number),
+      chain: "solana", id: dividend!.round, mint, rulesVersion: rules.version, status: "paying", source: "earnings", snapshotSlot: expect.any(Number),
       payout: { asset: "quote", mint: WSOL, symbol: "SOL", decimals: 9 }, pot: share.toString(), sold: null, eligibleHolders: 8, distributable: distributable.toString(),
       // No Holding Weight is in force (ADR 0022), so every holding counts once: 10000 basis points.
       weightedTotal: (sum([...holders.values()]) * 10_000n).toString(), paid: "0", startedAt: expect.any(String), finishedAt: null,
@@ -247,7 +247,7 @@ describe("a standard coin whose Creator Earnings go to its holders", () => {
     expect(new Map(entries.map((e) => [e.signature, e.amount]))).toEqual(new Map([...carried].map(([signature, amount]) => [signature, amount.toString()])));
     for (const e of entries) {
       expect(e).toEqual({
-        signature: e.signature, index: 0, kind: "holder_dividend", asset: expect.objectContaining({ mint: WSOL, symbol: "SOL", decimals: 9 }), amount: e.amount,
+        chain: "solana", signature: e.signature, index: 0, kind: "holder_dividend", asset: expect.objectContaining({ mint: WSOL, symbol: "SOL", decimals: 9 }), amount: e.amount,
         source: ops(), destination: mint, launch: expect.objectContaining({ mint }), slot: (await rawTransaction(e.signature)).slot, time: expect.any(String),
       });
     }

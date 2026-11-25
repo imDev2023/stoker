@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { QuoteCategory, QuoteIssuer, QuoteRef } from "./quotes";
 import { CurveStatus } from "./trades";
+import { Chain, ChainAddress } from "./chains";
 
 /** Board discovery: sorting and filtering Launches, their market figures, the Quote Assets in use, and top holders. */
 
@@ -35,19 +36,21 @@ export const LAUNCH_SEARCH_MAX = 64;
 /** Query string of GET /v1/launches. Filters combine; an unknown value is a 400, never silently ignored. */
 export const LaunchListQuery = z.object({
   sort: LaunchSort.default("new"),
+  /** Only Launches on this chain (#252); every chain's when absent. */
+  chain: Chain.optional(),
   /**
    * A search: Launches whose name or ticker contains it (any case), or whose mint address starts with it. Whitespace
    * around it is ignored, and an empty search is no filter.
    */
   q: z.string().trim().max(LAUNCH_SEARCH_MAX).optional(),
-  /** Only Launches paired with this Quote Asset (its mint). */
-  quote: base58.optional(),
+  /** Only Launches paired with this Quote Asset (its mint, or its contract on an EVM chain). */
+  quote: ChainAddress.optional(),
   category: QuoteCategory.optional(),
   /** Only Launches paired with a tokenized stock from this issuer. */
   issuer: QuoteIssuer.optional(),
   status: CurveStatus.optional(),
   /** Only this Creator's Launches. */
-  creator: base58.optional(),
+  creator: ChainAddress.optional(),
   /** Extra figures for each Launch, by name: `fields=sparkline`. An unknown name is a 400. */
   fields: z
     .string()
@@ -152,6 +155,8 @@ export type CreatorHolding = z.infer<typeof CreatorHolding>;
 
 /** Read from the chain at `slot`: the largest holders first (the 20 largest token accounts, grouped by owner). */
 export const HolderList = z.object({
+  /** The chain the holders were read on (#252). */
+  chain: Chain,
   slot: z.number().int(),
   supply: raw,
   holders: z.array(Holder),

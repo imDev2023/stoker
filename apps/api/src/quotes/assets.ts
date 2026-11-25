@@ -15,8 +15,9 @@ const WSOL = WSOL_MINT.toBase58();
 const ticker = (r: { symbol: string | null; mint: string }) => r.symbol ?? `${r.mint.slice(0, 4)}...${r.mint.slice(-4)}`;
 const band = (r: Row) => (r.ruleMin && r.ruleMax ? { min: BigInt(r.ruleMin), max: BigInt(r.ruleMax) } : null);
 
+/** A Solana Quote Asset as every coin carries it; Solana has no ERC-8056 multiplier, so `multiplier` is null. */
 export function toQuoteRef(r: Pick<Row, "mint" | "symbol" | "name" | "decimals" | "logo" | "category" | "issuer">): QuoteRef {
-  return { mint: r.mint, symbol: r.symbol, name: r.name, decimals: r.decimals, logo: r.logo, category: r.category, issuer: r.issuer };
+  return { chain: "solana", multiplier: null, mint: r.mint, symbol: r.symbol, name: r.name, decimals: r.decimals, logo: r.logo, category: r.category, issuer: r.issuer };
 }
 
 /** A registry row as the API shows it: launchable only if the latest price and our on-chain rule agree. */

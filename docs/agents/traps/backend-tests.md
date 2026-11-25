@@ -36,6 +36,12 @@ The text is the original's, one sentence a line.
 - Requests are counted per UTC minute (`minuteOf` in `apps/api/src/apiKeys.ts`), so a burst that must meet a limit may not straddle two minutes: `api-keys.test.ts` started one at 02:50:59Z in CI on 2026-11-16 and no request was refused.
   `rate-limits.test.ts` waits for a fresh minute (`nextMinute`), and `api-keys.test.ts` waits only when the minute is nearly over (`clearOfMinuteEnd`).
 
+## The EVM side (#252)
+
+- A fork carries on from its block's time (2026-11-22 for L2 block 120,800,000), so its trades would fall outside every "last 24 hours" figure; the stack sets the fork's clock to now before it deploys (`deployStoker` in `tools/stack/src/evm.ts`), and a test that moves the fork's clock must leave it no earlier; moving it forward dates every later EVM coin in the future, on top of the shared board, where a Solana test reads its own coin first (`launch.test.ts` failed that way once), so no test moves it; a deadline is still the fork's latest block's time plus a margin (`deadline` in `tests/backend/src/evm.ts`).
+- A wallet's native balance moves by every transaction it sends: a sell through the Universal Router first approves Permit2 and the router, so `swapExactIn` in `tests/backend/src/evm.ts` returns the gas of all three, and a test reads what a trade paid or received net of that, never of the swap's own gas alone (the first run took the approvals' 0.0001 ETH for a wrong figure).
+- EVM coins are on the shared board: a Solana test that counts every coin of `GET /v1/launches` must filter `?chain=solana`.
+
 ## What a test must set up
 
 - The Snipe Window is 40 slots on the backend stack (`startStack`'s `snipeWindowSlots`; a buy inside it, then one after a wait of about 16 s, `trust.test.ts`) and 100,000 on the UI stack (`global-setup.ts`), so every seeded trade is a snipe and the coin baselines never depend on how long the seed took; the card prints whatever window the API reports ("the launch's first 100,000 slots (about 11 hours)" in the shots).

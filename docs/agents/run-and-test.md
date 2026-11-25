@@ -26,11 +26,23 @@ The text is the original's, one sentence a line.
   Finish the whole change, typecheck, then run.
 - UI baselines live in `tests/ui/screenshots/<platform>/`, and only `darwin` exists, so cloud (Linux) sessions can't run the visual projects and a Mac session re-baselines their PRs; after an intended UI change, run `pnpm test:ui --update-snapshots=changed` (`all` rewrites matching baselines with byte-different PNGs) and look at every changed image before committing.
   To review a hundred of them, diff each against `git show HEAD:<path>` with the rows below the header band and above the footer band aligned separately, and eyeball only the rows between: a plain top-aligned diff marks every row below a height change (156 images reviewed that way for #85).
-- Port 8787 and 3000 belong to other projects on this machine; ours are 3100, 8791, 8797, 8899, 5442.
+- Port 8787 and 3000 belong to other projects on this machine; ours are 3100, 8791, 8796 (the dev fork of Robinhood Chain, below), 8797, 8798, 8899, 5442.
 
 ## A page with data
 
 - To see a page with data on a running dev or worktree stack (the owner's database is empty), a short `.mts` script inside `tests/ui` that copies the fixtures' thin helpers (airdrop, `POST /v1/launches/prepare` with `tests/ui/fixtures/coin.png`, `POST /v1/trades/prepare`, sign, send, `POST /v1/transactions/:signature`) against that stack's URLs, run with `pnpm exec tsx` from `tests/ui` and deleted after: a file in the scratchpad cannot resolve the packages, `.ts` is transformed as CJS and refuses top-level await, and a sell must stay under what the trader holds (2026-10-10).
+
+## The EVM side of the stack (#252)
+
+- With `ROBINHOOD_RPC_URL` in the environment (an archive endpoint, Alchemy's free tier in the owner's global env), every stack also forks Robinhood Chain under anvil at L2 block 120,800,000 on a free port, with our contracts deployed, and the API indexes it; without it, or with `STACK_EVM=off`, the stack is Solana's alone and the EVM tests skip by name.
+  From a worktree: `direnv exec "/Volumes/Farhan/Work Folder/Dev/AI/stoker" sh -c 'cd tests/backend && caffeinate -i pnpm exec vitest run'` (or `pnpm test:backend` inside the same `sh -c`).
+  The URL carries a key: the stack takes it out of every log it keeps, and the API and the tests are given only the fork's local URL.
+  The block is pinned, so Foundry caches what the fork reads under `~/.foundry/cache/rpc/`; a later start reads the remote only for state it has not seen, which keeps the free tier, shared with the contract lanes, nearly untouched.
+- A dev fork: `direnv exec "/Volumes/Farhan/Work Folder/Dev/AI/stoker" pnpm --filter @launchpad/stack evm-fork` starts it on port 8796 with our contracts deployed and prints `EVM_DEPLOYMENTS` and `ROBINHOOD_RPC_URL` to pass the dev API as `--var`s; its Indexer runs on the every-minute cron (`GET /__scheduled`) or `POST /v1/operator/jobs/indexer`.
+- The EVM Indexer reads to the chain's finality depth (5 blocks on Robinhood Chain) and asks `eth_getLogs` for a range that starts at the deployment's `logBlockRange` (the profile's 10 when unset, Alchemy's free-tier limit) and halves whenever the provider refuses one, keeping what worked in `chain_cursors`; a run stops after `maxRangesPerRun` ranges (60) or `maxRunSeconds` (20) and the next minute's run goes on.
+  The stack's deployment sets 2,000 for anvil; a test that wants a block read mines the finality depth first (`runIndexer` in `tests/backend/src/evm.ts`).
+- The ABIs and the bytecode in `packages/evm/src/generated/` come from the contracts' build: after a contract change, `forge build` in `contracts/` (a clean build of everything takes about five minutes), then `node packages/evm/scripts/artifacts.mjs`, and commit the result; CI's `contracts` job runs it with `--check`.
+  A contract slice that changes an event changes what the Indexer reads: rerun the backend suite with the fork after regenerating.
 
 ## The EVM contracts
 

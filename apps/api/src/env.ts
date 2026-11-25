@@ -179,6 +179,14 @@ export type Bindings = {
   MENTIONS_COINS_MAX?: string;
   /** A coin is searched while it has traded within this many seconds; 1800 (half an hour) unless set. */
   MENTIONS_ACTIVE_SECONDS?: string;
+  /**
+   * The EVM chains this API reads (#252): a JSON list of deployments of our contracts, each `{ chain, factory, hook,
+   * registry, keys, fromBlock }`. Unset on every deployment until the contracts are deployed (#251), so the API reads
+   * Solana alone; the test stack sets it for its fork of Robinhood Chain.
+   */
+  EVM_DEPLOYMENTS?: string;
+  /** Robinhood Chain's RPC for the Worker, an archive endpoint whose URL carries a key: a secret, never logged. */
+  ROBINHOOD_RPC_URL?: string;
   HYPERDRIVE: Hyperdrive;
   METADATA_BUCKET: R2Bucket;
 };

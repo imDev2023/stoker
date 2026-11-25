@@ -2,6 +2,7 @@ import { z } from "zod";
 import { LaunchMarket } from "./board";
 import { PublishedBudgetTable } from "./budget";
 import { PublishedCreatorLadder } from "./ladder";
+import { Chain, ChainAddress, PoolRef } from "./chains";
 import { GraduationTarget, QuoteRef } from "./quotes";
 import { CurveProgress, Graduation, SolRouteSource } from "./trades";
 import { CreatorEarningsDestination, CreatorLockTerms, LaunchModeFields, LaunchModesSummary, LiquidityTax, RewardTax } from "./launchModes";
@@ -25,6 +26,7 @@ export * from "./region";
 export * from "./trust";
 export * from "./marks";
 export * from "./creatorLock";
+export * from "./chains";
 
 /** The runtime's own URL (a Worker's, Node's and a browser's are one standard); this package's `lib` names no runtime. */
 declare const URL: new (url: string) => { hostname: string };
@@ -179,9 +181,13 @@ export const CopyCheck = z.object({
 export type CopyCheck = z.infer<typeof CopyCheck>;
 
 export const LaunchSummary = z.object({
-  mint: base58,
-  pool: base58,
-  creator: base58,
+  /** The chain the coin lives on (#252): `solana`, or an EVM chain such as `robinhood`. */
+  chain: Chain,
+  /** The coin's address: its mint on Solana, its ERC-20 contract on an EVM chain. */
+  mint: ChainAddress,
+  /** Its curve on Solana; its Uniswap v4 pool's id on an EVM chain, where it trades from launch for good. */
+  pool: PoolRef,
+  creator: ChainAddress,
   quote: QuoteRef,
   name: z.string(),
   symbol: z.string(),
@@ -311,7 +317,8 @@ export type PlatformInfo = z.infer<typeof PlatformInfo>;
 
 /** Something the operator must act on, such as a Launch whose curve sold out but that Raydium has not migrated. */
 export const OperatorAlert = z.object({
-  kind: z.enum(["graduation_stuck", "reward_tax_unlocked", "job_failed", "reward_round_stalled"]),
+  /** `indexer_skipped`: an EVM chain's Indexer set aside a transaction it could not write (its hash is the subject), and went on (#252). */
+  kind: z.enum(["graduation_stuck", "reward_tax_unlocked", "job_failed", "reward_round_stalled", "indexer_skipped"]),
   /** What the alert is about: a Launch's mint, a job's name for `job_failed`, a round's id for `reward_round_stalled`. */
   subject: z.string(),
   message: z.string(),

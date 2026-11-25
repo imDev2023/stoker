@@ -1,0 +1,17 @@
+{
+  "name": "@launchpad/evm",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./bytecode": "./src/generated/bytecode.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "artifacts": "node scripts/artifacts.mjs",
+    "artifacts:check": "node scripts/artifacts.mjs --check"
+  },
+  "dependencies": {
+    "viem": "^2.58.6"
+  }
+}
