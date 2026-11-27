@@ -1,4 +1,4 @@
-import { and, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { WSOL_MINT } from "@launchpad/chain";
 import { ledgerEntries, type Db } from "@launchpad/db";
 import { REVENUE_KINDS } from "./budget";
@@ -19,7 +19,7 @@ export async function revenueHeld(db: Db, mints: string[]) {
       amount: sql<string>`sum(case when ${ledgerEntries.kind} = 'sweep' or ${creatorPaid} then -${ledgerEntries.amount} else ${ledgerEntries.amount} end)::text`,
     })
     .from(ledgerEntries)
-    .where(and(or(inArray(ledgerEntries.kind, [...REVENUE_KINDS, "sweep"]), creatorPaid), inArray(ledgerEntries.assetMint, mints), ne(ledgerEntries.assetMint, WSOL)))
+    .where(and(eq(ledgerEntries.chain, "solana"), or(inArray(ledgerEntries.kind, [...REVENUE_KINDS, "sweep"]), creatorPaid), inArray(ledgerEntries.assetMint, mints), ne(ledgerEntries.assetMint, WSOL)))
     .groupBy(ledgerEntries.assetMint);
   return new Map(rows.map((r) => [r.mint, BigInt(r.amount)]));
 }

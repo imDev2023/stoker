@@ -110,7 +110,7 @@ operatorEvmRoutes.post("/burn-carries", async (c) => {
     },
     {
       chain: "solana", signature: body.data.solanaSignature, eventIndex: 0, kind: "burn_carry", assetMint: WSOL_MINT.toBase58(), assetDecimals: 9, amount: body.data.lamports,
-      source: chain.chain, destination: operations, launchMint: null, slot: solana.slot, blockTime: new Date((solana.blockTime ?? Math.floor(Date.now() / 1000)) * 1000),
+      source: admin, destination: operations, launchMint: null, slot: solana.slot, blockTime: new Date((solana.blockTime ?? Math.floor(Date.now() / 1000)) * 1000),
     },
   ]).onConflictDoNothing().returning({ chain: ledgerEntries.chain });
   return c.json({ recorded: inserted.length });

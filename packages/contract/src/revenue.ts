@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Chain } from "./chains";
+import { Chain, ChainAddress, PoolRef } from "./chains";
 import { QuoteRef } from "./quotes";
 
 /**
@@ -97,12 +97,15 @@ export const LedgerEntry = z.object({
   kind: LedgerKind,
   asset: RevenueAsset,
   amount: raw,
-  /** Where it came from: a Platform Fee vault, a CPMM pool, or the operations wallet for a sweep. */
-  source: base58,
-  /** Where it went: the operations wallet, the treasury for a sweep, or the Creator for a Creator Forward. A Graduation Fee names the Creator as its source and the operations wallet as its destination, though nothing moves. */
-  destination: base58,
+  /**
+   * Where it came from: a Platform Fee vault, a CPMM pool, or the operations wallet for a sweep; on an EVM chain (#254)
+   * our hook, the Tax Vault, a Destination or the Keeper.
+   */
+  source: ChainAddress,
+  /** Where it went: the operations wallet, the treasury for a sweep, or the Creator for a Creator Forward. A Graduation Fee names the Creator as its source and the operations wallet as its destination, though nothing moves. On an EVM chain the owner a Credit was paid to, the coin's pool for Support Liquidity, or the Tax Vault or the Distributor for a Destination's work. */
+  destination: ChainAddress.or(PoolRef),
   /** The graduated coin whose pool paid it, or whose Graduation Fee it is; null for the Platform Fee (one vault collects every Launch's) and sweeps. */
-  launch: z.object({ mint: base58, symbol: z.string(), name: z.string() }).nullable(),
+  launch: z.object({ mint: ChainAddress, symbol: z.string(), name: z.string() }).nullable(),
   slot: z.number().int(),
   time: z.iso.datetime(),
 });

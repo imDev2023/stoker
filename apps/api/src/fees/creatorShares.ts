@@ -49,7 +49,7 @@ const ledgerTime = (time: Date) => sql`${time.toISOString()}::timestamptz`;
  * that time count, which is what had been collected by then.
  */
 const collected = (before?: Date) => sql`${trades.slot} <= coalesce(
-  (select max(le.slot) from ${ledgerEntries} le where le.kind = 'platform_fee' and le.asset_mint = ${launches.quoteMint}${before ? sql` and le.block_time < ${ledgerTime(before)}` : sql``}), -1)`;
+  (select max(le.slot) from ${ledgerEntries} le where le.chain = 'solana' and le.kind = 'platform_fee' and le.asset_mint = ${launches.quoteMint}${before ? sql` and le.block_time < ${ledgerTime(before)}` : sql``}), -1)`;
 
 type Scope = {
   /** Only what the platform has already collected, which is what it owes; otherwise everything earned so far. */
@@ -193,7 +193,7 @@ export async function creatorMoney(db: Db, before?: Date) {
     db
       .select({ mint: ledgerEntries.assetMint, amount: sql<string>`sum(${ledgerEntries.amount})::text` })
       .from(ledgerEntries)
-      .where(creatorPaid)
+      .where(and(eq(ledgerEntries.chain, "solana"), creatorPaid))
       .groupBy(ledgerEntries.assetMint),
   ]);
   const money = new Map<string, { accrued: bigint; forwarded: bigint }>();

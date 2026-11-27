@@ -262,7 +262,8 @@ async function sweep(
       amount: sql<string>`sum(case when ${ledgerEntries.kind} = 'sweep' or ${creatorPaid} then -${ledgerEntries.amount} else ${ledgerEntries.amount} end)::text`,
     })
     .from(ledgerEntries)
-    .where(and(or(inArray(ledgerEntries.kind, [...REVENUE_KINDS, "sweep"]), creatorPaid), ne(ledgerEntries.assetMint, WSOL)))
+    // Solana's alone: an EVM chain's revenue is paid to its Admin on that chain, never into the operations wallet (#254).
+    .where(and(eq(ledgerEntries.chain, "solana"), or(inArray(ledgerEntries.kind, [...REVENUE_KINDS, "sweep"]), creatorPaid), ne(ledgerEntries.assetMint, WSOL)))
     .groupBy(ledgerEntries.assetMint)
     .orderBy(sql`min(${ledgerEntries.slot})`, ledgerEntries.assetMint);
   const owed = new Map(
