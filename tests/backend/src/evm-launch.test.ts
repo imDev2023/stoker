@@ -56,7 +56,7 @@ describe.skipIf(!hasEvm)("EVM launch: what a chain offers, and what a launch wou
     const e = evm()!;
     const explorer = ROBINHOOD_CHAIN.explorer;
     expect(o).toMatchObject({
-      chain: "robinhood", name: "Robinhood Chain", chainId: 4663, explorer, stockName: "Stock Tokens", native: { symbol: "ETH", name: "Ether", decimals: 18 },
+      chain: "robinhood", name: "Robinhood Chain", chainId: 4663, explorer, stockName: "Stock Token", native: { symbol: "ETH", name: "Ether", decimals: 18 },
       supply: SUPPLY.toString(), decimals: 18, platformFeeBps: 100, openingFee: { startBps: 9_900, seconds: 20 }, taxRatesBps: [100, 200, 300, 400, 500],
       shareStepsBps: [0, 1_000, 2_500, 5_000], sharesMaxBps: 5_000, payoutAssets: ["coin", "quote"],
       creatorLock: { maxBps: 2_000, minSeconds: WEEK, maxPartSeconds: 4 * 365 * 86_400 }, destinations: ["wallet"],

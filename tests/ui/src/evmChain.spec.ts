@@ -127,7 +127,7 @@ test.describe("with the chain shown", () => {
       // Only what the chain offers: its listed Quote Assets, the native asset first and chosen, the Stock Token under the chain's own name for one.
       await expect(pairChoice(page).getByRole("radio", { name: /^ETH\b/ })).toBeChecked();
       const stock = pairChoice(page).getByRole("radio", { name: new RegExp(`^${STOCK.symbol}\\b`) });
-      await expect(stock).toHaveAccessibleName(`${STOCK.symbol} Stock Tokens`);
+      await expect(stock).toHaveAccessibleName(`${STOCK.symbol} Stock Token`);
       await stock.check();
       await expect(page.getByRole("button", { name: /Choose another Quote Asset/ })).toHaveCount(0);
       await expect(page.getByRole("radiogroup", { name: "Launch type" }).getByRole("radio", { name: "Standard" })).toBeChecked();

@@ -91,7 +91,7 @@ export const EvmLaunchOptions = z.object({
     blockExplorerUrls: z.array(z.string()),
   }),
   native: z.object({ symbol: z.string(), name: z.string(), decimals: z.number().int() }),
-  /** What this chain calls its tokenized stocks, the only name the site gives them ("Stock Tokens" on Robinhood Chain); null where it has no name of its own. */
+  /** What this chain calls one of its tokenized stocks, the only name the site gives it ("Stock Token" on Robinhood Chain); null where it has no name of its own. */
   stockName: z.string().nullable(),
   contracts: z.object({
     factory: EvmAddress,

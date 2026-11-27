@@ -38,7 +38,7 @@ export type EvmChainProfile = {
    * (`wallet_addEthereumChain`, #253). The API itself reads through its own endpoint, a secret.
    */
   walletRpcUrl: string;
-  /** What the chain calls its tokenized stocks, the only name the site gives them (ADR 0028); null where it has none of its own. */
+  /** What the chain calls one of its tokenized stocks, the only name the site gives it (ADR 0028); null where it has none of its own. */
   stockName: string | null;
   /** Multicall3, at its usual address: one `eth_call` for a quote's reads, so every figure is of one block (#253). */
   multicall3: Address;
@@ -65,7 +65,7 @@ export const ROBINHOOD_CHAIN: EvmChainProfile = {
   blockNumberIsL1Estimate: true,
   explorer: "https://robinhoodchain.blockscout.com",
   walletRpcUrl: "https://rpc.mainnet.chain.robinhood.com",
-  stockName: "Stock Tokens",
+  stockName: "Stock Token",
   multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
   native: { symbol: "ETH", name: "Ether", decimals: 18 },
   uniswap: {

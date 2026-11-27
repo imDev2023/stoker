@@ -85,6 +85,15 @@ export function EvmLaunchForm({
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   /** What a prepare refused by the chain's own rules, shown under each field until the Creator edits the form. */
   const [refused, setRefused] = useState<FieldRefusals>({});
+  // A launch that has landed but that the API has not read within the first minute, and whether this form is still shown.
+  const [reading, setReading] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   const imageUrl = useMemo(() => (image ? URL.createObjectURL(image) : null), [image]);
   useEffect(() => () => { if (imageUrl) URL.revokeObjectURL(imageUrl); }, [imageUrl]);
@@ -132,9 +141,19 @@ export function EvmLaunchForm({
     if ((await evm!.readChainId()) !== options.chainId) throw new WrongNetwork();
   }
 
-  /** A launch the chain has taken: reported until the API has indexed it, then its coin's page. */
+  /**
+   * A launch the chain has taken: reported until the API has indexed it, then its coin's page. The page is opened only
+   * once the API has the coin, however long its Indexer takes: opened sooner it would say there is no coin at an address
+   * where one has just launched. Past the first minute the status says so, and the transaction's link stays beside it.
+   */
   async function landed(hash: string, coin: string) {
-    await reportEvmTransaction(options.chain, hash);
+    if (!(await reportEvmTransaction(options.chain, hash))) {
+      setReading(true);
+      while (alive.current && !(await reportEvmTransaction(options.chain, hash, { attempts: 12, waitMs: 5_000 }))) {
+        // Asked again: the coin is on the chain, and the API reads it on its Indexer's next run at the latest.
+      }
+      if (!alive.current) return;
+    }
     router.push(`/coin/${coin}`);
   }
 
@@ -541,7 +560,7 @@ function Summary({ options, o, ticker, symbol, preview, step, failed, error, exp
           <div className={styles.status} role="status">
             <span className={styles.statusDot} aria-hidden />
             <span className={styles.statusText}>
-              {step.ask === "approve" ? "Approving your first buy" : `Launching ${symbol}`}, <span className="mono">{elapsed}s</span>
+              {reading ? `${symbol} has launched, and its page opens as soon as the site has read the chain` : step.ask === "approve" ? "Approving your first buy" : `Launching ${symbol}`}, <span className="mono">{elapsed}s</span>
             </span>
             <Address value={step.hash} kind="tx" platform={explorer} className={styles.statusLink} />
           </div>

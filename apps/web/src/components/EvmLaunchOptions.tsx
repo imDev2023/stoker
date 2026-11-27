@@ -165,7 +165,7 @@ export type EvmLaunchOptionsState = ReturnType<typeof useEvmLaunchOptions>;
 
 /**
  * The Quote Assets an EVM chain's Quote Registry lists, as rows: the native asset first, each with its kind at its end,
- * in the chain's own words ("Stock Tokens" on Robinhood Chain). The list is the chain's, read by the API from its
+ * in the chain's own words ("Stock Token" on Robinhood Chain). The list is the chain's, read by the API from its
  * contracts; nothing here offers an asset the chain does not list.
  */
 export function EvmQuoteChooser({ options, value, onChange, labelId }: { options: EvmLaunchOptions; value: string | null; onChange: (address: string) => void; labelId: string }) {
