@@ -106,6 +106,12 @@ export type EvmDeployment = {
   maxRunSeconds?: number;
 };
 
+/**
+ * The gas a Creator's First Buy adds to a launch (#253), for an estimate made before the buy can be tried out (no
+ * allowance yet, or only a form's choices): PLACEHOLDER until measured on the fork.
+ */
+export const FIRST_BUY_GAS = 250_000n;
+
 /** The native asset's address as a Quote Asset: the zero address, native ETH in the pool key (#242). */
 export const NATIVE: Address = "0x0000000000000000000000000000000000000000";
 
