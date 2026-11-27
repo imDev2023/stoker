@@ -381,10 +381,12 @@ export async function prepareEvmTrade(c: Context<AppEnv>, sent: unknown): Promis
   if (!wallet.asset) {
     const symbol = x.config.profile.native.symbol;
     if (wallet.native < amountIn) throw refuse(`This wallet holds less ${symbol} than this buy spends.`);
+    // The same balance pays for the gas: nothing left over can pay none, and at the block's base fee the limit the
+    // transaction carries costs this much at least. The wallet's own gas price may ask for more; never for less.
+    const noFee = refuse(`This wallet's ${symbol} doesn't cover this buy and its network fee. Buy with a little less.`);
+    if (wallet.native === amountIn) throw noFee;
     const transaction = await transactionOf(t, x, trader, router, execute([V4_SWAP], [swapInput(t)], t.time + DEADLINE_SECONDS), amountIn);
-    // The same balance pays for the gas: at the block's base fee the limit above costs this much at least.
-    if (wallet.native < amountIn + BigInt(transaction.gas) * wallet.baseFee)
-      throw refuse(`This wallet's ${symbol} doesn't cover this buy and its network fee. Buy with a little less.`);
+    if (wallet.native < amountIn + BigInt(transaction.gas) * wallet.baseFee) throw noFee;
     return answer("trade", transaction);
   }
 
