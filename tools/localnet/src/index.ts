@@ -9,16 +9,16 @@ import {
   SystemProgram, Transaction, TransactionMessage, VersionedTransaction, type TransactionInstruction,
 } from "@solana/web3.js";
 import {
-  createAssociatedTokenAccountIdempotentInstruction, createInitializeMetadataPointerInstruction, createInitializeMint2Instruction,
-  createInitializeTransferFeeConfigInstruction, createMintToInstruction, ExtensionType, getAssociatedTokenAddressSync, getMintLen, LENGTH_SIZE,
-  TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TYPE_SIZE,
+  ASSOCIATED_TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createInitializeMetadataPointerInstruction,
+  createInitializeMint2Instruction, createInitializeTransferFeeConfigInstruction, createMintToInstruction, ExtensionType,
+  getAssociatedTokenAddressSync, getMintLen, LENGTH_SIZE, MINT_SIZE, MintLayout, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, TYPE_SIZE,
 } from "@solana/spl-token";
 import { createInitializeInstruction as createInitializeMetadataInstruction, pack as packTokenMetadata } from "@solana/spl-token-metadata";
 import { createHash } from "node:crypto";
 import BN from "bn.js";
 import bs58 from "bs58";
 import {
-  createPlatformConfigIx, launchlabCoder, launchlabPdas, metadataPda, platformLookupAddresses, prepareMigration, programsFor,
+  createPlatformConfigIx, launchlabCoder, launchlabPdas, METADATA_PROGRAM, metadataPda, platformLookupAddresses, prepareMigration, programsFor,
   sharedMigrationAccounts, updatePlatformConfigIx, WSOL_MINT,
 } from "@launchpad/chain";
 
@@ -70,10 +70,47 @@ export const LOCAL_QUOTES = {
 } as const;
 
 /**
- * The local stand-in for Jupiter's token list (Quote Risk Labels, #11, and categories, ADR 0010), for the API's static
- * source: SOL, USDC, NVDAx and JTO verified with deep markets and tagged as Jupiter tags them; TAXQ listed but unverified
- * and thin; BULLWHALE listed only by its `meme` tag, unverified with no liquidity known, on purpose.
+ * How many tries the address of a wallet's account for an asset (its associated token account) takes to derive. The
+ * address is the first that is no point on the curve, searched from bump 255 down, so one try serves half of all pairs
+ * of wallet and asset and every further try half of the rest. A program that opens such an account, or checks that an
+ * account is the wallet's, runs the same search on-chain at about 1,500 compute units a try (#282).
  */
+export function accountAddressTries(owner: PublicKey, mint: PublicKey, tokenProgram: PublicKey = TOKEN_PROGRAM_ID) {
+  const [, bump] = PublicKey.findProgramAddressSync([owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID);
+  return 256 - bump;
+}
+
+/**
+ * How many tries, at least, the unlucky Quote Asset's account for its wallet takes: one pair in 8,000 is this unlucky
+ * or worse. The Platform Fee claim that ran out of compute units (#282) met a pair of 12 tries, and an unlucky vault
+ * besides, under a limit of 100,000. A claim that opens the account costs 45,000 units and 4,500 for every try of the
+ * account's address after the first, so 14 tries is the least that passes 100,000 whatever the luck of the claim's
+ * other addresses; each try more would double the search.
+ */
+export const UNLUCKY_QUOTE_TRIES = 14;
+export const UNLUCKY_QUOTE_DECIMALS = 6;
+
+const unluckyQuotes = new Map<string, PublicKey>();
+
+/**
+ * The unlucky Quote Asset of a chain whose operations wallet is `owner`: an SPL Token mint, 6 decimals, whose account
+ * for that wallet has an address that takes at least `UNLUCKY_QUOTE_TRIES` tries to derive, so whatever opens or checks
+ * that account pays for every one of them. Which mint that is depends on the wallet, and a chain's operations key is
+ * its checkout's own, so the mint is searched for here, among addresses made from a fixed seed and a counter, rather
+ * than kept as a fixture: the same wallet always gets the same mint. The search looks at about 8,000 addresses, which
+ * takes six seconds or so and now and then twenty, so a stack runs it once and hands the mint on.
+ */
+export function unluckyQuoteMint(owner: PublicKey): PublicKey {
+  const known = unluckyQuotes.get(owner.toBase58());
+  if (known) return known;
+  for (let i = 0; ; i++) {
+    const mint = new PublicKey(createHash("sha256").update(`launchpad localnet unlucky quote mint v1 ${owner.toBase58()} ${i}`).digest());
+    if (accountAddressTries(owner, mint) < UNLUCKY_QUOTE_TRIES) continue;
+    unluckyQuotes.set(owner.toBase58(), mint);
+    return mint;
+  }
+}
+
 /**
  * A mark for each priced local Quote Asset, as Jupiter gives mainnet's one: a disc in the asset's colour with its ticker,
  * drawn as an SVG data URI so the test stack needs no network and every shot of a pair draws the same logo.
@@ -98,6 +135,11 @@ export const LOCAL_QUOTE_LOGOS: Record<string, string> = Object.fromEntries(
   }),
 );
 
+/**
+ * The local stand-in for Jupiter's token list (Quote Risk Labels, #11, and categories, ADR 0010), for the API's static
+ * source: SOL, USDC, NVDAx and JTO verified with deep markets and tagged as Jupiter tags them; TAXQ listed but unverified
+ * and thin; BULLWHALE listed only by its `meme` tag, unverified with no liquidity known, on purpose.
+ */
 export const LOCAL_QUOTE_TOKEN_LIST: Record<string, { verified: boolean; liquidityUsd: number | null; tags: string[] }> = {
   So11111111111111111111111111111111111111112: { verified: true, liquidityUsd: 2_500_000_000, tags: ["verified", "major"] },
   [LOCAL_QUOTES.USDC.toBase58()]: { verified: true, liquidityUsd: 900_000_000, tags: ["verified", "stable"] },
@@ -213,7 +255,7 @@ const readFixture = (path: string) => JSON.parse(readFileSync(path, "utf8")) as 
  * Only a GlobalConfig's migrate wallet may migrate a graduated pool, and there is no Raydium crank locally,
  * so every copy names a local stand-in key as its migrate wallet.
  */
-function globalConfigFixtures(dir: string, migrateWallet: PublicKey, set: QuoteSet): Map<string, string> {
+function globalConfigFixtures(dir: string, migrateWallet: PublicKey, set: QuoteSet, extra: PublicKey[] = []): Map<string, string> {
   const template = readFixture(join(FIXTURES, "accounts", `${SOL_GLOBAL_CONFIG.toBase58()}.json`));
   const decoded = launchlabCoder.accounts.decode("GlobalConfig", Buffer.from(template.account.data[0], "base64")) as {
     quote_mint: PublicKey; migrate_to_cpswap_wallet: PublicKey;
@@ -224,7 +266,7 @@ function globalConfigFixtures(dir: string, migrateWallet: PublicKey, set: QuoteS
   const shareFeeRates = new Map(set === "mainnet" ? mainnetSnapshot().quotes.map((q) => [q.mint, BigInt(q.maxShareFeeRate)] as const) : []);
   if (set === "cases") shareFeeRates.set(LOCAL_QUOTES.JTO.toBase58(), 0n);
   const out = new Map<string, string>();
-  for (const quoteMint of [decoded.quote_mint, ...localQuoteMints(set)]) {
+  for (const quoteMint of [decoded.quote_mint, ...localQuoteMints(set), ...extra]) {
     const data = Buffer.from(template.account.data[0], "base64");
     patchKey(data, QUOTE_MINT_OFFSET, decoded.quote_mint, quoteMint);
     patchKey(data, MIGRATE_TO_CPSWAP_WALLET_OFFSET, decoded.migrate_to_cpswap_wallet, migrateWallet);
@@ -285,6 +327,47 @@ function quoteMintFixtures(dir: string, authority: PublicKey, set: QuoteSet): Ma
     const fixture = readFixture(join(FIXTURES, "quotes", f));
     if (TOKEN_PROGRAMS.has(fixture.account.owner)) write(fixture, true);
   }
+  return out;
+}
+
+// A rent-exempt balance for an account of this many bytes, at the rate every cluster has had since genesis.
+const rentExempt = (bytes: number) => (bytes + 128) * 6_960;
+// Metaplex's Metadata account: its size, and the lengths it pads a name and a ticker to.
+const METADATA_SIZE = 679;
+const METADATA_NAME_LENGTH = 32;
+const METADATA_SYMBOL_LENGTH = 10;
+
+/**
+ * The unlucky Quote Asset's mint and its Metaplex metadata, written to `dir`: a plain SPL Token mint with nothing minted
+ * yet, whose mint authority is `authority` like the cases' (`mintLocalQuote`), and its freeze authority too, as a
+ * stablecoin's or a stock's issuer keeps it, so a test can freeze an account of it.
+ */
+function unluckyQuoteFixtures(dir: string, authority: PublicKey, mint: PublicKey): Map<string, string> {
+  const out = new Map<string, string>();
+  const write = (name: string, address: PublicKey, owner: PublicKey, data: Buffer) => {
+    const path = join(dir, `${name}_${address.toBase58()}.json`);
+    const account = { lamports: rentExempt(data.length), data: [data.toString("base64"), "base64"], owner: owner.toBase58(), executable: false, rentEpoch: 0, space: data.length };
+    writeFileSync(path, JSON.stringify({ pubkey: address.toBase58(), account }));
+    out.set(address.toBase58(), path);
+  };
+  const mintData = Buffer.alloc(MINT_SIZE);
+  MintLayout.encode({
+    mintAuthorityOption: 1, mintAuthority: authority, supply: 0n, decimals: UNLUCKY_QUOTE_DECIMALS, isInitialized: true,
+    freezeAuthorityOption: 1, freezeAuthority: authority,
+  }, mintData);
+  write("quote_mint", mint, TOKEN_PROGRAM_ID, mintData);
+  // Key 4 (a Metadata account), the update authority and the mint, then the name and the ticker as borsh strings that
+  // Metaplex pads with NULs; the rest of the account stays empty, which is all the Quote Registry reads of it.
+  const metadata = Buffer.alloc(METADATA_SIZE);
+  let offset = metadata.writeUInt8(4, 0);
+  offset += authority.toBuffer().copy(metadata, offset);
+  offset += mint.toBuffer().copy(metadata, offset);
+  for (const [text, length] of [["Unlucky Quote", METADATA_NAME_LENGTH], ["UNLUCKY", METADATA_SYMBOL_LENGTH]] as const) {
+    offset = metadata.writeUInt32LE(length, offset);
+    metadata.write(text, offset, "utf8");
+    offset += length;
+  }
+  write("metadata", metadataPda(mint), METADATA_PROGRAM, metadata);
   return out;
 }
 
@@ -428,11 +511,13 @@ export function localnetRuntime(): LocalnetRuntime {
  * this chain into `generated` (the quote mints and GlobalConfigs as patched, and for mainnet's set its hundreds of
  * mints and metadata accounts), which the validator loads as one directory.
  */
-function accountFiles(dir: string, set: QuoteSet) {
-  const { admin, migrate } = localnetKeys();
+function accountFiles(dir: string, set: QuoteSet, unluckyQuote: boolean) {
+  const { admin, migrate, operations } = localnetKeys();
   const generated = join(dir, "accounts");
   mkdirSync(generated, { recursive: true });
   const quoteMints = quoteMintFixtures(generated, admin.publicKey, set);
+  const unlucky = unluckyQuote ? unluckyQuoteMint(operations.publicKey) : null;
+  if (unlucky) for (const [address, path] of unluckyQuoteFixtures(generated, admin.publicKey, unlucky)) quoteMints.set(address, path);
   const files = new Map<string, string>();
   for (const folder of ["accounts", "quotes"]) {
     for (const f of readdirSync(join(FIXTURES, folder))) {
@@ -442,11 +527,20 @@ function accountFiles(dir: string, set: QuoteSet) {
     }
   }
   for (const [address, path] of quoteMints) files.set(address, path);
-  for (const [address, path] of globalConfigFixtures(generated, migrate.publicKey, set)) files.set(address, path);
+  for (const [address, path] of globalConfigFixtures(generated, migrate.publicKey, set, unlucky ? [unlucky] : [])) files.set(address, path);
   return { files, generated };
 }
 
-export type LocalnetOptions = { rpcPort?: number; quotes?: QuoteSet };
+export type LocalnetOptions = {
+  rpcPort?: number;
+  quotes?: QuoteSet;
+  /**
+   * Adds the unlucky Quote Asset (`unluckyQuoteMint`, of this checkout's operations wallet) to the chain: its mint, its
+   * metadata and a GlobalConfig. It is in no lookup table, so a coin paired with it launches without a First Buy and is
+   * never migrated. Off unless asked for: the backend suite asks.
+   */
+  unluckyQuote?: boolean;
+};
 
 /**
  * Starts a fresh local chain with the Raydium devnet programs and accounts from fixtures: a `solana-test-validator`
@@ -456,9 +550,10 @@ export type LocalnetOptions = { rpcPort?: number; quotes?: QuoteSet };
  */
 export async function startLocalnet(opts: LocalnetOptions = {}): Promise<Localnet> {
   const set = opts.quotes ?? "cases";
-  if (localnetRuntime() !== "surfpool") return startTestValidator(set, opts);
+  const unluckyQuote = opts.unluckyQuote ?? false;
+  if (localnetRuntime() !== "surfpool") return startTestValidator(set, { ...opts, unluckyQuote });
   if (opts.rpcPort !== undefined) throw new Error("Surfpool picks its own ports; RPC_PORT and TEST_RPC_PORT only apply to solana-test-validator");
-  return startSurfpool(set);
+  return startSurfpool(set, unluckyQuote);
 }
 
 /**
@@ -467,7 +562,7 @@ export async function startLocalnet(opts: LocalnetOptions = {}): Promise<Localne
  * Surfpool picks its own ports, and web3.js expects the websocket one port above the RPC, so the chain is reached
  * through two forwarded ports that sit side by side.
  */
-async function startSurfpool(set: QuoteSet): Promise<Localnet> {
+async function startSurfpool(set: QuoteSet, unluckyQuote: boolean): Promise<Localnet> {
   const { Surfnet } = await import("@solana/surfpool");
   const surfnet = Surfnet.startWithConfig({ offline: true, blockProductionMode: "clock", slotTimeMs: 400 });
   // Keyed by Surfpool's own port, so two chains started side by side never write over each other's account files.
@@ -483,7 +578,7 @@ async function startSurfpool(set: QuoteSet): Promise<Localnet> {
   try {
     for (const f of readdirSync(join(FIXTURES, "programs")))
       surfnet.deploy({ programId: f.replace(/\.so$/, ""), soPath: join(FIXTURES, "programs", f) });
-    for (const [address, path] of accountFiles(dir, set).files) {
+    for (const [address, path] of accountFiles(dir, set, unluckyQuote).files) {
       const fixture = JSON.parse(readFileSync(path, "utf8")) as AccountFixture & { account: { lamports: number } };
       surfnet.setAccount(address, fixture.account.lamports, Uint8Array.from(Buffer.from(fixture.account.data[0], "base64")), fixture.account.owner);
     }
@@ -522,7 +617,7 @@ function forwardPort(port: number, target: number) {
   });
 }
 
-async function startTestValidator(set: QuoteSet, opts: { rpcPort?: number }): Promise<Localnet> {
+async function startTestValidator(set: QuoteSet, opts: { rpcPort?: number; unluckyQuote: boolean }): Promise<Localnet> {
   const rpcPort = opts.rpcPort ?? (await freeRpcPort());
   if (opts.rpcPort !== undefined && !(await portsFree(rpcPort)))
     throw new Error(`port ${rpcPort} or one of the validator ports derived from it is in use; is another local chain running there?`);
@@ -538,7 +633,7 @@ async function startTestValidator(set: QuoteSet, opts: { rpcPort?: number }): Pr
   ];
   for (const f of readdirSync(join(FIXTURES, "programs"))) args.push("--bpf-program", f.replace(/\.so$/, ""), join(FIXTURES, "programs", f));
   // The fixtures one by one, the generated files (hundreds for mainnet's set) as the directory they were written to.
-  const { files, generated } = accountFiles(dir, set);
+  const { files, generated } = accountFiles(dir, set, opts.unluckyQuote);
   for (const [address, path] of files) if (!path.startsWith(generated)) args.push("--account", address, path);
   args.push("--account-dir", generated);
 
