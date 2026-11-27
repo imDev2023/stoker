@@ -4,8 +4,14 @@
  * when a launch is indexed, where it labels a coin that took an earlier coin's name, ticker or image (inside the window:
  * one made without our API, or in the minute before the original was indexed; after it: allowed, and still said). A
  * Creator may reuse their own coins' name, ticker and image.
+ *
+ * The window covers every chain (#253): a protected coin's name, ticker and image are refused on Solana and on every
+ * EVM chain alike. Every Solana coin is protected. A coin on an EVM chain is protected only when it was launched
+ * through this API, which is to say Stoker holds its record and the Indexer wrote its metadata address
+ * (`../evm/prepared.ts`): a coin sent straight to the factory costs cents, and protecting it would let anyone lock
+ * names on every chain (#279). Such a coin is never an original, and is labelled when it copies one.
  */
-import { and, desc, gt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, ne, or, sql } from "drizzle-orm";
 import type { Chain, CopyKind, CopyVerdict, ProtectedCoin } from "@launchpad/contract";
 import { launches, type Db } from "@launchpad/db";
 import type { Config } from "../env";
@@ -33,7 +39,9 @@ const WINDOW_ROWS = 20_000;
  * `window` false looks past the window at every earlier launch: what the Indexer labels a new coin with, since after the
  * window a copy is allowed but still worth a word ("same ticker as X, launched on ...").
  */
-export async function checkCopies(db: Db, cfg: Config, c: Candidate, now = new Date(), { window = true } = {}): Promise<CopyVerdicts> {
+export async function checkCopies(
+  db: Db, cfg: Pick<Config, "copyProtectionSeconds">, c: Candidate, now = new Date(), { window = true } = {},
+): Promise<CopyVerdicts> {
   const since = window ? new Date(now.getTime() - cfg.copyProtectionSeconds * 1000) : new Date(0);
   const rows: ProtectedRow[] = await db
     .select({
@@ -41,7 +49,15 @@ export async function checkCopies(db: Db, cfg: Config, c: Candidate, now = new D
       imageHash: launches.imageHash, creator: launches.creator, createdAt: launches.createdAt,
     })
     .from(launches)
-    .where(and(gt(launches.createdAt, since), c.creator ? ne(launches.creator, c.creator) : undefined, sql`${launches.createdAt} <= ${now.toISOString()}::timestamptz`))
+    .where(
+      and(
+        gt(launches.createdAt, since),
+        // The protected coins: Solana's, and an EVM chain's that were launched through this API.
+        or(eq(launches.chain, "solana"), ne(launches.metadataUri, "")),
+        c.creator ? ne(launches.creator, c.creator) : undefined,
+        sql`${launches.createdAt} <= ${now.toISOString()}::timestamptz`,
+      ),
+    )
     .orderBy(desc(launches.createdAt))
     .limit(WINDOW_ROWS);
   const until = (r: ProtectedRow) => new Date(r.createdAt.getTime() + cfg.copyProtectionSeconds * 1000);

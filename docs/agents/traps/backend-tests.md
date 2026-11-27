@@ -41,6 +41,12 @@ The text is the original's, one sentence a line.
 - A fork carries on from its block's time (2026-11-22 for L2 block 120,800,000), so its trades would fall outside every "last 24 hours" figure; the stack sets the fork's clock to now before it deploys (`deployStoker` in `tools/stack/src/evm.ts`), and a test that moves the fork's clock must leave it no earlier; moving it forward dates every later EVM coin in the future, on top of the shared board, where a Solana test reads its own coin first (`launch.test.ts` failed that way once), so no test moves it; a deadline is still the fork's latest block's time plus a margin (`deadline` in `tests/backend/src/evm.ts`).
 - A wallet's native balance moves by every transaction it sends: a sell through the Universal Router first approves Permit2 and the router, so `swapExactIn` in `tests/backend/src/evm.ts` returns the gas of all three, and a test reads what a trade paid or received net of that, never of the swap's own gas alone (the first run took the approvals' 0.0001 ETH for a wrong figure).
 - EVM coins are on the shared board: a Solana test that counts every coin of `GET /v1/launches` must filter `?chain=solana`.
+- The fork stamps blocks mined inside one second a second apart (a transaction is a block, and `runIndexer` mines five), so its clock can stand a few seconds ahead of the wall's and an EVM coin's `createdAt` can be in the future.
+  Copy Protection reads the wall clock, so such a coin is not seen as protected until the wall clock has passed its launch: a test that expects a refusal right after indexing waits for it first (`evm-copies.test.ts`, 2026-11-27).
+- The fork's Quote Registry and the `evm_quote_assets` table are shared by every file, in any order: read a Listing from the chain (`listingOnChain` in `evm-launch-helpers.ts`) rather than assume its figures, and take a coin of the test's own as the asset nobody listed, never a Stock Token another file may list.
+  `GET /v1/chains/:chain/launch-options` is kept five seconds, so a test that lists or delists an asset polls for it (`optionsListing`).
+- An EVM launch through the API sends the suite's 1x1 PNG unless told otherwise, which Copy Protection never compares; a picture that is compared must differ, by the API's own hash, from every other file's (`evm-copies.test.ts` measured its three against `copies.test.ts`'s).
+- vitest prints nothing a passing test logs when its output is not a terminal: a figure a test must report (a gas measurement) goes to a file.
 
 ## What a test must set up
 

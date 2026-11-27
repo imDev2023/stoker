@@ -146,7 +146,7 @@ describe("Copy Protection", () => {
     expect(await (await deliverWebhook([signature])).json()).toEqual({ launched: 1, traded: 0, graduated: 0, airdropped: 0 });
     const copy = await summary(mint.publicKey.toBase58());
     expect(copy.copyOf).toEqual({
-      kind: "ticker", mint: launched.prepared.mint, symbol: `OWL${tag.slice(0, 4)}`, name: `Quiet Owl ${tag}`,
+      kind: "ticker", mint: launched.prepared.mint, chain: "solana", symbol: `OWL${tag.slice(0, 4)}`, name: `Quiet Owl ${tag}`,
       launchedAt: expect.any(String), protectedUntil: expect.any(String),
     });
     // It stays on the board, and the original is not a copy of it.

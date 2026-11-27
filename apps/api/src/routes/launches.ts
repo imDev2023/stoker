@@ -5,7 +5,7 @@ import { alias } from "drizzle-orm/pg-core";
 import { and, asc, count, desc, eq, ilike, inArray, like, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { cpmmPdas, launchlabPdas, programsFor } from "@launchpad/chain";
 import {
-  LaunchListQuery, LINK_KINDS, SPARKLINE_POINTS, type CoinCreatorTier, type Holder, type HolderKind, type HolderList, type LaunchLinks, type LaunchList, type LaunchQuoteList,
+  Chain as Chains, ChainsParam, LaunchListQuery, LINK_KINDS, SPARKLINE_POINTS, type CoinCreatorTier, type Holder, type HolderKind, type HolderList, type LaunchLinks, type LaunchList, type LaunchQuoteList,
   type Chain, type CreatorLockTerms, type LaunchSummary, type MarketValue,
 } from "@launchpad/contract";
 import { curves, evmQuoteAssets, graduations, launches, launchMarkets, launchMetadata, quoteAssets, trades, type Db } from "@launchpad/db";
@@ -329,8 +329,12 @@ launchRoutes.get("/launches/quotes", async (c) => {
     .groupBy(quoteAssets.mint, volume.raw)
     .orderBy(desc(launchCount), sql`${quoteAssets.symbol} asc nulls last`, asc(quoteAssets.mint));
   const chain = chainFilter(c);
-  const solana = chain === undefined || chain === "solana" ? rows : [];
-  const evm = chain === "solana" ? [] : await evmLaunchQuotes(db, chain);
+  // The chains a site shows (#253), as the board's own list takes them: a chain it did not name is left out.
+  const chains = ChainsParam.safeParse(c.req.query("chains"));
+  if (!chains.success) throw new HTTPException(400, { message: `chains must name ${Chains.options.join(", ")}, comma separated` });
+  const shown = (of: Chain) => (chain === undefined || chain === of) && (chains.data === undefined || chains.data.includes(of));
+  const solana = shown("solana") ? rows : [];
+  const evm = chain === "solana" || chains.data?.every((of) => of === "solana") ? [] : (await evmLaunchQuotes(db, chain)).filter((q) => shown(q.chain));
   const body: LaunchQuoteList = {
     quotes: [
       ...solana.map((r) => ({ ...toQuoteRef(r.quote), launches: r.launches, volume24h: { quote: num(r.volQuote)!, sol: num(r.volSol), usd: num(r.volUsd) } })),
