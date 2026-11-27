@@ -1,22 +1,28 @@
 import { Hono } from "hono";
-import { count, eq, sql } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import type { PlatformStats } from "@launchpad/contract";
 import { graduations, launches, quoteAssets, trades } from "@launchpad/db";
 import type { AppEnv } from "../env";
+import { chainFilter } from "../chains/filter";
 
 /**
  * The platform's figures in one read (#133, the landing's strip): what has launched here since the first coin, how many
  * have graduated, and the last day's volume across every coin in SOL and USD at the Quote Registry's latest prices.
  * Every figure comes from what the Indexer wrote; the money figures (revenue, what Creators were paid, what was burned)
  * are the Ledger's and stay on `/revenue` and `/burns`.
+ *
+ * The figures are one chain's (#279): Solana's unless `?chain=` names another, since the volume is priced by a chain's
+ * own Quote Assets, and a count of every chain's coins beside one chain's volume says nothing true. An EVM chain's
+ * Quote Assets have no price until its jobs (#254), so its traded day is unknown (null), never zero.
  */
 export const statsRoutes = new Hono<AppEnv>();
 
 statsRoutes.get("/stats", async (c) => {
   const db = c.get("db");
+  const chain = chainFilter(c) ?? "solana";
   const [[all], [grad], [day]] = await Promise.all([
-    db.select({ since: sql<Date | string | null>`min(${launches.createdAt})`, launches: count() }).from(launches),
-    db.select({ graduated: count() }).from(graduations),
+    db.select({ since: sql<Date | string | null>`min(${launches.createdAt})`, launches: count() }).from(launches).where(eq(launches.chain, chain)),
+    db.select({ graduated: count() }).from(graduations).where(eq(graduations.chain, chain)),
     db
       .select({
         trades: count(),
@@ -25,8 +31,9 @@ statsRoutes.get("/stats", async (c) => {
       })
       .from(trades)
       .innerJoin(launches, eq(launches.mint, trades.mint))
-      .innerJoin(quoteAssets, eq(quoteAssets.mint, launches.quoteMint))
-      .where(sql`${trades.blockTime} > now() - interval '24 hours'`),
+      // Left, so a trade whose Quote Asset is in no priced registry is counted and leaves the sums unknown, never out.
+      .leftJoin(quoteAssets, and(eq(quoteAssets.mint, launches.quoteMint), eq(quoteAssets.chain, launches.chain)))
+      .where(and(eq(trades.chain, chain), sql`${trades.blockTime} > now() - interval '24 hours'`)),
   ]);
   const since = all!.since;
   const res: PlatformStats = {
