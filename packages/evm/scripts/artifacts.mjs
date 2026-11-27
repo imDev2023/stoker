@@ -25,6 +25,12 @@ const ARTIFACTS = [
   { name: "StokerKeys", deploy: true },
   { name: "TaxVault", deploy: true },
   { name: "Distributor", deploy: true },
+  // The Creator Earnings Destinations and a Creator Lock (#251): the ABIs an integrator needs for a coin's
+  // earnings and a Creator's claim. The stack's fork deploys none of them, so none carries bytecode.
+  { name: "BurnDestination" },
+  { name: "LiquidityDestination" },
+  { name: "HoldersDestination" },
+  { name: "StokerCreatorLock" },
   { name: "IPoolManager" },
   { name: "IERC20Metadata" },
 ];
