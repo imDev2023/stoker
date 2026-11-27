@@ -1,8 +1,12 @@
 import { checksum, EVM_CHAINS, isEvmChain, type EvmChainProfile, type EvmDeployment } from "@launchpad/evm";
-import type { Bindings } from "../../env";
+import type { Bindings, Config } from "../../env";
 
-/** One EVM chain this API reads: its profile, the deployment of our contracts on it, and the RPC the Worker reads it through. */
-export type EvmChainConfig = EvmDeployment & { profile: EvmChainProfile; rpcUrl: string };
+/**
+ * One EVM chain this API reads: its profile, the deployment of our contracts on it, and the RPC the Worker reads it
+ * through. Its Indexer is also given the platform's own settings a launch's record is written with (#253): where coins'
+ * permanent metadata is read, and how long Copy Protection lasts.
+ */
+export type EvmChainConfig = EvmDeployment & { profile: EvmChainProfile; rpcUrl: string; platform?: Pick<Config, "arweave" | "copyProtectionSeconds"> };
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 

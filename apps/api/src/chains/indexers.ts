@@ -60,19 +60,20 @@ function solanaIndexer(cfg: Config): Indexer {
  * The EVM chains' Indexers, or none and the reason when `EVM_DEPLOYMENTS` cannot be read (a malformed list, a missing
  * RPC secret), so a bad EVM setting never takes Solana's answer down with it.
  */
-function evmIndexers(env: Bindings): { indexers: Indexer[]; problem: string | null } {
+function evmIndexers(env: Bindings, cfg: Config): { indexers: Indexer[]; problem: string | null } {
   let chains;
   try {
     chains = evmChains(env);
   } catch (e) {
     return { indexers: [], problem: (e as Error).message };
   }
-  return { indexers: chains.map(evmIndexer), problem: null };
+  // Each with the platform's settings, which a launch prepared through the API is written with (#253).
+  return { indexers: chains.map((c) => evmIndexer({ ...c, platform: cfg })), problem: null };
 }
 
 /** Every chain this API reads: Solana, and each EVM chain `EVM_DEPLOYMENTS` names that can be read. */
 export function indexers(env: Bindings, cfg: Config): { indexers: Indexer[]; problem: string | null } {
-  const evm = evmIndexers(env);
+  const evm = evmIndexers(env, cfg);
   return { indexers: [solanaIndexer(cfg), ...evm.indexers], problem: evm.problem };
 }
 

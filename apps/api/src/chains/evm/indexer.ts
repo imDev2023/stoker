@@ -9,6 +9,7 @@ import {
 } from "@launchpad/evm";
 import { chainCursors, evmQuoteAssets, graduations, launches, launchMarkets, operatorAlerts, type Db } from "@launchpad/db";
 import { insertTrade, openMarket } from "../../market";
+import { preparedColumns } from "../../evm/prepared";
 import type { EvmChainConfig } from "./config";
 
 /** ERC-8056's one required read (the knowledge base's `09-eip-8056.md`): a Stock Token's multiplier in force, 18 decimals. */
@@ -240,8 +241,8 @@ async function writeLaunch(db: Db, c: EvmChainConfig, client: PublicClient, e: L
       // The factory takes any string: a NUL would be refused by Postgres and a long one would fill the page.
       name: cleanText(name, NAME_MAX),
       symbol: cleanText(symbol, SYMBOL_MAX),
-      // No metadata of ours until a launch is prepared through the API on an EVM chain (#253).
-      metadataUri: "",
+      // Its record when it was prepared through the API (#253), and the earlier coin it copies: ../../evm/prepared.ts.
+      ...(await preparedColumns(db, c, e, { name, symbol }, blockTime)),
       decimals,
       supply: supply.toString(),
       // The Seed Position holds the whole supply but a Creator Lock (#244): there is no curve to sell from.
@@ -315,7 +316,7 @@ async function writeTrades(db: Db, c: EvmChainConfig, receipt: TransactionReceip
 const unlessReverted = <T>(read: Promise<T>) => read.catch((e: unknown) => (isRevert(e) ? null : Promise.reject(e)));
 
 /** The chain's row for a Quote Asset, read from its contract (or the chain's profile, for the native asset) the first time. */
-async function quoteAsset(db: Db, c: EvmChainConfig, client: PublicClient, address: Address) {
+export async function quoteAsset(db: Db, c: EvmChainConfig, client: PublicClient, address: Address) {
   const key = and(eq(evmQuoteAssets.chain, c.chain), eq(evmQuoteAssets.address, address));
   const [known] = await db.select().from(evmQuoteAssets).where(key).limit(1);
   if (known) return known;
