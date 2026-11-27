@@ -32,7 +32,7 @@ import { readFeeVaults, type FeeVault } from "./vaults";
 
 const meta = (pubkey: PublicKey, isSigner = false, isWritable = false): AccountMeta => ({ pubkey, isSigner, isWritable });
 
-/**
+/*
  * The compute-unit limits of the three collections. What a collection costs is no fixed figure: a program that opens a
  * wallet's account for an asset, or checks that an account is the wallet's, searches for the account's address
  * on-chain, bump 255 first and then down, at 1,500 units a try. One try serves half of all pairs of wallet and asset
@@ -42,9 +42,9 @@ const meta = (pubkey: PublicKey, isSigner = false, isWritable = false): AccountM
  * account, so the claim failed on every run (#282).
  *
  * Each limit below is therefore the costliest case measured with every address at one try, plus room for at least 40
- * more tries of the address the transaction derives most often: an address unluckier than that is one in 2^40. None of our
- * transactions sets a compute-unit price, so the room costs nothing; with a price, a transaction pays the price on the
- * limit it asked for, and the limit should then come from a simulation of the transaction instead.
+ * more tries of the address the transaction derives most often: an address unluckier than that is one in 2^40. None
+ * of our transactions sets a compute-unit price, so the room costs nothing; with a price, a transaction pays the price
+ * on the limit it asked for, and the limit should then come from a simulation of the transaction instead.
  * Measured on the local chain (`UNITS_REPORT`, docs/agents/traps/chain.md), SPL Token and Token-2022 assets alike.
  */
 /**
