@@ -1,0 +1,96 @@
+{
+  "profile": "robinhood-4663",
+  "framework": "foundry",
+  "_note": "The security standards' pre-deployment gate for Stoker's EVM contracts (#251). Every attested item below was answered by the agent of lane evm-gate on 2026-11-27 from the code, a named test or an ADR, and no human has signed one yet: the gate's own design asks for a person's signature, so the owner reads contracts/GATE.md, which sets each answer out, before any deployment to a live chain. A waiver is an item the contracts do not meet as written, with why.",
+  "attestations": {
+    "arch-boundary": "PRD #231 and ADR 0025, 0029: on the chain are custody, fees as Credits, the Graduation Hold, the pots and the Round Delay; off it are the Reward Engine's rounds (recomputable from published figures), Active Days and the Keeper's calls, which anyone can make. contracts/README.md, 'What is built'.",
+    "arch-actors": "ADR 0030 and src/StokerKeys.sol: the Admin (registry writes, the Guard, key replacement, the platform's share, all one cold power by the owner's decision) and three server keys (round, ladder, Keeper). script/deployment/DeploymentChecks.sol refuses one address in two roles; invariant_accessControl probes 22 pairs of a privileged call and a caller it must refuse.",
+    "arch-upgrade-decision": "Rigid, by ADR 0030: no proxy, no upgrade path, no owner, no setter; every setting is an immutable fixed at deployment and a Launch's terms are written once. A change is a new deployment for later Launches.",
+    "ac-eip712": "The contracts verify no signature of their own and src has no ecrecover. The one signature in a launch is the Quote Asset's own ERC-2612 permit, passed through by launchWithPermit; one already used does not stop the launch (test/unit/Launch.t.sol).",
+    "ac-roles-initialised": "StokerKeys refuses a zero Admin at construction. The three server keys start unheld on purpose, and nobody is no caller (NotRoundKey, NotLadderKey); script/deploy.sh <chain> check keys asserts all three held, apart from the Admin and from each other, before any Launch (docs/runbooks/evm-mainnet.md, step 5).",
+    "arith-safecast": "Every sign change and narrowing goes through OpenZeppelin's or v4's SafeCast, or is annotated in place with its bound (timestamps as uint40 and uint64, a Credit as uint248, a round's paid sum as uint128): contracts/README.md, 'Static analysis triage'; forge lint src reports none.",
+    "arith-mul-before-div": "Fees are mulDivRoundingUp(amount, bps, 10000); a share is fee * share / 10000; a part is booked * shareBps / 10000; a lock is amount * elapsed / unlock. The one division before a multiplication, the Support Liquidity range rounded down to the tick spacing, is on purpose and annotated (TaxVault._supportRange).",
+    "arith-rounding-documented": "contracts/README.md, 'The pre-deployment checklist': a fee rounds up; the Creator's share rounds down and the platform's is the remainder; each part of a tax rounds down; the Reference Price rounds toward the cheaper coin; the Graduation Target is rounded never to be an easier price. invariant_roundingDirection probes a round trip in a pool after every call.",
+    "arith-no-hardcoded-decimals": "No contract assumes a Quote Asset's decimals: every amount is raw units and a Listing's start tick carries the asset's scale. The coin's own 18 decimals and supply are its constants (ADR 0024). Rehearsed against a six-decimal dollar and two 18-decimal assets (script/Rehearsal.s.sol).",
+    "arith-boundaries-tested": "test_fee_tinySwapCannotBeSwallowed, test_opening_at99PercentABuyStillTradesAndASwallowedOneIsRefused, the registry band's last ticks either way (test/unit/Registry.t.sol), a sell too small for both fees (SwapTooSmall), the gas floor swept around a native payment (test_native_payout_noGasBudgetStarvesARecipientIntoARefusal), and a fuzz over all four swap types.",
+    "cf-readonly-reentrancy": "creditOf read from inside a native payment of the same Payout Call answers zero for owners not yet paid, which is written at the function. The only contracts of ours that act on a Credit, the Destinations, take the native asset in a receive that reads and writes nothing (test_destinations_theNativeAssetArrivesFromThePayoutCallAlone_withinItsGas). No other protocol reads these views for value.",
+    "cf-callbacks": "No ERC-721, ERC-1155 or ERC-777 surface: the coin is a plain ERC-20 with no hooks, and ERC-6909 claims in the PoolManager call no receiver. The callbacks that exist are v4's unlockCallback, answered to the PoolManager alone in each contract (test_unlockCallback_onlyThePoolManager), and native receives from the hook or the PoolManager alone.",
+    "cf-no-unbounded-loops": "Every loop is over an array the caller passes and pays for (a Payout Call's owners, a claim's claims) or a range the caller bounds (cancelRoots, which stops at the last round); acceptAdmin loops over three roles. No loop runs over a set that grows in storage.",
+    "env-no-msgvalue-loop": "msg.value is read once per call and compared exactly (ValueMismatch) in launch, fundBurn, fundSupport, deposit and depositEarnings. There is no payable multicall and no loop that reads it.",
+    "env-encode-not-packed": "src has no abi.encodePacked at all: the leaf of a round, a coin's salt and the transient slot of a pool are each abi.encode of their parts.",
+    "oracle-sequencer": "Robinhood Chain has no sequencer uptime feed (the profile, section 6) and nothing here reads a feed or liquidates. What reads the clock: the Opening Fee, the Graduation Hold, the vault's interval, the registry's day and 48 hours, and the Round Delay. A sequencer outage stops every swap and every call alike, so nothing is lost in one, with two limits said in contracts/GATE.md: a hold runs on through an outage, and so does a Round Delay, whose 24 hours for the Guard an outage can shorten.",
+    "q-dead-code": "forge lint src reports nothing in CI. Slither's dead-code results are its own limit under via IR (functions it cannot read), each triaged in contracts/README.md. #248 removed _keepsReference and openingFeeTaken when nothing read them any more.",
+    "q-events": "Every Credit, tax, Opening Fee, payment, refusal, hold, Graduation, raise, Listing write, key change, root, cancel, claim, deposit, funding, burn and Support Liquidity addition emits an event; contracts/README.md, 'What the next slices plug into', lists each for the Indexer.",
+    "v-fuzz-depth": "In CI: fuzz tests 1,024 runs each; the seven per-slice invariant campaigns 256 runs of 128 calls; the whole-set campaign 64 runs of 256 calls (16,384 calls, all eight invariants after each) and its two probing properties 32 runs of 128. The held-price fuzz also passed 60,000 runs once (contracts/README.md).",
+    "v-fork-tests": "test/fork: 113 tests against Robinhood Chain's real PoolManager, both Universal Routers, the V4 Quoter, NVDA and native ETH at L2 block 120,800,000, run by CI where the RPC secret exists. script/rehearse.sh ran the whole rehearsal, 94 transactions, on a fork of testnet 46630 (2026-11-27).",
+    "ops-runbook": "docs/runbooks/evm-mainnet.md: the deployment, and what to do about a stolen round key (revokeKey, then cancelRoots), a stolen ladder key (revokeKey) and a lost Admin. The on-chain half of each is exercised by the whole-set campaign and the rehearsal on a fork; the owner has not yet rehearsed it from the hardware wallet.",
+    "ops-postdeploy": "script/CheckDeployment.s.sol: 76 checks, 79 once the server keys are held, run by script/deploy.sh after the broadcast and by `script/deploy.sh <chain> check keys` at any later time; exercised on forks of testnet 46630 and by the whole-set campaign's own setUp.",
+    "ops-bytecode": "CheckDeployment proves seven of the nine runtimes identical to this build's (each redeployed in the check's simulation and compared by code hash) and the hook by its CREATE2 address; script/verify.sh verifies all nine sources on the explorer, on which alone the factory's runtime rests. Done on forks; the testnet's own deployment waits for a funded wallet (issue #251)."
+  },
+  "waivers": {
+    "arch-multisig": {
+      "reason": "ADR 0030 (owner, 2026-11-23): the Admin is one hardware wallet, chosen in the grilling over a Safe of the owner's devices, and the three server keys are single keys kept as Worker secrets. None is a multisig. What bounds each is in the contracts: the round key by each coin's own pot, the Round Delay and the Guard; the ladder key to raising a graduated coin's tier; the Keeper to nothing. One device and one sheet of paper stand behind every cold power."
+    },
+    "arch-proxy-checks": {
+      "reason": "Nothing is proxied: no contract here has an upgrade path (ADR 0030)."
+    },
+    "arch-circuit-breaker": {
+      "reason": "There is no pause anywhere, by decision (ADR 0030), so nothing of ours can trap a sale, a Payout Call or a claim. What can be stopped at once: new Launches on one Quote Asset (the Admin's delist), a server key (revokeKey), and a posted Round Root inside its 24 hours (the Guard's cancel). A defect found in the hook or the Tax Vault after launch cannot be paused; later Launches move to a new deployment."
+    },
+    "arch-value-cap": {
+      "reason": "No contract caps the value it holds and none was decided. The v4 hooks checklist's hard stop on value past about $1M is one the set meets by the owner's decision to ship without an audit (ADR 0030). The practical bound at first is the Admin's: Listings are written one asset at a time. The owner's to decide before mainnet whether to start with few."
+    },
+    "cf-cei": {
+      "reason": "Not without exception. Where control passes to an address of someone else's, the state is written first: a Credit is cleared before its payment and added back on a refusal, a claim is marked before its payment and restored on one, a lock's claimed sum before its transfer. Where a write or an event follows a call, the call is the PoolManager's, a contract of ours or the listed Quote Asset's, behind a transient guard; each is named in contracts/README.md, 'Static analysis triage' (the reentrancy findings)."
+    },
+    "cf-nonreentrant": {
+      "reason": "The guards are EIP-1153 transient flags, not a uint in storage, and they are on every entry point that hands control away: the Payout Call, claim, the Tax Vault's six calls and a Destination's work; the PoolManager's own lock refuses a nested unlock. Entry points that call nothing but views of our own contracts carry none: the registry's writes, the keys' changes, raiseTier, graduate, postRoot, cancelRoot and cancelRoots."
+    },
+    "cf-pull-over-push": {
+      "reason": "ADR 0025 and 0029: Credits and holder rewards are pushed by a call anyone can make, so a Creator and a holder have nothing to claim, and an owner may always pull their own. Each push is isolated: an ERC-20 by the PoolManager's take inside a try, the native asset by a call of 50,000 gas that copies no return data, so a recipient that refuses stays owed and stops nobody (test/unit/NativePayout.t.sol, DistributorNative.t.sol, DistributorHostile.t.sol)."
+    },
+    "env-no-eoa-detection": {
+      "reason": "The one hit, extcodesize in Distributor._pay, is SafeERC20's own check that a token which returned no data has code, applied to the asset being paid and never to a holder or a caller. Nothing in the contracts tells a wallet from a contract. The deployment's check that the Admin's address has no code is a script's, not a contract's."
+    },
+    "oracle-staleness": {
+      "reason": "No contract reads an oracle or any outside price (ADR 0028): a price enters only through a Listing the Admin writes, and the Reference Price follows the pool's own price by time. test_multiplier_noRuntimeCarriesItsSelectorOrAPriceFeeds finds no latestRoundData() selector in any runtime."
+    },
+    "oracle-decimals": {
+      "reason": "No feed is read (see oracle-staleness)."
+    },
+    "oracle-bounds": {
+      "reason": "No feed is read (see oracle-staleness)."
+    },
+    "oracle-revert-handled": {
+      "reason": "No feed is read, so none can revert and none needs replacing (see oracle-staleness)."
+    },
+    "oracle-slippage": {
+      "reason": "A trader's bound and deadline are the router's, which the contracts do not replace; the hook adds one of its own, refusing a swap with the Quote Asset specified that its price limit stopped early. The Tax Vault's own buys carry no least amount out and no deadline: what bounds them is a piece of at most 0.5% of the pool's depth, one a minute, refused while the price stands above the Reference Price, and a sandwich of one is shown to lose (contracts/README.md, 'The Reference Price'). The First Buy carries none either: it is made against a pool opened in the same transaction."
+    },
+    "v-coverage": {
+      "reason": "Not measured: forge coverage cannot instrument this workspace's via-IR build without compiling something other than what is deployed. In its place every slice removed each guard it added, in turn, and saw a named test fail (46 for #248, 33 for the Distributor, 21 for the Opening Fee and so on, each list in its PR), and #251 did the same for the whole-set campaign's invariants (contracts/README.md)."
+    },
+    "v-audit": {
+      "reason": "The owner decided against an independent audit on 2026-11-22 (ADR 0030); the decision is not reopened here. In its place stand this gate, the v4 hooks safety checklist's score (the hook 17 of 33, the Tax Vault 18, two hard stops met), the invariant campaigns, the fork tests, verified source and a rehearsal. None of them is an audit, and the site says the contracts are unaudited wherever money moves."
+    },
+    "v-bounty": {
+      "reason": "There is no bug bounty and none is decided. The owner's to decide before value is at risk; issue #251 lists it."
+    },
+    "ops-monitoring": {
+      "reason": "Not built yet: the API's two alarms are #254's and #255's (recompute every posted Round Root and wake the owner on a mismatch; alarm on a CreatorTierRaised its own job did not send), and the EVM Indexer stays off until #279 closes. docs/runbooks/evm-mainnet.md makes both a condition of the first Listing on mainnet: without the first, the Guard's 24 hours protect nothing."
+    },
+    "ops-contact": {
+      "reason": "No security contact is published yet. The contracts page that carries it and the unaudited statement are #256's; the runbook has the owner name the address before mainnet."
+    }
+  },
+  "evidence": {
+    "slither": {
+      "clean": true,
+      "summary": "Slither 0.11.3 with the standards' config: no finding beyond the 90 triaged in slither.db.json, each a class explained in README.md"
+    },
+    "forge-invariant": {
+      "clean": true,
+      "summary": "every invariant campaign under test/invariant passed, the whole-set campaign among them"
+    }
+  }
+}

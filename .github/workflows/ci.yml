@@ -99,6 +99,13 @@ jobs:
       - run: node ../packages/evm/scripts/artifacts.mjs --check
       - run: forge lint src
       - run: forge test --no-match-path 'test/fork/**'
+      # The security gate (#251, ADR 0030: what stands in an audit's place): solhint's errors, Slither against the
+      # triaged set in slither.db.json, then the security standards' pre-deployment gate with Robinhood Chain's
+      # profile, strict, so one item left failing or unanswered fails the push. The campaigns have just passed above.
+      - run: pipx install slither-analyzer==0.11.3
+      - run: python3 -c 'import yaml' || pip install --user --break-system-packages pyyaml
+      - name: The security gate
+        run: INVARIANTS_PASSED=1 ./script/gate.sh
       - uses: actions/cache@v6
         if: env.ROBINHOOD_RPC_URL != ''
         with:
