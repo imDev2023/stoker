@@ -1,9 +1,13 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { CopyCheckFields, LAUNCH_IMAGE_MAX_BYTES, LAUNCH_IMAGE_TYPES, type CopyCheck } from "@launchpad/contract";
+import { CopyCheckFields, familyOf, LAUNCH_IMAGE_MAX_BYTES, LAUNCH_IMAGE_TYPES, type CopyCheck } from "@launchpad/contract";
+import { canonicalAddress } from "../chains/address";
 import { checkCopies } from "../copies/check";
 import { imageHash } from "../copies/imageHash";
 import type { AppEnv } from "../env";
+import { evmContext } from "../evm/context";
+import { launchRefusals } from "../evm/names";
+import { stockSymbols } from "../evm/options";
 import { sniffImageType } from "../images";
 
 /** Copy Protection (#120, ADR 0012): the launch form asks as the Creator types, and gets the verdict a prepare would give. */
@@ -25,7 +29,12 @@ copyRoutes.post("/launches/check", async (c) => {
     hash = await imageHash(bytes, contentType);
   }
   const cfg = c.get("cfg");
-  const verdicts = await checkCopies(c.get("db"), cfg, { ...fields.data, imageHash: hash });
+  const { chain, creator, name, symbol, description, links } = fields.data;
+  // The window covers every chain (#253), so the verdicts are the same whichever chain the coin would launch on; a
+  // Creator's own coins are theirs under the address the Indexer wrote, whatever case the wallet gave it in.
+  const verdicts = await checkCopies(c.get("db"), cfg, { name, symbol, imageHash: hash, creator: creator && canonicalAddress(creator) });
   const body: CopyCheck = { ...verdicts, protectionSeconds: cfg.copyProtectionSeconds };
+  // An EVM chain's own rules for the text (ADR 0028), which a prepare there refuses with too; Solana's answer has no such key.
+  if (familyOf(chain) === "evm") body.refusals = launchRefusals(chain, { name, symbol, description, links }, await stockSymbols(c.get("db"), evmContext(c, chain)));
   return c.json(body);
 });

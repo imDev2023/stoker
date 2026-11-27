@@ -7,6 +7,8 @@ import { listLaunches } from "@/lib/api";
 import type { HeroVariant } from "@/lib/landing";
 import { quoteKind } from "@/lib/landing";
 import { quoteTicker } from "@/lib/format";
+import { isEvm } from "@/lib/chains";
+import { useChains } from "./ChainsProvider";
 import { CoinImage } from "./CoinImage";
 import { Change } from "./Change";
 import { HeroPicker } from "./HeroPicker";
@@ -40,17 +42,18 @@ function progressOf(launch: LaunchSummary) {
  */
 function Rows({ initial, quotes }: { initial: LaunchSummary[]; quotes: QuoteAsset[] }) {
   const [launches, setLaunches] = useState(initial);
+  const chains = useChains();
   useEffect(() => {
     const id = setInterval(async () => {
       try {
-        const { launches: next } = await listLaunches({ sort: "trending", limit: 5 });
+        const { launches: next } = await listLaunches({ chains, sort: "trending", limit: 5 });
         setLaunches(next);
       } catch {
         // keep showing the last good rows; the next tick retries
       }
     }, REFRESH_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [chains]);
   if (launches.length === 0) return <Cycle quotes={quotes} />;
   return (
     <div className={styles.rows}>
@@ -70,7 +73,8 @@ function Rows({ initial, quotes }: { initial: LaunchSummary[]; quotes: QuoteAsse
                   <span className={`t-figure ${styles.price}`}>{l.market.price === null ? "-" : <><Price value={l.market.price} /> {quote}</>}</span>
                   <Change value={l.market.change24h} />
                 </span>
-                <span className={styles.curve} aria-label={l.curve.status === "live" ? `${pct}% of the way to graduation` : "Graduated"}>
+                {/* A coin on an EVM chain (#253) has no curve: its bar stays empty until it graduates, and says only that. */}
+                <span className={styles.curve} aria-label={l.curve.status !== "live" ? "Graduated" : isEvm(l.chain) ? "Not graduated yet" : `${pct}% of the way to graduation`}>
                   <span className={styles.track} aria-hidden>
                     <span className={styles.fill} style={{ width: `${pct}%` }} />
                   </span>
@@ -154,7 +158,11 @@ export function HeroVisual({
   if (variant === "cycle") return <Cycle quotes={cycle} />;
   if (variant === "picker") return <HeroPicker quotes={quotes} />;
   // The trade panel wants a coin; until the first launch the cycle stands here, as it does for the rows.
-  if (variant === "trade") return launches[0] ? <HeroTrade initial={launches[0]} platform={platform} /> : <Cycle quotes={cycle} />;
+  if (variant === "trade") {
+    // The candidate's panel is the Solana one, so it takes the most traded coin on Solana.
+    const first = launches.find((l) => l.chain === "solana");
+    return first ? <HeroTrade initial={first} platform={platform} /> : <Cycle quotes={cycle} />;
+  }
   // The swap as a hero (the owner's pick of 2026-10-30, moved to `/swap` the same day), the rows standing in wherever the Plugin can't load.
   if (variant === "swap") return <SwapWidget fallback={<Rows initial={launches} quotes={cycle} />} />;
   return <Rows initial={launches} quotes={cycle} />;

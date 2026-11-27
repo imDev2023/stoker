@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { LaunchSummary } from "@launchpad/contract";
 import { formatMarketValue } from "@/lib/board";
+import { isEvm } from "@/lib/chains";
 import { quoteTicker } from "@/lib/format";
 import { CoinCard, type CoinCardData } from "./CoinCard";
 import styles from "./Trending.module.css";
@@ -28,6 +29,7 @@ function cardOf(launch: LaunchSummary): CoinCardData {
     rewardBurnBps: launch.rewardTax?.burnBps ?? 0,
     rewardLiquidityBps: launch.rewardTax?.liquidityBps ?? 0,
     liquidityTaxBps: launch.liquidityTax?.bps ?? null,
+    ownPool: isEvm(launch.chain),
   };
 }
 

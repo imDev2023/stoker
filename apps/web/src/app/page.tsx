@@ -4,6 +4,7 @@ import { heroVariantFrom, landingFigures } from "@/lib/landing";
 import { pageMeta, SITE_DESCRIPTION, SITE_NAME } from "@/lib/meta";
 import { siteOrigin } from "@/lib/origin";
 import { SITE_LINKS } from "@/lib/site";
+import { visitorChains } from "@/lib/visitorChains";
 import { Hero } from "@/components/Hero";
 import { Ideas } from "@/components/Ideas";
 import { Invite } from "@/components/Invite";
@@ -26,7 +27,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
   const [{ hero }, quotes, trending, platform, revenue, burns, stats, origin] = await Promise.all([
     searchParams,
     listQuotes(),
-    listLaunches({ sort: "trending", limit: 6 }),
+    visitorChains().then((chains) => listLaunches({ chains, sort: "trending", limit: 6 })),
     getPlatform(),
     getRevenue().catch(() => null),
     getBurns().catch(() => null),

@@ -1,8 +1,12 @@
 import { checksum, EVM_CHAINS, isEvmChain, type EvmChainProfile, type EvmDeployment } from "@launchpad/evm";
-import type { Bindings } from "../../env";
+import type { Bindings, Config } from "../../env";
 
-/** One EVM chain this API reads: its profile, the deployment of our contracts on it, and the RPC the Worker reads it through. */
-export type EvmChainConfig = EvmDeployment & { profile: EvmChainProfile; rpcUrl: string };
+/**
+ * One EVM chain this API reads: its profile, the deployment of our contracts on it, and the RPC the Worker reads it
+ * through. Its Indexer is also given the platform's own settings a launch's record is written with (#253): where coins'
+ * permanent metadata is read, and how long Copy Protection lasts.
+ */
+export type EvmChainConfig = EvmDeployment & { profile: EvmChainProfile; rpcUrl: string; platform?: Pick<Config, "arweave" | "copyProtectionSeconds"> };
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
@@ -22,7 +26,10 @@ function deployment(raw: unknown, i: number): EvmDeployment {
     if (!Number.isSafeInteger(v) || (v as number) < 1) throw fail(`${key} must be a whole number above zero`);
     return v as number;
   };
+  const quotes = d.quotes;
+  if (quotes !== undefined && !(Array.isArray(quotes) && quotes.every((q) => typeof q === "string" && ADDRESS.test(q)))) throw fail("quotes must be a list of addresses");
   return {
+    quotes: (quotes as string[] | undefined)?.map(checksum),
     chain: d.chain, factory: addr("factory"), hook: addr("hook"), registry: addr("registry"), keys: addr("keys"), taxVault: addr("taxVault"), distributor: addr("distributor"),
     fromBlock: d.fromBlock as number, logBlockRange: positive("logBlockRange"), maxRangesPerRun: positive("maxRangesPerRun"), maxRunSeconds: positive("maxRunSeconds"),
     maxRequestsPerRun: positive("maxRequestsPerRun"), retryRuns: positive("retryRuns"), retryRunsUnclear: positive("retryRunsUnclear"),

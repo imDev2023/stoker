@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { QuoteCategory, QuoteIssuer, QuoteRef } from "./quotes";
 import { CurveStatus } from "./trades";
-import { Chain, ChainAddress } from "./chains";
+import { Chain, ChainAddress, ChainsParam } from "./chains";
 
 /** Board discovery: sorting and filtering Launches, their market figures, the Quote Assets in use, and top holders. */
 
@@ -38,6 +38,8 @@ export const LaunchListQuery = z.object({
   sort: LaunchSort.default("new"),
   /** Only Launches on this chain (#252); every chain's when absent. */
   chain: Chain.optional(),
+  /** Only Launches on these chains, comma separated (#253): what a site that shows some chains sends. */
+  chains: ChainsParam,
   /**
    * A search: Launches whose name or ticker contains it (any case), or whose mint address starts with it. Whitespace
    * around it is ignored, and an empty search is no filter.

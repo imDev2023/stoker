@@ -84,3 +84,13 @@ The text is the original's, one sentence a line.
   `snap`'s decode wait covers only images within the page's width: a lazy image hidden sideways in a scrolling row never loads without a sideways scroll, and `img.decode()` on it never settles (the phone `home` shot hung 88 s on the trending row until its six images stopped being lazy).
 - The landing's figures strip is one row of equal columns on a desktop with each value scaled to its column (`min(var(--text-figure-xl), 20cqi)`, every `.stat` a container) and never broken across lines: six figures at 1440 broke "0.06" and "SOL" in two (2026-10-29).
   A `PairMark` inside a flex column that sizes to its content measures a box no wider than itself and shrinks the pair by a hair that varies between runs (the phone `home` baseline flaked by 283 pixels): give the column the row's remaining width (`flex: 1 1 auto`, `min-width: 0`), as `CoinRow`'s grid column does.
+
+## The EVM chain's flows (#253)
+
+- The site shows the fork's chain only to a browser with the preview cookie (`stoker.chains=preview`, set by `showPreviewChains` in `tests/ui/src/evm.ts`): every other spec and every baseline from before #253 sees Solana alone, and `fixtures.listLaunches()` asks for Solana's coins, since the EVM flows' coins share the API.
+  A new spec that needs the chain sets the cookie itself; nothing else may.
+- The EVM test wallet stand-in (`tests/ui/src/evmWallet.ts`) sends exactly what the page gave it and then mines the chain's finality depth, so the Indexer can read the transaction; it must wait for the transaction's own block first, or it mines before that block exists and the transaction sits one block short of final for good (2026-11-27: the launch's report stayed `pending` and the flow timed out).
+- The fork makes a block only when something is sent, and stamps blocks a second apart: a flow that must be outside a Launch's Opening Fee waits its seconds out and mines an empty block, and the shot inside the window leaves the fork ten seconds in by empty blocks and holds the first real answer of the quote with `page.route` (`evm-trade-opening`), since the fee falls every second.
+- A shot of the launch summary or the trade panel on an EVM chain masks what a run draws afresh: the unaudited statement's link (the factory's address), the launch's cost and the network fee, which hold fixed boxes in `screenshot.css`.
+- A regex `toHaveText` does not fold a no-break space, which the summary and the fee lines use between an amount and its ticker: match with `\s`.
+

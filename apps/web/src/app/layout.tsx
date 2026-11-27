@@ -4,6 +4,7 @@ import type { Metadata, Viewport } from "next";
 import { Bricolage_Grotesque, Instrument_Sans, JetBrains_Mono } from "next/font/google";
 import { cookies } from "next/headers";
 import type { ReactNode } from "react";
+import { ChainsOverride } from "@/components/ChainsProvider";
 import { FeeChangeBanner } from "@/components/FeeChangeBanner";
 import { ClusterNotice } from "@/components/ClusterNotice";
 import { Providers } from "@/components/Providers";
@@ -12,6 +13,7 @@ import { SiteHeader } from "@/components/SiteHeader";
 import { ThemeOverride } from "@/components/ThemeOverride";
 import { Welcome } from "@/components/Welcome";
 import { getPlatform, listAnnouncements } from "@/lib/api";
+import { CHAINS_COOKIE, PREVIEW_CHAINS, chainsShown } from "@/lib/chains";
 import { SHARED_OPEN_GRAPH, SITE_DESCRIPTION, SITE_NAME, SITE_TITLE, TWITTER_CARD } from "@/lib/meta";
 import { siteOrigin } from "@/lib/origin";
 import { SCHEME_COOKIE, schemeOf } from "@/lib/scheme";
@@ -67,12 +69,15 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   const upcoming = announcements?.announcements.find((a) => a.appliedSignature === null && new Date(a.effectiveAt).getTime() > Date.now() - 24 * 3600_000) ?? null;
   // Dark unless the account menu's toggle (SchemeToggle) chose light, which its cookie holds (src/lib/scheme.ts).
   const scheme = schemeOf(jar.get(SCHEME_COOKIE)?.value);
+  // The chains this visitor is shown (src/lib/chains.ts): the public list, and the preview chains for a browser with the cookie.
+  const chains = chainsShown(jar.get(CHAINS_COOKIE)?.value);
   return (
     // `?theme=` may change `data-theme` after hydration (ThemeOverride), which is intended, not a mismatch.
     <html lang="en" data-theme={theme} data-scheme={scheme} className={`${bricolage.variable} ${instrumentSans.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
       <body>
         <ThemeOverride />
-        <Providers rpcUrl={platform.rpcUrl}>
+        {PREVIEW_CHAINS.length > 0 && <ChainsOverride />}
+        <Providers rpcUrl={platform.rpcUrl} chains={chains}>
           <SiteHeader cluster={platform.cluster} />
           {platform.cluster === "devnet" && <ClusterNotice />}
           {upcoming && <FeeChangeBanner announcement={upcoming} platform={platform} />}

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { pageMeta } from "@/lib/meta";
 import { listLaunchQuotes, listQuotes } from "@/lib/api";
 import { assetsQueryFrom } from "@/lib/assets";
+import { visitorChains } from "@/lib/visitorChains";
 import { AssetDirectory } from "@/components/AssetDirectory";
 
 export const metadata: Metadata = pageMeta({
@@ -14,6 +15,6 @@ type Props = { searchParams: Promise<Record<string, string | string[] | undefine
 
 /** The assets page (ADR 0010): the whole Quote Registry, grouped, searched and filtered, with how many coins each asset has. */
 export default async function AssetsPage({ searchParams }: Props) {
-  const [query, { quotes }, { quotes: inUse }] = await Promise.all([searchParams.then(assetsQueryFrom), listQuotes(), listLaunchQuotes()]);
+  const [query, { quotes }, { quotes: inUse }] = await Promise.all([searchParams.then(assetsQueryFrom), listQuotes(), visitorChains().then(listLaunchQuotes)]);
   return <AssetDirectory quotes={quotes} inUse={inUse} initialQuery={query} />;
 }

@@ -71,13 +71,28 @@ export type EvmStackEnv = {
   admin: { address: Address; key: Hex };
 };
 
+/**
+ * The assets the stack's launch form asks the Quote Registry about beside the native asset (#253): three Stock Tokens
+ * and USDG, Robinhood Chain's own contracts on the fork (the knowledge base's `16-token-contracts.md`, ADR 0028's note
+ * of 2026-11-23). Naming one lists nothing: a test lists the ones it launches against, and the others stay unlisted.
+ */
+export const QUOTE_CANDIDATES = {
+  CRWD: "0xea72Ecca2d0f6bFA1394DBBCff85b52CD4233931",
+  AAPL: "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9",
+  NVDA: "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+  USDG: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+} as const satisfies Record<string, Address>;
+
 /** The deployment as the API takes it in `EVM_DEPLOYMENTS`. */
 /**
  * The deployment as the API takes it in `EVM_DEPLOYMENTS`. Anvil serves any `getLogs` range, so the stack starts wide
  * (2,000 blocks, a paid tier's size); a test behind a stricter RPC sees the range shrink.
  */
 export const deploymentOf = (e: EvmStackEnv) => [
-  { chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, taxVault: e.taxVault, distributor: e.distributor, fromBlock: e.fromBlock, logBlockRange: 2_000 },
+  {
+    chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, taxVault: e.taxVault, distributor: e.distributor, fromBlock: e.fromBlock, logBlockRange: 2_000,
+    quotes: Object.values(QUOTE_CANDIDATES),
+  },
 ];
 
 /** Finds the salt that gives the hook, made by the factory at `factory`, an address carrying exactly its permission bits. */

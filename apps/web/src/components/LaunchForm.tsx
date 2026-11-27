@@ -13,14 +13,15 @@ import { landedError } from "@/lib/transactions";
 import { graduationFeeSol } from "@/lib/fees";
 import { DESTINATION_SUMMARY } from "@/lib/earnings";
 import { COIN_DECIMALS, COIN_SUPPLY, formatAmount, formatUnits, isSol, quoteTicker } from "@/lib/format";
-import { FIRST_LINKS, LINK_INFO, LINK_KINDS, LINK_MAX_LENGTH, MORE_LINKS, linkProblem, withScheme, type LinkKind } from "@/lib/links";
+import { LINK_KINDS, linkProblem, type LinkKind } from "@/lib/links";
 import { Address } from "./Address";
 import { CoinCard, type CoinCardData } from "./CoinCard";
-import { useCopyCheck, type CopyStatus } from "./CopyCheck";
+import { useCopyCheck } from "./CopyCheck";
 import { Disclaimer, hasAcceptedDisclaimer } from "./Disclaimer";
 import { burnShareTitle } from "@/lib/rewardBurn";
 import { LIQUIDITY_LAUNCH } from "@/lib/liquidityLaunch";
 import { lockSentence } from "@/lib/creatorLock";
+import { CoinFields, LinkFields, useElapsed, useStickySide, type LaunchDraft } from "./LaunchFields";
 import { EarningsChoice, LaunchOptions, LaunchType, LockChoice, supplyShare, useLaunchOptions, type LaunchOptionsState } from "./LaunchOptions";
 import { Ring } from "./Mark";
 import { QuoteChooser } from "./QuoteChooser";
@@ -41,8 +42,6 @@ type Step =
   | { kind: "confirming"; launch: Prepared; signature: string }
   | Failed;
 
-const DESCRIPTION_MAX = 1000;
-
 /**
  * The launch form after kiln's launch page (#172; the owner's answer of 2026-11-06: its look and layout in this
  * site's colours and type). One page without steps: the coin, the pair, the launch type, where the Creator's earnings
@@ -52,9 +51,11 @@ const DESCRIPTION_MAX = 1000;
  * panel says what it pays; then it sends, waits for the chain, reports the transaction for indexing and opens the coin's
  * page. On a phone the summary follows the form.
  * `initialQuote` is the asset an asset's page sent the Creator here for; the first launchable one otherwise.
+ * Where the site shows more than one chain (#253), `chainSection` is the form's first section, the choice of chain, and
+ * `draft` is what the Creator had typed about the coin before they chose this one; `onDraft` keeps it for the next.
  */
 export function LaunchForm({
-  platform, quotes, initialQuote = null, initialName = "", initialSymbol = "",
+  platform, quotes, initialQuote = null, initialName = "", initialSymbol = "", chainSection, draft = null, onDraft,
 }: {
   platform: PlatformInfo;
   quotes: QuoteAsset[];
@@ -62,16 +63,19 @@ export function LaunchForm({
   /** From the landing's pair picker (#133, candidate F), already within the form's limits. */
   initialName?: string;
   initialSymbol?: string;
+  chainSection?: ReactNode;
+  draft?: LaunchDraft | null;
+  onDraft?: (draft: LaunchDraft) => void;
 }) {
   const router = useRouter();
   const { connection } = useConnection();
   const { publicKey, signTransaction, wallet } = useWallet();
-  const [name, setName] = useState(initialName);
-  const [symbol, setSymbol] = useState(initialSymbol);
-  const [description, setDescription] = useState("");
-  const [links, setLinks] = useState<Record<LinkKind, string>>(() => Object.fromEntries(LINK_KINDS.map((k) => [k, ""])) as Record<LinkKind, string>);
+  const [name, setName] = useState(draft?.name ?? initialName);
+  const [symbol, setSymbol] = useState(draft?.symbol ?? initialSymbol);
+  const [description, setDescription] = useState(draft?.description ?? "");
+  const [links, setLinks] = useState<Record<LinkKind, string>>(() => draft?.links ?? (Object.fromEntries(LINK_KINDS.map((k) => [k, ""])) as Record<LinkKind, string>));
   const [moreLinks, setMoreLinks] = useState(false);
-  const [image, setImage] = useState<File | null>(null);
+  const [image, setImage] = useState<File | null>(draft?.image ?? null);
   const [quoteMint, setQuoteMint] = useState(
     () => quotes.find((q) => q.mint === initialQuote && q.launchable)?.mint ?? quotes.find((q) => q.launchable)?.mint ?? null,
   );
@@ -81,6 +85,7 @@ export function LaunchForm({
 
   const imageUrl = useMemo(() => (image ? URL.createObjectURL(image) : null), [image]);
   useEffect(() => () => { if (imageUrl) URL.revokeObjectURL(imageUrl); }, [imageUrl]);
+  useEffect(() => onDraft?.({ name, symbol, description, links, image }), [onDraft, name, symbol, description, links, image]);
 
   const quote = quotes.find((q) => q.mint === quoteMint) ?? null;
   // The launch options work in whichever Quote Asset is chosen: its ticker and decimals, and quotes priced in it.
@@ -210,57 +215,23 @@ export function LaunchForm({
       </header>
 
       <fieldset className={`col-8 ${styles.form}`} disabled={locked}>
-        {/* The coin: the image, then the name and the ticker, each checked for a copy as it is typed. */}
-        <section className={styles.set} aria-labelledby="block-coin" aria-busy={copy.pending}>
-          <h2 id="block-coin" className={`t-h3 ${styles.legend}`}>Your coin</h2>
-          <div className={styles.field}>
-            <label className={styles.drop} data-filled={imageUrl ? true : undefined}>
-              {imageUrl ? (
-                <>
-                  <img
-                    className={styles.dropImage}
-                    src={imageUrl}
-                    alt="Coin image preview"
-                    // A file named as an image that holds none: taken back out, with the reason.
-                    onError={() => {
-                      setImage(null);
-                      setError("That file can't be read as an image. Choose another one.");
-                    }}
-                  />
-                  <span>Change image</span>
-                </>
-              ) : (
-                <span>Add image</span>
-              )}
-              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="visually-hidden" onChange={(e) => pickImage(e.target.files?.[0])} />
-            </label>
-            <CheckLine status={copy.image.status} text={copy.image.text} field="image" />
-          </div>
-          <div className={styles.two}>
-            <CheckedField id="coin-name" label="Name" status={copy.name.status} text={copy.name.text} field="name">
-              <input id="coin-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={32} required placeholder="Tracer Bullet" autoComplete="off" aria-describedby="coin-name-check" />
-            </CheckedField>
-            <CheckedField id="coin-symbol" label="Ticker" status={copy.symbol.status} text={copy.symbol.text} field="symbol">
-              <input
-                id="coin-symbol"
-                value={symbol}
-                onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9$]/g, ""))}
-                maxLength={10}
-                required
-                placeholder="TRCR"
-                autoComplete="off"
-                spellCheck={false}
-                aria-describedby="coin-symbol-check"
-              />
-            </CheckedField>
-          </div>
-          <div className={styles.field}>
-            <label htmlFor="coin-description">Description</label>
-            <span className={`input ${styles.area}`}>
-              <textarea id="coin-description" value={description} onChange={(e) => setDescription(e.target.value)} maxLength={DESCRIPTION_MAX} rows={3} />
-            </span>
-          </div>
-        </section>
+        {chainSection}
+
+        <CoinFields
+          imageUrl={imageUrl}
+          onPickImage={pickImage}
+          onImageUnreadable={() => {
+            setImage(null);
+            setError("That file can't be read as an image. Choose another one.");
+          }}
+          name={name}
+          onName={setName}
+          symbol={symbol}
+          onSymbol={setSymbol}
+          description={description}
+          onDescription={setDescription}
+          copy={copy}
+        />
 
         <section className={styles.set} aria-labelledby="block-pair">
           <h2 id="block-pair" className={`t-h3 ${styles.legend}`}>Paired with</h2>
@@ -290,26 +261,7 @@ export function LaunchForm({
           </section>
         )}
 
-        <section className={styles.set} aria-labelledby="block-links">
-          <h2 id="block-links" className={`t-h3 ${styles.legend}`}>Links</h2>
-          {/* Telegram and X side by side, the website across both, the rest two by two behind one button. */}
-          <div className={styles.two}>
-            {FIRST_LINKS.map((k) => (
-              <LinkField key={k} kind={k} value={links[k]} onChange={(v) => setLinks((l) => ({ ...l, [k]: v }))} wide={k === "website"} />
-            ))}
-          </div>
-          {moreLinks || MORE_LINKS.some((k) => links[k].trim() !== "") ? (
-            <div className={styles.two}>
-              {MORE_LINKS.map((k) => (
-                <LinkField key={k} kind={k} value={links[k]} onChange={(v) => setLinks((l) => ({ ...l, [k]: v }))} />
-              ))}
-            </div>
-          ) : (
-            <button type="button" className={`button button-ghost ${styles.more}`} onClick={() => setMoreLinks(true)}>
-              More links
-            </button>
-          )}
-        </section>
+        <LinkFields links={links} onLink={(k, v) => setLinks((l) => ({ ...l, [k]: v }))} more={moreLinks} onMore={() => setMoreLinks(true)} />
 
         <section className={styles.set} aria-labelledby="block-first-buy">
           <h2 id="block-first-buy" className={`t-h3 ${styles.legend}`}>First buy</h2>
@@ -345,25 +297,6 @@ export function LaunchForm({
       />
     </form>
   );
-}
-
-/**
- * The summary's height as `--side-h` on its column, so the column's sticky offset can keep its foot (the action and the
- * note) in the window when the summary is taller than the window: it then sticks with its foot 24px above the window's
- * bottom instead of its top under the header (LaunchForm.module.css, `.side`).
- */
-function useStickySide() {
-  const ref = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => el.style.setProperty("--side-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-  return ref;
 }
 
 /**
@@ -429,67 +362,6 @@ function previewCard({
     rewardLiquidityBps: rewardTax === null ? 0 : rewardLiquidity,
     liquidityTaxBps: liquidityTax,
   };
-}
-
-/** One link's field: its name over the address. `wide` spans the grid's row. */
-function LinkField({ kind, value, onChange, wide = false }: { kind: LinkKind; value: string; onChange: (value: string) => void; wide?: boolean }) {
-  const info = LINK_INFO[kind];
-  return (
-    <div className={`${styles.field} ${wide ? styles.wide : ""}`}>
-      <label htmlFor={`coin-${kind}`}>{info.label}</label>
-      <span className={`input ${styles.well}`}>
-        <input
-          id={`coin-${kind}`}
-          type="url"
-          inputMode="url"
-          autoComplete="off"
-          spellCheck={false}
-          maxLength={LINK_MAX_LENGTH}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          // An address pasted without its scheme ("t.me/name") gets it, where the browser would only say "Please enter a URL."
-          onBlur={() => { if (withScheme(value) !== value) onChange(withScheme(value)); }}
-          placeholder={info.placeholder}
-        />
-      </span>
-    </div>
-  );
-}
-
-/** A field with Copy Protection's verdict under it once the field has a value. */
-function CheckedField({ id, label, status, text, field, children }: { id: string; label: string; status: CopyStatus; text: string | null; field: string; children: ReactNode }) {
-  return (
-    <div className={styles.field} data-check={status}>
-      <label htmlFor={id}>{label}</label>
-      <span className={`input ${styles.well}`}>{children}</span>
-      <CheckLine status={status} text={text} field={field} id={`${id}-check`} />
-    </div>
-  );
-}
-
-/** The verdict's line: "Free", or who holds the name and until when. Nothing until the field has a value. */
-function CheckLine({ status, text, field, id }: { status: CopyStatus; text: string | null; field: string; id?: string }) {
-  if (status === "empty" || !text) return null;
-  return (
-    <p id={id} className={styles.check} data-status={status} data-field={field}>
-      {text}
-    </p>
-  );
-}
-
-/** The seconds since something started, for the status line while a launch confirms. */
-function useElapsed(running: boolean) {
-  const [seconds, setSeconds] = useState(0);
-  useEffect(() => {
-    if (!running) {
-      setSeconds(0);
-      return;
-    }
-    const started = Date.now();
-    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
-  return seconds;
 }
 
 type SummaryProps = {

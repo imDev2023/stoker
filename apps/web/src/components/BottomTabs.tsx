@@ -6,6 +6,7 @@ import { useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { ASSETS_LINK, CURATED_LINK, EXPLORE_LINK, LAUNCH_LINK, REWARDS_LINK, STATS_LINK, SWAP_LINK, type NavLink } from "@/lib/site";
+import { useEvmWallet } from "./EvmWalletProvider";
 import { isCurrent } from "./NavLinks";
 import { SchemeToggle } from "./SchemeToggle";
 import { SocialLinks } from "./SocialLinks";
@@ -42,6 +43,9 @@ export function BottomTabs() {
   const id = useId();
   const pathname = usePathname();
   const { publicKey } = useWallet();
+  // Where the site shows an EVM chain, the tab wears whichever wallet is connected: the Solana one first (#253).
+  const evm = useEvmWallet();
+  const account = publicKey?.toBase58() ?? evm?.connected?.address ?? null;
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -78,8 +82,8 @@ export function BottomTabs() {
         </Link>
         {RIGHT.map(tab)}
         <button type="button" className={styles.tab} onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-controls={id} data-wallet-connect>
-          {publicKey ? (
-            <Avatar address={publicKey.toBase58()} size={22} />
+          {account ? (
+            <Avatar address={account} size={22} />
           ) : (
             <svg viewBox="0 0 20 20" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
               <circle cx="10" cy="7" r="3.5" />

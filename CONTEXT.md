@@ -45,7 +45,7 @@ Jupiter's swap widget on `/swap` (owner, 2026-10-30), any Solana token for any o
 _Avoid_: trade section (parked, #123), exchange
 
 **Copy Protection**:
-The window after a Launch, seven days unless the operator sets another, during which nobody else may launch a coin here with its name, ticker or image; afterwards anyone may, and a coin that does carries a label naming the original.
+The window after a Launch, seven days unless the operator sets another, during which nobody else may launch a coin here, on any chain, with its name, ticker or image; afterwards anyone may, and a coin that does carries a label naming the original.
 _Avoid_: Anti-vamp (the feature's working name), ticker registry, blacklist
 
 **Trust figures**:
@@ -405,6 +405,11 @@ _Avoid_: Pair token, base, collateral, whitelisted token
 **Asset category** (on an EVM chain):
 The same ten kinds; a tokenized stock on Robinhood Chain is shown as a Stock Token.
 _Avoid_: Type, sector, class
+
+**Copy Protection** (on an EVM chain):
+The same window, across every chain: a coin launched through Stoker on an EVM chain is protected on Solana too, and a coin on Solana on every EVM chain (ADR 0012, amended).
+A coin sent straight to the factory, which Stoker holds no record of, is never protected and carries the label when it copies one that is.
+_Avoid_: Cross-chain registry, ticker lock
 
 **First Buy** (on an EVM chain):
 The Creator's own buy inside the launch transaction, as on Solana; it pays the Platform Fee and is the one buy the Opening Fee never touches.

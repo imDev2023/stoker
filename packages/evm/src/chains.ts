@@ -40,6 +40,15 @@ export type EvmChainProfile = {
    */
   blockNumberIsL1Estimate: boolean;
   explorer: string;
+  /**
+   * The chain's public RPC, which carries no key: what a wallet that has never met the chain is given to add it
+   * (`wallet_addEthereumChain`, #253). The API itself reads through its own endpoint, a secret.
+   */
+  walletRpcUrl: string;
+  /** What the chain calls one of its tokenized stocks, the only name the site gives it (ADR 0028); null where it has none of its own. */
+  stockName: string | null;
+  /** Multicall3, at its usual address: one `eth_call` for a quote's reads, so every figure is of one block (#253). */
+  multicall3: Address;
   /** The chain's native asset, a Quote Asset at the zero address (#242). */
   native: { symbol: string; name: string; decimals: number };
   /** Uniswap v4 and its periphery on the chain (the knowledge base's `uniswap/DEPLOYMENTS.md`, contracts/README.md). */
@@ -63,6 +72,9 @@ export const ROBINHOOD_CHAIN: EvmChainProfile = {
   logBlockRange: 10,
   blockNumberIsL1Estimate: true,
   explorer: "https://robinhoodchain.blockscout.com",
+  walletRpcUrl: "https://rpc.mainnet.chain.robinhood.com",
+  stockName: "Stock Token",
+  multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
   native: { symbol: "ETH", name: "Ether", decimals: 18 },
   uniswap: {
     poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
@@ -91,6 +103,12 @@ export type EvmDeployment = {
   distributor: Address;
   /** The block the factory was deployed in: the Indexer starts there. */
   fromBlock: number;
+  /**
+   * Assets the launch form asks the Quote Registry about, beside the native asset and every asset a coin is already
+   * paired with (#253): the registry has no list to read, only `listingOf`, so the form offers those of these that it
+   * lists at that moment. Naming one here lists nothing: the registry alone gates a Launch.
+   */
+  quotes?: Address[];
   /** The widest `eth_getLogs` block range the provider takes, which a run never asks past; the chain's profile's when unset. */
   logBlockRange?: number;
   /**
@@ -109,6 +127,18 @@ export type EvmDeployment = {
   retryRuns?: number;
   retryRunsUnclear?: number;
 };
+
+/**
+ * The gas a Creator's First Buy adds to a launch (#253): an allowance for an estimate made before the buy can be
+ * tried out (the factory may not take the asset yet, or there are only a form's choices to go by). Measured on the
+ * fork of Robinhood Chain at block 120,800,000 on 2026-11-27, as a launch with a First Buy less the same launch
+ * without one: 178,160 to 211,439 in the native asset and 198,356 to 248,626 in a Stock Token the factory may already
+ * take, across a standard coin, a Reward Launch, a Stoke Launch and a coin with a Creator Lock; 307,376 in a Stock
+ * Token by its permit, the permit's own call included. The allowance is the largest of them, rounded up, so the figure
+ * shown is under for none; the prepared launch's own estimate replaces it as soon as the launch can be tried.
+ * `evm-launch.test.ts` holds each of its launches to it, so a contract change that outgrows it fails there.
+ */
+export const FIRST_BUY_GAS = 310_000n;
 
 /** The native asset's address as a Quote Asset: the zero address, native ETH in the pool key (#242). */
 export const NATIVE: Address = "0x0000000000000000000000000000000000000000";

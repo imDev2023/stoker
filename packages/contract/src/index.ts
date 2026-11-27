@@ -3,6 +3,7 @@ import { LaunchMarket } from "./board";
 import { PublishedBudgetTable } from "./budget";
 import { PublishedCreatorLadder } from "./ladder";
 import { Chain, ChainAddress, PoolRef } from "./chains";
+import { EvmAddress, EvmChain, EvmHash, EvmSignature } from "./evm";
 import { GraduationTarget, QuoteRef } from "./quotes";
 import { CurveProgress, Graduation, SolRouteSource } from "./trades";
 import { CreatorEarningsDestination, CreatorLockTerms, LaunchModeFields, LaunchModesSummary, LiquidityTax, RewardTax } from "./launchModes";
@@ -27,6 +28,7 @@ export * from "./trust";
 export * from "./marks";
 export * from "./creatorLock";
 export * from "./chains";
+export * from "./evm";
 
 /** The runtime's own URL (a Worker's, Node's and a browser's are one standard); this package's `lib` names no runtime. */
 declare const URL: new (url: string) => { hostname: string };
@@ -121,6 +123,51 @@ export const PrepareLaunchFields = z.object({
 }).extend(LaunchModeFields.shape);
 export type PrepareLaunchFields = z.infer<typeof PrepareLaunchFields>;
 
+/** The launch types by the names the form's fields carry: `rewardTax` makes a Reward Launch, `liquidityTax` a Stoke Launch. An EVM chain has no airdrop at launch. */
+const evmModeFields = LaunchModeFields.omit({ airdrop: true });
+
+/**
+ * Text fields of POST /v1/launches/prepare for an EVM chain (`chain` names it, #253); the image travels alongside as a
+ * multipart file on the first call. A First Buy in an ERC-20 takes two calls: the first answers with a step to do in the
+ * wallet (`approve` or `permit`), the second carries `salt` back, and with it the permit's signature, and answers the
+ * launch itself. The second call needs no image: the coin's address already names the one stored.
+ */
+export const PrepareEvmLaunchFields = z
+  .object({
+    chain: EvmChain,
+    creator: EvmAddress,
+    /** The Quote Asset's contract; `EVM_NATIVE` for the chain's native asset. It must be listed. */
+    quote: EvmAddress,
+    name: z.string().trim().min(1).max(32),
+    symbol: z.string().trim().min(1).max(10).regex(/^[A-Za-z0-9$]+$/, "letters, digits and $ only"),
+    description: z.string().trim().max(1000).default(""),
+    website: linkField("website"),
+    x: linkField("x"),
+    telegram: linkField("telegram"),
+    discord: linkField("discord"),
+    tiktok: linkField("tiktok"),
+    instagram: linkField("instagram"),
+    youtube: linkField("youtube"),
+    /** The salt an earlier answer gave for this coin; empty on the first call, when the API chooses one. */
+    salt: z.union([EvmHash, z.literal("")]).optional().transform((v) => v || undefined),
+    /** The deadline of the permit the Creator signed, as the earlier answer gave it. */
+    permitDeadline: z.union([z.string().regex(/^\d+$/), z.literal("")]).optional().transform((v) => v || undefined),
+    permitSignature: z.union([EvmSignature, z.literal("")]).optional().transform((v) => v || undefined),
+  })
+  .extend(evmModeFields.shape);
+export type PrepareEvmLaunchFields = z.infer<typeof PrepareEvmLaunchFields>;
+
+/**
+ * Why a chain's own rules refuse a launch's text (#253): on Robinhood Chain the chain's marks and their look-alikes in a
+ * name, ticker, description or link, the ticker HOOD, a listed Stock Token's symbol as a ticker, and "Robinhood Token"
+ * in a name (ADR 0028). `field` is the form's field; `reason` is the sentence the form shows and a prepare refuses with.
+ */
+export const LaunchRefusal = z.object({
+  field: z.enum(["name", "symbol", "description", ...LINK_KINDS]),
+  reason: z.string(),
+});
+export type LaunchRefusal = z.infer<typeof LaunchRefusal>;
+
 export const PreparedLaunch = z.object({
   /** Base64 v0 transaction, already signed by the new mint; the Creator's wallet signs as fee payer and sends it. */
   transaction: z.string(),
@@ -139,7 +186,10 @@ export type CopyKind = z.infer<typeof CopyKind>;
 
 /** A launched coin inside its Copy Protection window (#120, ADR 0012). */
 export const ProtectedCoin = z.object({
-  mint: base58,
+  /** The protected coin's address, on whichever chain it launched (#253: the window covers every chain). */
+  mint: ChainAddress,
+  /** The chain the protected coin launched on. */
+  chain: Chain,
   symbol: z.string(),
   name: z.string(),
   launchedAt: z.iso.datetime(),
@@ -163,10 +213,16 @@ export type CopyVerdict = z.infer<typeof CopyVerdict>;
 
 /** Text fields of POST /launches/check; the image, when checked, travels alongside as a multipart file. */
 export const CopyCheckFields = z.object({
+  /** The chain the coin would launch on (#253); Solana when left out. A chain's own rules for a name are checked too (`refusals`). */
+  chain: Chain.default("solana"),
   /** The Creator's wallet: a Creator may reuse their own coins' name, ticker and image. */
-  creator: base58.optional(),
+  creator: ChainAddress.optional(),
   name: z.string().trim().max(32).optional(),
   symbol: z.string().trim().max(10).optional(),
+  /** The description and the links, which an EVM chain's own rules read (ADR 0028); never compared with another coin's. */
+  description: z.string().trim().max(1000).optional(),
+  /** Every link the form holds, one a line. */
+  links: z.string().max(2_000).optional(),
 });
 export type CopyCheckFields = z.infer<typeof CopyCheckFields>;
 
@@ -177,6 +233,8 @@ export const CopyCheck = z.object({
   image: CopyVerdict.nullable(),
   /** The window every launch gets, in seconds. */
   protectionSeconds: z.number().int(),
+  /** What the chain's own rules refuse in the text sent (#253, ADR 0028); left out on a chain with no such rules, Solana among them. */
+  refusals: z.array(LaunchRefusal).optional(),
 });
 export type CopyCheck = z.infer<typeof CopyCheck>;
 

@@ -1,5 +1,6 @@
-import { LaunchSort, QuoteCategory, QuoteIssuer, type MarketValue, type QuoteRef } from "@launchpad/contract";
+import { LaunchSort, QuoteCategory, QuoteIssuer, type Chain, type MarketValue, type QuoteRef } from "@launchpad/contract";
 import type { BoardQuery } from "./api";
+import { STOCK_KIND } from "./chains";
 import { quoteTicker } from "./format";
 
 export const SORT_LABELS: Record<LaunchSort, string> = {
@@ -42,7 +43,7 @@ export const CATEGORY_LABELS: Record<QuoteCategory, string> = {
   collectible: "Collectibles",
   meme: "Memes",
   community: "Community",
-  native: "Native coins",
+  native: "Native assets",
 };
 
 /** The categories in the order the site lists them: the money first, then what it buys, the long tail last. */
@@ -76,7 +77,8 @@ export function inChip(q: Pick<QuoteRef, "category" | "issuer">, query: Pick<Boa
 
 export const DEFAULT_BOARD: BoardQuery = { sort: "market_cap", category: null, issuer: null, quote: null, q: "" };
 
-const MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+/** A Quote Asset's address as the board's filter takes one: a Solana mint, or a contract on an EVM chain (#253). */
+const MINT = /^(?:[1-9A-HJ-NP-Za-km-z]{32,44}|0x[0-9a-fA-F]{40})$/;
 export const SEARCH_MAX = 64;
 
 /** The board's query from the page's URL. Anything unknown falls back to the default, so an old or mangled link still shows coins. */
@@ -151,9 +153,11 @@ const KIND_WORDS: Record<QuoteCategory, string> = {
   collectible: "Collectible",
   meme: "Meme coin",
   community: "Community coin",
-  native: "Native coin",
+  native: "Native asset",
 };
-export const kindOf = (q: Pick<QuoteRef, "category" | "issuer">) => (q.issuer ? `${ISSUER_LABELS[q.issuer]} stock` : KIND_WORDS[q.category]);
+/** A chain with a name of its own for its tokenized stocks (a Stock Token on Robinhood Chain, ADR 0028) is given that name alone. */
+export const kindOf = (q: Pick<QuoteRef, "category" | "issuer"> & { chain?: Chain }) =>
+  q.issuer ? `${ISSUER_LABELS[q.issuer]} stock` : ((q.category === "tokenized_stock" && q.chain && STOCK_KIND[q.chain]) || KIND_WORDS[q.category]);
 
 export const isDefaultBoard = (q: BoardQuery) => !q.category && !q.issuer && !q.quote && !q.q && q.sort === DEFAULT_BOARD.sort;
 

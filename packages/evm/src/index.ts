@@ -5,4 +5,6 @@
 export * from "./chains";
 export * from "./decode";
 export * from "./math";
+export * from "./seed";
+export * from "./fees";
 export * from "./generated/abis";

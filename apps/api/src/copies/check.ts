@@ -4,9 +4,15 @@
  * when a launch is indexed, where it labels a coin that took an earlier coin's name, ticker or image (inside the window:
  * one made without our API, or in the minute before the original was indexed; after it: allowed, and still said). A
  * Creator may reuse their own coins' name, ticker and image.
+ *
+ * The window covers every chain (#253): a protected coin's name, ticker and image are refused on Solana and on every
+ * EVM chain alike. Every Solana coin is protected. A coin on an EVM chain is protected only when it was launched
+ * through this API, which is to say Stoker holds its record and the Indexer wrote its metadata address
+ * (`../evm/prepared.ts`): a coin sent straight to the factory costs cents, and protecting it would let anyone lock
+ * names on every chain (#279). Such a coin is never an original, and is labelled when it copies one.
  */
-import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
-import type { CopyKind, CopyVerdict, ProtectedCoin } from "@launchpad/contract";
+import { and, desc, eq, gt, ne, or, sql } from "drizzle-orm";
+import type { Chain, CopyKind, CopyVerdict, ProtectedCoin } from "@launchpad/contract";
 import { launches, type Db } from "@launchpad/db";
 import type { Config } from "../env";
 import { COPY_DISTANCE, hashDistance } from "./imageHash";
@@ -24,7 +30,7 @@ export type Candidate = {
 export type CopyVerdicts = { name: CopyVerdict | null; symbol: CopyVerdict | null; image: CopyVerdict | null };
 
 /** The launches inside their window at `now`, newest first, with everything the matcher reads. */
-type ProtectedRow = { mint: string; name: string; symbol: string; nameKey: string; symbolKey: string; imageHash: string | null; creator: string; createdAt: Date };
+type ProtectedRow = { mint: string; chain: string; name: string; symbol: string; nameKey: string; symbolKey: string; imageHash: string | null; creator: string; createdAt: Date };
 
 /** How many protected launches one check reads at most: well above a week of launches, and bounded if it is not. */
 const WINDOW_ROWS = 20_000;
@@ -33,23 +39,30 @@ const WINDOW_ROWS = 20_000;
  * `window` false looks past the window at every earlier launch: what the Indexer labels a new coin with, since after the
  * window a copy is allowed but still worth a word ("same ticker as X, launched on ...").
  */
-export async function checkCopies(db: Db, cfg: Config, c: Candidate, now = new Date(), { window = true } = {}): Promise<CopyVerdicts> {
+export async function checkCopies(
+  db: Db, cfg: Pick<Config, "copyProtectionSeconds">, c: Candidate, now = new Date(), { window = true } = {},
+): Promise<CopyVerdicts> {
   const since = window ? new Date(now.getTime() - cfg.copyProtectionSeconds * 1000) : new Date(0);
   const rows: ProtectedRow[] = await db
     .select({
-      mint: launches.mint, name: launches.name, symbol: launches.symbol, nameKey: launches.nameKey, symbolKey: launches.symbolKey,
+      mint: launches.mint, chain: launches.chain, name: launches.name, symbol: launches.symbol, nameKey: launches.nameKey, symbolKey: launches.symbolKey,
       imageHash: launches.imageHash, creator: launches.creator, createdAt: launches.createdAt,
     })
     .from(launches)
-    // Solana's coins alone (#279): every caller is Solana's (its prepare, its check, its Indexer), and an EVM coin, which
-    // anyone launches straight on the factory for the chain's gas, would otherwise refuse a Solana launch one edit from
-    // its name for the whole window. What Copy Protection is across chains is #253's to build (story 11).
-    .where(and(eq(launches.chain, "solana"), gt(launches.createdAt, since), c.creator ? ne(launches.creator, c.creator) : undefined, sql`${launches.createdAt} <= ${now.toISOString()}::timestamptz`))
+    .where(
+      and(
+        gt(launches.createdAt, since),
+        // The protected coins: Solana's, and an EVM chain's that were launched through this API.
+        or(eq(launches.chain, "solana"), ne(launches.metadataUri, "")),
+        c.creator ? ne(launches.creator, c.creator) : undefined,
+        sql`${launches.createdAt} <= ${now.toISOString()}::timestamptz`,
+      ),
+    )
     .orderBy(desc(launches.createdAt))
     .limit(WINDOW_ROWS);
   const until = (r: ProtectedRow) => new Date(r.createdAt.getTime() + cfg.copyProtectionSeconds * 1000);
   const coin = (r: ProtectedRow): ProtectedCoin => ({
-    mint: r.mint, symbol: r.symbol, name: r.name, launchedAt: r.createdAt.toISOString(), protectedUntil: until(r).toISOString(),
+    mint: r.mint, chain: r.chain as Chain, symbol: r.symbol, name: r.name, launchedAt: r.createdAt.toISOString(), protectedUntil: until(r).toISOString(),
   });
   const free: CopyVerdict = { status: "free", kind: null, of: null, reason: null };
   const taken = (kind: CopyKind, r: ProtectedRow, reason: string): CopyVerdict => ({ status: "taken", kind, of: coin(r), reason });

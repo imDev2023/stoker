@@ -30,10 +30,16 @@ export type CoinCardData = {
   rewardLiquidityBps: number;
   /** A Liquidity Launch's tax (#215), all of it added to its pool; null for any other coin, and then `rewardTaxBps` is null. */
   liquidityTaxBps: number | null;
+  /**
+   * True for a coin on an EVM chain (#253), which has no curve: it trades in its own pool from its first block and
+   * graduates once its price has held its Graduation Target, so the card says whether it has and draws no progress.
+   */
+  ownPool?: boolean;
 };
 
 /** The curve's line: how far along a live curve is, or where a finished one went. */
 function curveWords(card: CoinCardData) {
+  if (card.ownPool) return card.curve === "graduated" ? "Graduated" : "Not graduated yet";
   if (card.curve === "graduating") return "Sold out, graduating";
   if (card.curve === "graduated") return "Graduated, in its Raydium pool";
   const pct = card.progress;
@@ -71,7 +77,7 @@ export function CoinCard({ card, href }: { card: CoinCardData; href?: string }) 
       </div>
       <div className={styles.curve}>
         <span className={styles.track} aria-hidden>
-          <span className={styles.fill} style={{ width: `${card.progress}%` }} />
+          <span className={styles.fill} style={{ width: `${card.ownPool ? (card.curve === "graduated" ? 100 : 0) : card.progress}%` }} />
         </span>
         <span className={styles.meta}>{curveWords(card)}</span>
       </div>

@@ -235,6 +235,11 @@
   font-weight: 500;
 }
 
+/* A coin with no curve to draw, before its Graduation: the words alone, in the quiet ink of the percentage. */
+.waiting {
+  color: var(--ink-2);
+}
+
 /* Under a hairline: what the coin is paired with on the left, its volume and its age on the right. */
 .foot {
   display: flex;

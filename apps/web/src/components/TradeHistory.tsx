@@ -1,22 +1,27 @@
 import { Fragment } from "react";
 import type { Graduation, QuoteRef, Trade } from "@launchpad/contract";
-import { COIN_DECIMALS, explorerUrl, formatUnits, quoteTicker } from "@/lib/format";
+import { COIN_DECIMALS, explorerUrl, formatUnits, quoteTicker, type ExplorerTarget } from "@/lib/format";
 import { Address } from "./Address";
 import { EmptyState } from "./EmptyState";
 import { Price } from "./Price";
 import { RelativeTime } from "./RelativeTime";
 import styles from "./TradeHistory.module.css";
 
-/** The latest trades of a Launch's coin, on its curve and after Graduation in its pool, newest first. */
+/**
+ * The latest trades of a Launch's coin, on its curve and after Graduation in its pool, newest first. A coin on an EVM
+ * chain (#253) names its own decimals and its chain's explorer; it has one pool for life, so no trade marks a move.
+ */
 export function TradeHistory({
-  trades, symbol, quote, platform, now, graduation, headingHidden = false,
+  trades, symbol, quote, platform, now, graduation, headingHidden = false, coinDecimals = COIN_DECIMALS,
 }: {
   trades: Trade[];
   symbol: string;
   quote: QuoteRef;
-  platform: { cluster: string; rpcUrl: string };
+  platform: ExplorerTarget;
   now: number;
   graduation: Graduation | null;
+  /** The coin's decimals: Solana's launch shape unless the coin's chain says otherwise. */
+  coinDecimals?: number;
   /** When a tab names the panel: the heading stays as the region's name, unseen. */
   headingHidden?: boolean;
 }) {
@@ -55,7 +60,7 @@ export function TradeHistory({
                   <td>
                     <span className={`${styles.side} ${styles[t.side]}`}>{t.side === "buy" ? "Buy" : "Sell"}</span>
                   </td>
-                  <td className={`mono ${styles.num}`}>{formatUnits(t.baseAmount, COIN_DECIMALS, 0)}</td>
+                  <td className={`mono ${styles.num}`}>{formatUnits(t.baseAmount, coinDecimals, 0)}</td>
                   <td className={`mono ${styles.num}`}>{formatUnits(t.quoteAmount, quote.decimals)}</td>
                   <td className={`${styles.num} ${styles.wide}`}><Price className="mono" value={t.price} /></td>
                   <td className={styles.wide}>

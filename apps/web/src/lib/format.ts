@@ -115,8 +115,15 @@ export function timeAgo(iso: string, now = Date.now()) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * Where an address or a transaction is looked up. For Solana the platform's cluster and RPC say which explorer page; for
+ * a coin on an EVM chain `explorer` is that chain's own block explorer, as the chain's launch options give it (#253).
+ */
+export type ExplorerTarget = { cluster: string; rpcUrl: string; explorer?: string };
+
 /** A local chain has no public explorer cluster, so the explorer is pointed at the platform's own RPC. */
-export function explorerUrl(kind: "tx" | "address", value: string, platform: { cluster: string; rpcUrl: string }) {
+export function explorerUrl(kind: "tx" | "address", value: string, platform: ExplorerTarget) {
+  if (platform.explorer) return `${platform.explorer.replace(/\/$/, "")}/${kind}/${value}`;
   const suffix =
     platform.cluster === "mainnet"
       ? ""

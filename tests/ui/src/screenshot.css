@@ -114,3 +114,28 @@ nav[aria-label="Sections"] {
 html {
   scroll-padding-bottom: 0 !important;
 }
+
+/* An EVM launch's cost (#253) is an estimate of gas at the chain's price for a wallet drawn afresh, written in a sentence
+   ("About 0.00001234 ETH in network fees"), so it is masked, in the summary's facts and in the signing panel. A figure a
+   digit longer or shorter would move the sentence's break and with it the mask and the rows under it: a fixed box
+   keeps both where they are. */
+[data-launch-cost] {
+  flex: none;
+  width: 60%;
+  height: 2lh;
+  overflow: hidden;
+}
+
+[data-network-fee] {
+  width: 16ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-align: right;
+}
+
+/* The Opening Fee's sentence in an EVM coin's trade panel says when its window ends ("... until 1:44:35 PM, all of it
+   ..."): a box of the time's width inside the sentence, set on the line's foot like the rebate's age above. */
+[data-opening-fee] time {
+  width: 11ch;
+  vertical-align: bottom;
+}

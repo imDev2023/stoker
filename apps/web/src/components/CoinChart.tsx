@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { CANDLE_INTERVALS, type CandleInterval, type LaunchSummary } from "@launchpad/contract";
+import { CANDLE_INTERVALS, familyOf, type CandleInterval, type LaunchSummary } from "@launchpad/contract";
 import { LIBRARY_PATH, loadChartingLibrary, type ChartWidget } from "@/lib/charting";
 import { chartLook, chartOverrides, chartStudiesOverrides, paintChart, shareFonts } from "@/lib/chartTheme";
 import type { MarksShown, MarkTarget } from "@/lib/chartMarks";
@@ -64,9 +64,13 @@ type State = "loading" | "ready" | "failed";
  * legend (open, high, low and close). The head above it is the site's: the market cap and the day's volume, what the
  * chart shows (the price or the market cap, in the Quote Asset or in USD) and the candle interval.
  */
-export function CoinChart({ launch, quote, poll, hasTrades }: {
+export function CoinChart({ launch, quote, poll, hasTrades, coinDecimals = COIN_DECIMALS, marks = true }: {
   launch: LaunchSummary;
   quote: string;
+  /** The coin's decimals, which its supply is counted in: Solana's launch shape unless the coin's chain says otherwise (#253). */
+  coinDecimals?: number;
+  /** Whether the chart offers its marks (#160). A coin on an EVM chain has none yet, and the chart then never asks for any. */
+  marks?: boolean;
   /**
    * Where the chart puts its live read: the page calls it in its own refresh (every four seconds, and at once after the
    * visitor's trade), beside its other reads, so the page reads the API in one burst on one clock as it always has.
@@ -80,7 +84,7 @@ export function CoinChart({ launch, quote, poll, hasTrades }: {
   const [interval, setIntervalState] = useState<CandleInterval>(FIRST_INTERVAL);
   const [series, setSeries] = useState<ChartSeries>({ measure: "price", currency: "quote" });
   // The marks (#160): the key wallets' trades and the posts on X by default, every trade on request.
-  const [shown, setShown] = useState<MarksShown>({ trades: "key", mentions: true });
+  const [shown, setShown] = useState<MarksShown>(marks ? { trades: "key", mentions: true } : { trades: "none", mentions: false });
   const [markCount, setMarkCount] = useState<number | null>(null);
   const targets = useRef(new Map<string, MarkTarget>());
   const wallet = useWallet().publicKey?.toBase58() ?? null;
@@ -98,7 +102,7 @@ export function CoinChart({ launch, quote, poll, hasTrades }: {
     let gone = false;
     let chart: ChartWidget | null = null;
     const feed = createDatafeed(
-      { mint: launch.mint, symbol: launch.symbol, quote, quoteDecimals: launch.quote.decimals, supply: Number(BigInt(launch.supply) / 10n ** BigInt(COIN_DECIMALS)) },
+      { mint: launch.mint, symbol: launch.symbol, quote, quoteDecimals: launch.quote.decimals, supply: Number(BigInt(launch.supply) / 10n ** BigInt(coinDecimals)) },
       {
         price: () => live.current.price,
         usdPerQuote: () => live.current.usdPerQuote,
@@ -188,7 +192,7 @@ export function CoinChart({ launch, quote, poll, hasTrades }: {
       widget.current = null;
       chart?.remove();
     };
-  }, [launch.mint, launch.symbol, launch.quote.decimals, quote, hasTrades]);
+  }, [launch.mint, launch.symbol, launch.quote.decimals, quote, hasTrades, coinDecimals]);
 
   // What the marks show, and whose trades are the visitor's own, change the marks on the bars already drawn.
   // The library's refresh only adds what the datafeed answers, so the marks drawn are cleared first.
@@ -256,7 +260,7 @@ export function CoinChart({ launch, quote, poll, hasTrades }: {
               </button>
             ))}
           </div>
-          {hasTrades && (
+          {hasTrades && marks && (
             <div className={`segmented ${styles.choice}`} role="group" aria-label="Marks on the chart">
               <button
                 type="button"
@@ -292,7 +296,10 @@ export function CoinChart({ launch, quote, poll, hasTrades }: {
         ) : !hasTrades ? (
           <p className={styles.note}>
             <span>The chart starts with the first trade.</span>
-            {price !== null && <span>The curve opens at <Price value={price} /> {quote} a coin.</span>}
+            {price !== null && (familyOf(launch.chain) === "evm"
+              // An EVM chain has no curve: the coin's pool opens at its Listing's start price.
+              ? <span>The coin starts at <Price value={price} /> {quote} a coin.</span>
+              : <span>The curve opens at <Price value={price} /> {quote} a coin.</span>)}
           </p>
         ) : null}
       </div>

@@ -26,7 +26,7 @@ const REFRESH_MS = 4_000;
 export type CoinLink = { label: string; href: string; external: boolean };
 
 /** The title row's left side: the lockup at 40px, the pair at the title size, the name with the coin's links after it. */
-function Title({ launch, quote, links }: { launch: LaunchSummary; quote: string; links: CoinLink[] }) {
+export function Title({ launch, quote, links }: { launch: LaunchSummary; quote: string; links: CoinLink[] }) {
   return (
     <div className={styles.title}>
       <PairLockup launch={launch} size={40} />

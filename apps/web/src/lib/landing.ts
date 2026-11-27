@@ -1,16 +1,20 @@
-import type { BurnsPage, PlatformStats, QuoteAsset, Revenue } from "@launchpad/contract";
+import type { BurnsPage, Chain, PlatformStats, QuoteAsset, Revenue } from "@launchpad/contract";
 import type { Figure } from "@/components/Stats";
 import { ISSUER_LABELS } from "./board";
+import { STOCK_KIND } from "./chains";
 
-/** What the landing and the board call one asset's kind, in sentence case: one label grammar from one source. */
-export function quoteKind(q: Pick<QuoteAsset, "category" | "issuer">) {
+/**
+ * What the landing and the board call one asset's kind, in sentence case: one label grammar from one source. A chain
+ * with a name of its own for its tokenized stocks (a Stock Token on Robinhood Chain, ADR 0028) is given that name alone.
+ */
+export function quoteKind(q: Pick<QuoteAsset, "category" | "issuer"> & { chain?: Chain }) {
   switch (q.category) {
     case "sol":
       return "Solana";
     case "stablecoin":
       return "Stablecoin";
     case "tokenized_stock":
-      return q.issuer ? ISSUER_LABELS[q.issuer] : "Tokenized stock";
+      return q.issuer ? ISSUER_LABELS[q.issuer] : ((q.chain && STOCK_KIND[q.chain]) ?? "Tokenized stock");
     case "rwa":
       return "Real-world asset";
     case "wrapped":
@@ -25,6 +29,8 @@ export function quoteKind(q: Pick<QuoteAsset, "category" | "issuer">) {
       return "Meme";
     case "community":
       return "Community";
+    case "native":
+      return "Native asset";
   }
 }
 

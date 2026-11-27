@@ -276,6 +276,20 @@
   font-size: var(--text-label);
 }
 
+/*
+ * A fee named with what it is for (a coin on an EVM chain, #253: "Platform Fee, to the platform and the Creator"): the
+ * name runs to two lines in the docked panel, so the amount keeps its ticker beside it and the name wraps instead; left
+ * to shrink, the amount gave its room to the name and dropped the ticker under the figure.
+ */
+.named dd {
+  white-space: nowrap;
+}
+
+/* The sentence beside the link to the Fees page breaks evenly, never leaving its last word on a line of its own. */
+.feeNote dt {
+  text-wrap: balance;
+}
+
 /* The one link out of the quote: to the Fees page, where every rate is. */
 .feeLink {
   color: var(--accent);

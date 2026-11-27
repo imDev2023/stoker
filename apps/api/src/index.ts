@@ -29,6 +29,10 @@ import { evmChains, withoutRpcUrl } from "./chains/evm/config";
 import { openFailures, replayEvmChain, ReplayRefused } from "./chains/evm/indexer";
 import { chainFilter } from "./chains/filter";
 import { chainRoutes } from "./routes/chains";
+import { evmLaunchRoutes } from "./evm/launchRoutes";
+import { prepareEvmLaunch } from "./evm/launch";
+import { reportEvmTransaction } from "./evm/report";
+import { evmTradeRoutes } from "./evm/tradeRoutes";
 import { arweaveUrl, metadataDocument, signedItems, signMetadataItems, uploadMetadata } from "./metadata";
 import { refreshQuoteRegistry } from "./quotes/registry";
 import { lockRewardTaxes } from "./rewardTax";
@@ -135,6 +139,10 @@ app.post("/v1/launches/prepare", async (c) => {
   const form = await c.req.formData().catch(() => {
     throw new HTTPException(400, { message: "expected multipart/form-data" });
   });
+  // A launch on an EVM chain (#253) names its chain and is prepared by that chain family's own path; with no chain, or
+  // Solana, everything below is Solana's, as it was.
+  const chain = form.get("chain");
+  if (typeof chain === "string" && chain !== "" && chain !== "solana") return prepareEvmLaunch(c, form);
   const fields = PrepareLaunchFields.safeParse(Object.fromEntries([...form.entries()].filter(([, v]) => typeof v === "string")));
   if (!fields.success) return c.json({ error: "invalid launch fields", details: fields.error.issues }, 400);
   const image = form.get("image");
@@ -241,6 +249,14 @@ function indexingFailed(e: unknown): never {
 /** Fast path: the web app reports a confirmed signature so a Launch, trade or claim appears without waiting for the webhook. */
 app.post("/v1/transactions/:signature", async (c) => {
   const signature = c.req.param("signature");
+  // A transaction on an EVM chain (#253) is named by its hash and its chain; with no chain, or Solana, it is a signature.
+  const chain = c.req.query("chain");
+  if (chain !== undefined && chain !== "solana") {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(signature)) return c.json({ error: "invalid transaction hash" }, 400);
+    const { report, launched } = await reportEvmTransaction(c, signature as `0x${string}`, chain);
+    if (launched > 0) c.executionCtx.waitUntil(uploadAfterLaunch(c.env));
+    return c.json(report);
+  }
   if (!/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(signature)) return c.json({ error: "invalid signature" }, 400);
   const raw = await fetchRawTransaction(c.get("cfg").rpcUrl, signature);
   if (!raw) return c.json({ error: "transaction not found or not confirmed yet" }, 404);
@@ -250,11 +266,11 @@ app.post("/v1/transactions/:signature", async (c) => {
 });
 
 /**
- * What a coin on an EVM chain has so far (#252): itself, its trades and its candles. The rest of a coin's pages read
- * Solana's chain (its holders, its quote, its trust figures, its lock, its earnings, its rewards, its marks) and come to
- * the EVM chains slice by slice (#253 to #256), so for an EVM coin they answer 404 by name, never a Solana error.
+ * What a coin on an EVM chain has so far: itself, its trades and its candles (#252), and its quote (#253). The rest of a
+ * coin's pages read Solana's chain (its holders, its trust figures, its lock, its earnings, its rewards, its marks) and
+ * come to the EVM chains slice by slice (#254 to #256), so for an EVM coin they answer 404 by name, never a Solana error.
  */
-const EVM_COIN_READS = new Set(["trades", "candles"]);
+const EVM_COIN_READS = new Set(["trades", "candles", "quote"]);
 app.use("/v1/launches/:mint/:part{.+}", async (c, next) => {
   const part = c.req.param("part");
   if (/^0x[0-9a-fA-F]{40}$/.test(c.req.param("mint")) && !EVM_COIN_READS.has(part)) {
@@ -264,6 +280,8 @@ app.use("/v1/launches/:mint/:part{.+}", async (c, next) => {
 });
 
 app.route("/v1", chainRoutes);
+app.route("/v1", evmLaunchRoutes);
+app.route("/v1", evmTradeRoutes);
 app.route("/v1", launchRoutes);
 app.route("/v1", launchModeRoutes);
 app.route("/v1", copyRoutes);
@@ -387,7 +405,8 @@ app.post("/v1/operator/indexer/replay", async (c) => {
   const deployment = evmChains(c.env).find((d) => d.chain === body.data.chain);
   if (!deployment) return c.json({ error: `this API reads no EVM chain called ${body.data.chain}` }, 400);
   try {
-    const replay = await withLease(c.get("db"), "indexer", () => replayEvmChain(c.get("db"), deployment, body.data));
+    // With the platform's settings, as the Indexer's own run has them: a replayed launch takes its prepared record (#253).
+    const replay = await withLease(c.get("db"), "indexer", () => replayEvmChain(c.get("db"), { ...deployment, platform: c.get("cfg") }, body.data));
     if (!replay) return c.json({ error: "the Indexer is running: ask again when its run has ended" }, 409);
     await notifyPending(c.get("db"), c.get("cfg"));
     return c.json(replay.done);

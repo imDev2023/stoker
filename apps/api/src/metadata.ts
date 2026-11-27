@@ -9,6 +9,7 @@ import {
   creditBalance, creditTransfer, depositAddress, PaymentRequired, signDataItem, uploadDataItem, wincForLamports, type UploadReceipt,
 } from "@launchpad/arweave";
 import { signedTransaction, WSOL_MINT } from "@launchpad/chain";
+import { EVM_CHAINS, isEvmChain } from "@launchpad/evm";
 import { arweaveTopUps, launches, launchMetadata, ledgerEntries, metadataUploads, type Db } from "@launchpad/db";
 import type { ArweaveConfig, Config } from "./env";
 import { fetchRawTransaction } from "./indexer";
@@ -62,7 +63,12 @@ export async function signMetadataItems(
   db: Db, bucket: R2Bucket, cfg: Config, operations: Keypair, m: Metadata, image: { bytes: Uint8Array; contentType: string },
 ) {
   const mint = m.id;
-  const common = [{ name: "App-Name", value: APP_NAME }, { name: "Launch-Mint", value: mint }];
+  // A Solana coin's items are tagged as they always were. An EVM coin's also name its chain, by its chain id and never
+  // by a name: on Robinhood Chain the chain's marks stay out of a coin's metadata (ADR 0028).
+  const common = [
+    { name: "App-Name", value: APP_NAME }, { name: "Launch-Mint", value: mint },
+    ...(isEvmChain(m.chain) ? [{ name: "Chain-Id", value: String(EVM_CHAINS[m.chain].chainId) }] : []),
+  ];
   const imageItem = await signDataItem(operations.secretKey, {
     data: image.bytes, tags: [{ name: "Content-Type", value: image.contentType }, ...common], anchor: await anchor(mint, "image"),
   });
@@ -75,8 +81,8 @@ export async function signMetadataItems(
   await db
     .insert(metadataUploads)
     .values([
-      { mint, item: "image", arweaveId: imageItem.id, storageKey: storageKey(mint, "image"), bytes: imageItem.bytes.byteLength },
-      { mint, item: "metadata", arweaveId: metadataItem.id, storageKey: storageKey(mint, "metadata"), bytes: metadataItem.bytes.byteLength },
+      { chain: m.chain, mint, item: "image", arweaveId: imageItem.id, storageKey: storageKey(mint, "image"), bytes: imageItem.bytes.byteLength },
+      { chain: m.chain, mint, item: "metadata", arweaveId: metadataItem.id, storageKey: storageKey(mint, "metadata"), bytes: metadataItem.bytes.byteLength },
     ])
     .onConflictDoNothing();
   return { metadataUri: arweaveUrl(cfg.arweave, metadataItem.id), imageUri: arweaveUrl(cfg.arweave, imageItem.id) };
@@ -109,6 +115,9 @@ export type UploadSummary = {
  * the operations wallet to Turbo's deposit address for credits, one transfer at a time, each on the Ledger too. Turbo
  * holds every item by its id, so a run that dies after posting and before writing uploads nothing twice: the next run
  * posts the same bytes again and is charged nothing. Runs every minute and right after a launch is indexed.
+ *
+ * Every chain's coins (#253): an EVM coin prepared through the API has its two items uploaded the same way, paid the
+ * same way, in SOL. What one cost goes on the Ledger against its own launch transaction, so under its own chain.
  */
 export async function uploadMetadata({ db, cfg, operations, bucket }: UploadDeps): Promise<UploadSummary> {
   const connection = new Connection(cfg.rpcUrl, "confirmed");
@@ -125,11 +134,10 @@ export async function uploadMetadata({ db, cfg, operations, bucket }: UploadDeps
   }
 
   const due = await db
-    .select({ upload: metadataUploads, launch: { signature: launches.createdSignature, slot: launches.createdSlot } })
+    .select({ upload: metadataUploads, launch: { chain: launches.chain, signature: launches.createdSignature, slot: launches.createdSlot } })
     .from(metadataUploads)
     .innerJoin(launches, eq(launches.mint, metadataUploads.mint))
-    // Solana's coins alone (#252): an EVM coin's metadata comes with launches prepared through the API (#253).
-    .where(and(eq(launches.chain, "solana"), eq(metadataUploads.status, "signed")))
+    .where(eq(metadataUploads.status, "signed"))
     .orderBy(asc(launches.createdAt), asc(metadataUploads.item));
   let wincPerSol: bigint | null = null;
   let deposit: string | null = null;
@@ -180,7 +188,7 @@ export async function uploadMetadata({ db, cfg, operations, bucket }: UploadDeps
       await db
         .insert(ledgerEntries)
         .values({
-          signature: launch.signature, eventIndex: LEDGER_INDEX[upload.item], kind: "metadata_upload", assetMint: WSOL_MINT.toBase58(), assetDecimals: 9,
+          chain: launch.chain, signature: launch.signature, eventIndex: LEDGER_INDEX[upload.item], kind: "metadata_upload", assetMint: WSOL_MINT.toBase58(), assetDecimals: 9,
           amount: lamports.toString(), source: ops, destination: deposit, launchMint: upload.mint, slot: launch.slot, blockTime: new Date(),
         })
         .onConflictDoNothing();
