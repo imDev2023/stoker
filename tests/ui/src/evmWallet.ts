@@ -174,7 +174,13 @@ export async function installEvmTestWallet(page: Page, { key, rpcUrl, chainId, s
         if (current !== chainId) throw new WalletError(-32603, `The test wallet is on chain ${current}, not ${chainId}: the site must ask it to switch first.`);
         // Sent exactly as it was given: the same target, data, value and gas limit; the node prices the gas.
         const hash = await signer.sendTransaction({ to: tx.to, data: tx.data, value: tx.value ? BigInt(tx.value) : 0n, gas: tx.gas ? BigInt(tx.gas) : undefined });
-        // The Indexer stops a few blocks behind the head, so the chain is taken that far past the transaction.
+        // The Indexer stops a few blocks behind the head, so the chain is taken that far past the transaction's own
+        // block. The fork answers with the hash before that block is made (a launch executes for a second or two, reading
+        // the remote chain), and blocks asked for meanwhile take the transaction into the first of them: it then sat one
+        // block short of final for good, since nothing else makes a block, and the site's report of it stayed "pending"
+        // until the form gave up and opened a page for a coin the API had not read (the first run on the fork). So the
+        // transaction's receipt is waited for first, whatever it says: a reverted one is the site's to show.
+        await reader.waitForTransactionReceipt({ hash, pollingInterval: 100, timeout: 60_000 });
         if (finalityDepth > 0) await miner.mine({ blocks: finalityDepth });
         wallet.sent.push(hash);
         return hash;

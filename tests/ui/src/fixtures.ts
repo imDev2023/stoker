@@ -90,8 +90,14 @@ export async function drain(wallet: Keypair, keepSol: number) {
   await sendAndConfirmTransaction(conn, new Transaction().add(transfer), [wallet], { commitment: "confirmed" });
 }
 
+/**
+ * The coins of the site as every spec but the EVM chain's sees it: Solana's alone. The API lists every chain's coins
+ * when none is named, and the stack's fork of an EVM chain is shown only to a browser that carries the preview cookie
+ * (#253, `evmChain.spec.ts`), so a spec that holds a page, the sitemap or "the newest coin" against this list would
+ * otherwise meet coins its page never shows.
+ */
 export async function listLaunches() {
-  return LaunchList.parse(await (await fetch(`${stackEnv().apiUrl}/v1/launches?limit=100`)).json()).launches;
+  return LaunchList.parse(await (await fetch(`${stackEnv().apiUrl}/v1/launches?chain=solana&limit=100`)).json()).launches;
 }
 
 export type LaunchFields = {
