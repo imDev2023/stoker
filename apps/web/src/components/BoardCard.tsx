@@ -101,7 +101,7 @@ export function BoardCard({ launch, now, platform }: { launch: LaunchSummary; no
             )}
           </span>
         </Link>
-        <CoinActions mint={launch.mint} symbol={launch.symbol} platform={platform} className={styles.actions} />
+        <CoinActions mint={launch.mint} symbol={launch.symbol} platform={platform} chain={launch.chain} className={styles.actions} />
       </span>
       {/* The headline with the day's line beside it. */}
       <span className={styles.headline}>

@@ -7,7 +7,7 @@ import { LAUNCH_IMAGE_MAX_BYTES, LAUNCH_IMAGE_TYPES, type EvmLaunchOptions, type
 import { ApiRequestError, LaunchRefusedError, getLaunch, prepareEvmLaunch, reportEvmTransaction } from "@/lib/api";
 import { lockSentence } from "@/lib/creatorLock";
 import { DESTINATION_SUMMARY } from "@/lib/earnings";
-import { EvmReverted, isRejection, waitForReceipt } from "@/lib/evmWallet";
+import { EvmReverted, isRejection, isShortOfFunds, waitForReceipt } from "@/lib/evmWallet";
 import { formatAmount, formatUnits, quoteTicker, type ExplorerTarget } from "@/lib/format";
 import { LINK_KINDS, linkProblem, type LinkKind } from "@/lib/links";
 import { LIQUIDITY_LAUNCH } from "@/lib/liquidityLaunch";
@@ -43,6 +43,8 @@ type Step =
 
 /** The wallet is on another network than the launch's: nothing is asked of it until it has switched. */
 class WrongNetwork extends Error {}
+/** The form's own sentence for something that stopped the launch, shown as it is. */
+class Stopped extends Error {}
 
 /** How many times one launch may be prepared before the form gives up: the first answer, and one more after each of its steps. */
 const PREPARE_ROUNDS = 4;
@@ -152,6 +154,7 @@ export function EvmLaunchForm({
       setStep(retrying ?? { kind: "editing" });
     };
 
+    const shortOfFunds = `Your wallet doesn't have enough ${options.native.symbol} to pay for the launch. Add ${options.native.symbol} and try again.`;
     let prepared: PreparedEvmLaunch | null = null;
     let asks: 1 | 2 = 1;
     try {
@@ -163,7 +166,7 @@ export function EvmLaunchForm({
       let salt = retrying?.salt ?? "";
       let permit: { deadline: string; signature: string } | null = null;
       for (let round = 0; prepared === null; round++) {
-        if (round >= PREPARE_ROUNDS) throw new Error("The launch could not be prepared. Try again in a moment.");
+        if (round >= PREPARE_ROUNDS) throw new Stopped("The launch could not be prepared. Try again in a moment.");
         await onRightChain();
         const answer = await prepareEvmLaunch(fields(salt, permit));
         salt = answer.salt;
@@ -180,7 +183,7 @@ export function EvmLaunchForm({
           setStep({ kind: "signing", prepared: answer, ask: "permit", asks });
           permit = { deadline: answer.permitDeadline, signature: await evm.signTypedData(answer.permit) };
           setStep({ kind: "preparing", retrying });
-        } else throw new Error("The launch could not be prepared. Try again in a moment.");
+        } else throw new Stopped("The launch could not be prepared. Try again in a moment.");
       }
       await onRightChain();
     } catch (e) {
@@ -190,9 +193,11 @@ export function EvmLaunchForm({
       if (e instanceof LaunchRefusedError) setRefused(Object.fromEntries(e.refusals.map((r) => [r.field, r.reason])));
       // What the API says is the API's own sentence, shown as it is; only a wallet's answer is read for a refusal.
       if (e instanceof ApiRequestError) return back(e.message);
+      if (e instanceof Stopped) return back(e.message);
       if (isRejection(e)) return back("You declined the request in your wallet. Nothing was launched.");
       if (e instanceof EvmReverted) return back("The approval for your first buy failed on the chain, so nothing was launched. Try again.");
-      return back((e as Error).message || "The launch could not be prepared. Try again in a moment.");
+      if (isShortOfFunds(e)) return back(shortOfFunds);
+      return back("Something went wrong preparing the launch, so nothing was launched. Try again in a moment.");
     }
 
     setStep({ kind: "signing", prepared, ask: "launch", asks });
@@ -200,7 +205,8 @@ export function EvmLaunchForm({
     try {
       hash = await evm.sendTransaction(prepared.transaction!);
     } catch (e) {
-      return back(isRejection(e) ? "You declined the transaction in your wallet. Nothing was launched." : (e as Error).message || "Your wallet could not send the launch. Nothing was launched.");
+      if (isRejection(e)) return back("You declined the transaction in your wallet. Nothing was launched.");
+      return back(isShortOfFunds(e) ? shortOfFunds : "Your wallet could not send the launch, so nothing was launched. Try again in a moment.");
     }
     setStep({ kind: "confirming", prepared, ask: "launch", hash });
     try {

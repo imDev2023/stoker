@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { familyOf, type Chain } from "@launchpad/contract";
 import { explorerUrl } from "@/lib/format";
 import styles from "./CoinActions.module.css";
 
@@ -9,9 +10,10 @@ export type ExplorerCluster = { cluster: string; rpcUrl: string };
 /**
  * A coin's two quick actions wherever the board lists it (owner, 2026-11-07): copy its contract address, and open it on
  * the explorer. They sit over the row's or card's link (CoinRow, BoardCard), never inside it, so a press copies or opens
- * the explorer without also opening the coin's page.
+ * the explorer without also opening the coin's page. `platform` is Solana's explorer: a coin on an EVM chain (`chain`,
+ * #253) keeps the copy alone in a list, and its own page links to its chain's explorer.
  */
-export function CoinActions({ mint, symbol, platform, className = "" }: { mint: string; symbol: string; platform: ExplorerCluster; className?: string }) {
+export function CoinActions({ mint, symbol, platform, chain = "solana", className = "" }: { mint: string; symbol: string; platform: ExplorerCluster; chain?: Chain; className?: string }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -44,11 +46,13 @@ export function CoinActions({ mint, symbol, platform, className = "" }: { mint: 
       </button>
       {/* Only while it applies: a status region in every row would make the board's own status line one of sixty. */}
       {copied && <span className="visually-hidden" role="status">Contract address copied</span>}
-      <a className={styles.explorer} href={explorerUrl("address", mint, platform)} target="_blank" rel="noreferrer" aria-label={`View ${symbol} on the explorer`} title="View on the explorer">
-        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-          <path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </a>
+      {familyOf(chain) === "solana" && (
+        <a className={styles.explorer} href={explorerUrl("address", mint, platform)} target="_blank" rel="noreferrer" aria-label={`View ${symbol} on the explorer`} title="View on the explorer">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </a>
+      )}
     </span>
   );
 }

@@ -109,7 +109,7 @@ export function CoinRow({ launch, now, platform }: { launch: LaunchSummary; now:
         <RelativeTime iso={launch.createdAt} now={now} />
       </span>
       {/* The last cell at a desktop; on a phone they close the figures' line, so the line keeps its width. */}
-      <CoinActions mint={launch.mint} symbol={launch.symbol} platform={platform} className={styles.actions} />
+      <CoinActions mint={launch.mint} symbol={launch.symbol} platform={platform} chain={launch.chain} className={styles.actions} />
       </span>
     </div>
   );

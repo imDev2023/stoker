@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { EVM_NATIVE, type EvmLaunchOptions, type EvmTradeQuote, type LaunchSummary, type PlatformInfo, type PreparedEvmTrade, type TradeSide } from "@launchpad/contract";
 import { ApiRequestError, getEvmQuote, getEvmWalletBalances, prepareEvmTrade, reportEvmTransaction } from "@/lib/api";
-import { EvmReverted, isRejection, nativeMoved, tokenMoved, type EvmReceipt } from "@/lib/evmWallet";
+import { EvmReverted, isRejection, isShortOfFunds, nativeMoved, tokenMoved, type EvmReceipt } from "@/lib/evmWallet";
 import { explorerUrl, formatUnits, parseUnits, quoteTicker, type ExplorerTarget } from "@/lib/format";
 import { LIQUIDITY_LAUNCH } from "@/lib/liquidityLaunch";
 import { rewardSharesTail } from "@/lib/rewardBurn";
@@ -48,6 +48,8 @@ const abs = (n: bigint) => (n < 0n ? -n : n);
 
 /** The wallet is on another network than the coin's: nothing is asked of it until it has switched. */
 class WrongNetwork extends Error {}
+/** The panel's own sentence for something that stopped the trade, shown as it is. */
+class Stopped extends Error {}
 
 /**
  * The trade panel for a coin on an EVM chain (#253), a sibling of `TradePanel` with its structure and its words wherever
@@ -84,7 +86,6 @@ export function EvmTradePanel({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<Done | null>(null);
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
-  const [tick, setTick] = useState(0);
 
   const chain = options.chain;
   const quoteSymbol = quoteTicker(launch.quote);
@@ -155,26 +156,42 @@ export function EvmTradePanel({
       } catch (e) {
         if (!abort.signal.aborted) setQuoteError({ key, message: words(e, "Something went wrong reading the quote. Try again in a moment.") });
       }
-      // The first read of an amount waits for the typing to stop; a read the Opening Fee's clock asked for goes at once.
-    }, tick === 0 ? QUOTE_DEBOUNCE_MS : 0);
+    }, QUOTE_DEBOUNCE_MS);
     return () => {
       abort.abort();
       clearTimeout(timer);
     };
-    // `key` is every input of the read, and `tick` asks for it again.
-  }, [key, tick]);
+    // `key` is every input of the read.
+  }, [key]);
   const quote = amount !== null && answer?.key === key ? answer.quote : null;
   const quoteProblem = amount !== null && quoteError?.key === key && !quote ? quoteError.message : null;
 
-  // Inside the Opening Fee's window the fee falls every second, so the quote is read again every second until it is over.
+  // Inside the Opening Fee's window the fee falls every second, so the quote is read again every second until an answer
+  // says the window is over. A read still out when the next second comes is left to finish, and a failed one keeps the
+  // last answer: the next second asks again.
   const opening = quote?.opening?.endsAt ?? null;
   useEffect(() => {
-    if (!opening || step.kind !== "editing") return;
-    const id = setInterval(() => setTick((t) => t + 1), OPENING_REFRESH_MS);
-    return () => clearInterval(id);
-  }, [opening, step.kind]);
-  // A new amount starts over: its first read waits for the typing to stop.
-  useEffect(() => setTick(0), [key]);
+    if (!opening || amount === null || step.kind !== "editing") return;
+    const abort = new AbortController();
+    let reading = false;
+    const id = setInterval(async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const next = await getEvmQuote(launch.mint, { side, amount: amount.toString(), slippageBps, referrer: referral }, abort.signal);
+        if (!abort.signal.aborted) setAnswer({ key, quote: next });
+      } catch {
+        // keep showing the last quote
+      } finally {
+        reading = false;
+      }
+    }, OPENING_REFRESH_MS);
+    return () => {
+      abort.abort();
+      clearInterval(id);
+    };
+    // `key` is every input of the read.
+  }, [opening, key, step.kind]);
 
   function edit(next: () => void) {
     setError(null);
@@ -227,10 +244,11 @@ export function EvmTradePanel({
       setStep({ kind: "editing" });
     };
 
+    const shortOfFunds = `Your wallet doesn't have enough for this trade and its network fee in ${options.native.symbol}. Lower the amount or add ${options.native.symbol}.`;
     let prepared = first;
     try {
       for (let round = 0; !(prepared.step === "trade" && prepared.transaction); round++) {
-        if (round >= PREPARE_ROUNDS) throw new Error("The trade could not be prepared. Try again in a moment.");
+        if (round >= PREPARE_ROUNDS) throw new Stopped("The trade could not be prepared. Try again in a moment.");
         await onRightChain();
         if (prepared.step === "approve" && prepared.transaction) {
           setStep({ kind: "signing", prepared, ask: "approve" });
@@ -242,14 +260,15 @@ export function EvmTradePanel({
           setStep({ kind: "signing", prepared, ask: "permit" });
           const signature = await evm.signTypedData(prepared.permit);
           prepared = await prepareEvmTrade({ ...body, permit: { ...prepared.permitDetails, signature } });
-        } else throw new Error("The trade could not be prepared. Try again in a moment.");
+        } else throw new Stopped("The trade could not be prepared. Try again in a moment.");
       }
       await onRightChain();
     } catch (e) {
       if (e instanceof WrongNetwork) return stop(`Your wallet is on another network. Switch it to ${options.name}, then try again.`);
       if (e instanceof EvmReverted) return stop("The approval failed on the chain, so nothing was traded. Try again.");
-      if (!(e instanceof ApiRequestError) && isRejection(e)) return stop("You declined the request in your wallet. Nothing was traded.");
-      return stop(words(e, "Something went wrong preparing the trade. Try again in a moment."));
+      if (e instanceof Stopped || e instanceof ApiRequestError) return stop(e.message);
+      if (isRejection(e)) return stop("You declined the request in your wallet. Nothing was traded.");
+      return stop(isShortOfFunds(e) ? shortOfFunds : "Something went wrong preparing the trade, so nothing was traded. Try again in a moment.");
     }
 
     setStep({ kind: "signing", prepared, ask: "trade" });
@@ -258,7 +277,8 @@ export function EvmTradePanel({
       hash = await evm.sendTransaction(prepared.transaction!);
     } catch (e) {
       // A wallet estimates before it sends, so a price that moved while the trader read the review can fail here, before any fee.
-      return stop(isRejection(e) ? "You declined the transaction in your wallet. Nothing was traded." : "Your wallet could not send the trade, so nothing was traded. Check the new quote and try again.");
+      if (isRejection(e)) return stop("You declined the transaction in your wallet. Nothing was traded.");
+      return stop(isShortOfFunds(e) ? shortOfFunds : "Your wallet could not send the trade, so nothing was traded. Check the new quote and try again.");
     }
     setStep({ kind: "confirming", prepared, ask: "trade" });
     let receipt: EvmReceipt;

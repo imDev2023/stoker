@@ -39,6 +39,11 @@ export function isRejection(e: unknown) {
   return codeOf(e) === USER_REJECTED || /reject|denied|declin|cancel/i.test(messageOf(e));
 }
 
+/** A wallet or its node saying the account cannot pay: for the amount sent with a transaction, or for its network fee. */
+export function isShortOfFunds(e: unknown) {
+  return /insufficient funds|insufficient balance|exceeds (the )?balance/i.test(messageOf(e));
+}
+
 /** A raw integer amount (a decimal string, or a bigint) as the hex quantity a wallet takes. */
 export const toQuantity = (amount: string | bigint) => `0x${BigInt(amount).toString(16)}`;
 /** A hex quantity a wallet answered, as a bigint. */
