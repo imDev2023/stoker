@@ -77,7 +77,8 @@ export function inChip(q: Pick<QuoteRef, "category" | "issuer">, query: Pick<Boa
 
 export const DEFAULT_BOARD: BoardQuery = { sort: "market_cap", category: null, issuer: null, quote: null, q: "" };
 
-const MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+/** A Quote Asset's address as the board's filter takes one: a Solana mint, or a contract on an EVM chain (#253). */
+const MINT = /^(?:[1-9A-HJ-NP-Za-km-z]{32,44}|0x[0-9a-fA-F]{40})$/;
 export const SEARCH_MAX = 64;
 
 /** The board's query from the page's URL. Anything unknown falls back to the default, so an old or mangled link still shows coins. */

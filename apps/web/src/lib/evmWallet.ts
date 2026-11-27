@@ -148,11 +148,11 @@ const asTopic = (address: string) => `0x${address.slice(2).toLowerCase().padStar
  * What a transaction moved of one ERC-20 into a wallet, less what it moved out of it, read from the receipt's own
  * `Transfer` logs: positive when the wallet received, negative when it paid. The figure is the chain's, never a quote's.
  */
-export function tokenMoved(receipt: EvmReceipt, token: string, wallet: string): bigint {
+export function erc20Moved(receipt: EvmReceipt, asset: string, wallet: string): bigint {
   const who = asTopic(wallet);
   let moved = 0n;
   for (const log of receipt.logs) {
-    if (log.address.toLowerCase() !== token.toLowerCase() || log.topics[0]?.toLowerCase() !== TRANSFER_TOPIC || log.topics.length < 3) continue;
+    if (log.address.toLowerCase() !== asset.toLowerCase() || log.topics[0]?.toLowerCase() !== TRANSFER_TOPIC || log.topics.length < 3) continue;
     const amount = log.data === "0x" ? 0n : fromQuantity(log.data);
     if (log.topics[2]!.toLowerCase() === who) moved += amount;
     if (log.topics[1]!.toLowerCase() === who) moved -= amount;

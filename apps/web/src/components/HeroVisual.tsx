@@ -156,7 +156,11 @@ export function HeroVisual({
   if (variant === "cycle") return <Cycle quotes={cycle} />;
   if (variant === "picker") return <HeroPicker quotes={quotes} />;
   // The trade panel wants a coin; until the first launch the cycle stands here, as it does for the rows.
-  if (variant === "trade") return launches[0] ? <HeroTrade initial={launches[0]} platform={platform} /> : <Cycle quotes={cycle} />;
+  if (variant === "trade") {
+    // The candidate's panel is the Solana one, so it takes the most traded coin on Solana.
+    const first = launches.find((l) => l.chain === "solana");
+    return first ? <HeroTrade initial={first} platform={platform} /> : <Cycle quotes={cycle} />;
+  }
   // The swap as a hero (the owner's pick of 2026-10-30, moved to `/swap` the same day), the rows standing in wherever the Plugin can't load.
   if (variant === "swap") return <SwapWidget fallback={<Rows initial={launches} quotes={cycle} />} />;
   return <Rows initial={launches} quotes={cycle} />;

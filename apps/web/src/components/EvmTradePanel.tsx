@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { EVM_NATIVE, type EvmLaunchOptions, type EvmTradeQuote, type LaunchSummary, type PlatformInfo, type PreparedEvmTrade, type TradeSide } from "@launchpad/contract";
 import { ApiRequestError, getEvmQuote, getEvmWalletBalances, prepareEvmTrade, reportEvmTransaction } from "@/lib/api";
-import { EvmReverted, isRejection, isShortOfFunds, nativeMoved, tokenMoved, type EvmReceipt } from "@/lib/evmWallet";
+import { EvmReverted, isRejection, isShortOfFunds, nativeMoved, erc20Moved, type EvmReceipt } from "@/lib/evmWallet";
 import { explorerUrl, formatUnits, parseUnits, quoteTicker, type ExplorerTarget } from "@/lib/format";
 import { LIQUIDITY_LAUNCH } from "@/lib/liquidityLaunch";
 import { rewardSharesTail } from "@/lib/rewardBurn";
@@ -229,8 +229,8 @@ export function EvmTradePanel({
 
   /** What a landed trade moved, from its own receipt: the coin's and the Quote Asset's transfers, or the native asset's change net of the fee. */
   async function moved(receipt: EvmReceipt, trader: string) {
-    const coins = abs(tokenMoved(receipt, launch.mint, trader));
-    const paid = nativePair ? await nativeMoved(evm!.provider!, receipt, trader) : tokenMoved(receipt, launch.quote.mint, trader);
+    const coins = abs(erc20Moved(receipt, launch.mint, trader));
+    const paid = nativePair ? await nativeMoved(evm!.provider!, receipt, trader) : erc20Moved(receipt, launch.quote.mint, trader);
     return { coins: coins > 0n ? coins.toString() : null, quote: paid === null || paid === 0n ? null : abs(paid).toString() };
   }
 
