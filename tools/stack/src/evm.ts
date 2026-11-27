@@ -18,7 +18,10 @@ export const FORK_BLOCK = 120_800_000;
 /** The tick spacing, the Platform Fee and the first Creator Tier's share the contracts' tests deploy with (ADR 0027). */
 const TICK_SPACING = 200;
 const PLATFORM_FEE_BPS = 100;
+/** The Creator Ladder's three shares of the Platform Fee (#248, ADR 0027): the first Creator Tier's, the second's and the top's. */
 const CREATOR_SHARE_BPS = 5_000;
+const SECOND_TIER_SHARE_BPS = 6_000;
+const TOP_TIER_SHARE_BPS = 7_000;
 /** The Opening Fee (#246, ADR 0026): 99% of a buy at a Launch's first second, falling to nothing over 20 seconds. */
 const OPENING_FEE_START_BPS = 9_900;
 const OPENING_FEE_DURATION = 20;
@@ -120,7 +123,7 @@ export async function deployStoker(rpcUrl: string): Promise<EvmStackEnv> {
   }
   const salt = mineHookSalt(factoryAt!, poolManager, keys, taxVault);
   const factory = (
-    await deployed(await wallet.deployContract({ abi: stokerFactoryAbi, bytecode: stokerFactoryBytecode, args: [poolManager, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, salt, taxVault, OPENING_FEE_START_BPS, OPENING_FEE_DURATION] }))
+    await deployed(await wallet.deployContract({ abi: stokerFactoryAbi, bytecode: stokerFactoryBytecode, args: [poolManager, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, SECOND_TIER_SHARE_BPS, TOP_TIER_SHARE_BPS, salt, taxVault, OPENING_FEE_START_BPS, OPENING_FEE_DURATION] }))
   ).contractAddress!;
   if (factory.toLowerCase() !== factoryAt!.toLowerCase()) throw new Error(`the factory landed at ${factory}, not the ${factoryAt} its hook's salt was mined for`);
   const hook = await pub.readContract({ address: factory, abi: stokerFactoryAbi, functionName: "hook" });
