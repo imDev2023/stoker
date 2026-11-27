@@ -94,7 +94,8 @@ jobs:
           key: contracts-lib-${{ hashFiles('contracts/script/deps.sh') }}
       - run: ./script/deps.sh
       - run: forge fmt --check
-      - run: forge build --sizes
+      # In parts (#251): one compiler process building everything at once reached 11 GB and took this runner down.
+      - run: ./script/build.sh
       # The EVM package's ABIs and bytecode must be what this build gives (#252): rerun the script after a contract change.
       - run: node ../packages/evm/scripts/artifacts.mjs --check
       - run: forge lint src
