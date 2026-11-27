@@ -8,6 +8,7 @@ import { ROUTE_TOLERANCE_BPS, type RawTransaction } from "@launchpad/chain";
 import {
   LAUNCH_IMAGE_MAX_BYTES, LAUNCH_IMAGE_TYPES, PrepareLaunchFields, type JobName, type OperatorAlertList, type PlatformInfo,
 } from "@launchpad/contract";
+import { ReplayIndexer, type Chain, type IndexerFailureList } from "@launchpad/contract";
 import { createDb, jobRuns, launchMetadata, operatorAlerts } from "@launchpad/db";
 import { apiKeyMiddleware, keyRoutes, operatorKeyRoutes, pruneUsage } from "./apiKeys";
 import { config, operationsKey, quoteMarket, solRoutes, type AppEnv, type Bindings } from "./env";
@@ -22,8 +23,11 @@ import { sniffImageType } from "./images";
 import {
   buildLaunch, creatorLockChoice, launchQuoteAsset, loadDraft, newMintKeyNonce, refuseWith, resolveLaunchModes, saveDraft, taxChoice,
 } from "./launch";
-import { runJob, toJobRun } from "./jobs";
+import { runJob, toJobRun, withLease } from "./jobs";
 import { runIndexers } from "./chains/indexers";
+import { evmChains, withoutRpcUrl } from "./chains/evm/config";
+import { openFailures, replayEvmChain, ReplayRefused } from "./chains/evm/indexer";
+import { chainFilter } from "./chains/filter";
 import { chainRoutes } from "./routes/chains";
 import { arweaveUrl, metadataDocument, signedItems, signMetadataItems, uploadMetadata } from "./metadata";
 import { refreshQuoteRegistry } from "./quotes/registry";
@@ -358,6 +362,41 @@ app.post("/v1/operator/jobs/rebates", (c) => {
 /** Every polled chain's Indexer (#252): the EVM chains', which read our contracts' events up to each chain's finality depth. */
 app.post("/v1/operator/jobs/indexer", (c) => manualJob(c, "indexer", () => runIndexers(c.env, c.get("cfg"), c.get("db"))));
 
+/** The transactions an EVM chain's Indexer could not write and has not written since (#279): those it is trying again, and those set aside. */
+app.get("/v1/operator/indexer/failures", async (c) => {
+  const chain = chainFilter(c);
+  const rows = (await Promise.all(evmChains(c.env).filter((d) => chain === undefined || d.chain === chain).map((d) => openFailures(c.get("db"), d)))).flat();
+  const res: IndexerFailureList = {
+    failures: rows.map((f) => ({
+      chain: f.chain as Chain, transaction: f.transaction, block: f.block, attempts: f.attempts, error: f.error, firstFailedAt: f.firstFailedAt.toISOString(),
+      lastFailedAt: f.lastFailedAt.toISOString(), setAsideAt: f.setAsideAt?.toISOString() ?? null,
+    })),
+  };
+  return c.json(res);
+});
+
+/**
+ * Reads a transaction, or a range of blocks, of an EVM chain again and writes what is missing (#279): the way back for
+ * a transaction the Indexer set aside. It holds the Indexer's lease and answers 409 while a run has it: every write is
+ * idempotent, but a run that met a coin's pool before the replay wrote the coin passes that coin's trades over to its
+ * own end, past where the replay reads to.
+ */
+app.post("/v1/operator/indexer/replay", async (c) => {
+  const body = ReplayIndexer.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "invalid replay", details: body.error.issues }, 400);
+  const deployment = evmChains(c.env).find((d) => d.chain === body.data.chain);
+  if (!deployment) return c.json({ error: `this API reads no EVM chain called ${body.data.chain}` }, 400);
+  try {
+    const replay = await withLease(c.get("db"), "indexer", () => replayEvmChain(c.get("db"), deployment, body.data));
+    if (!replay) return c.json({ error: "the Indexer is running: ask again when its run has ended" }, 409);
+    await notifyPending(c.get("db"), c.get("cfg"));
+    return c.json(replay.done);
+  } catch (e) {
+    if (e instanceof ReplayRefused) return c.json({ error: e.message }, 400);
+    return c.json({ error: withoutRpcUrl(e, deployment).message.split("\n")[0] }, 502);
+  }
+});
+
 app.post("/v1/operator/jobs/metadata-upload", (c) => manualJob(c, "metadata-upload", () => uploadMetadata(uploadDeps(c.env, c.get("db")))));
 
 /** The mentions job (#160, ADR 0018): searches X for the coins that traded lately; without TWITTERAPI_API_KEY it calls nothing. */
@@ -456,7 +495,11 @@ export default {
         await job(runJob(db, "metadata-upload", () => uploadMetadata(uploadDeps(env, db)), { exclusive: true }));
         // The EVM chains' Indexer (#252), after Solana's jobs and within a budget of ranges and seconds a run; a deployment
         // without EVM_DEPLOYMENTS has nothing to poll and skips it.
-        if (env.EVM_DEPLOYMENTS) await job(runJob(db, "indexer", () => runIndexers(env, config(env), db), { exclusive: true }));
+        if (env.EVM_DEPLOYMENTS) {
+          await job(runJob(db, "indexer", () => runIndexers(env, config(env), db), { exclusive: true }));
+          // Its alerts are posted by its own job (#279), never left for Solana's graduation watch to find a reason to post.
+          await job(notifyPending(db, config(env)));
+        }
       }
       // Platform revenue into the operations wallet, and on to the treasury (ADR 0004).
       // Then the Creators' share of what was collected goes on to them (ADR 0009).

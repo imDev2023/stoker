@@ -2,7 +2,7 @@
 // chain's traffic uses, on the test stack's fork of Robinhood Chain. Nothing here reaches into the API's internals.
 import {
   createPublicClient, createTestClient, createWalletClient, encodeAbiParameters, encodePacked, erc20Abi, http, maxUint160, parseAbi,
-  keccak256, parseAbiParameters, parseEventLogs, publicActions, toFunctionSelector, toHex, walletActions, type Address, type Hex, type TransactionReceipt,
+  keccak256, parseAbiParameters, parseEventLogs, publicActions, toHex, walletActions, type Address, type Hex, type TransactionReceipt,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { quoteRegistryAbi, stokerFactoryAbi, NATIVE, ROBINHOOD_CHAIN } from "@launchpad/evm";
@@ -156,6 +156,28 @@ export async function swapExactIn(trader: { key: Hex; address: Address }, l: Evm
   return { receipt, gas: gas + gasCost(receipt) };
 }
 
+/**
+ * Two exact-in buys in one transaction, one in each coin's pool, through the Universal Router: what an aggregator's
+ * route does, and how one transaction comes to touch two deployments' pools.
+ */
+export async function buyBoth(trader: { key: Hex }, pools: [EvmLaunch, EvmLaunch], amountIn: bigint) {
+  const actions = encodePacked(["uint8", "uint8", "uint8"], [SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE_ALL]);
+  const inputs = pools.map((l) =>
+    encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [actions, [
+      encodeAbiParameters(exactInSingle, [{ poolKey: l.key, zeroForOne: l.key.currency0 === l.quote, amountIn, amountOutMinimum: 0n, minHopPriceX36: 0n, hookData: "0x" }]),
+      encodeAbiParameters(parseAbiParameters("address, uint256"), [l.quote, amountIn]),
+      encodeAbiParameters(parseAbiParameters("address, uint256"), [l.coin, 0n]),
+    ]]),
+  );
+  const hash = await clients().wallet(trader.key).writeContract({
+    address: ROBINHOOD_CHAIN.uniswap.universalRouter, abi: routerAbi, functionName: "execute",
+    args: [encodePacked(["uint8", "uint8"], [V4_SWAP, V4_SWAP]), inputs, await deadline()], value: amountIn * 2n, gas: SWAP_GAS * 2n,
+  });
+  const receipt = await clients().public.waitForTransactionReceipt({ hash });
+  if (receipt.status !== "success") throw new Error(`swap reverted: ${hash}: ${await whyReverted(hash)}`);
+  return receipt;
+}
+
 const quoterAbi = parseAbi([
   "function quoteExactOutputSingle(((address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, bool zeroForOne, uint128 exactAmount, bytes hookData) params) returns (uint256 amountIn, uint256 gasEstimate)",
 ]);
@@ -256,48 +278,8 @@ export async function runIndexer(apiUrl = env().apiUrl) {
   return (await res.json()) as { status: string; summary: unknown };
 }
 
-/**
- * A JSON-RPC proxy in front of the fork that answers as a stricter provider would: `eth_getLogs` over more than
- * `maxLogRange` blocks is refused with -32600, as Alchemy's free tier refuses past 10, and while `failMultiplier` is
- * set every `uiMultiplier()` call fails with HTTP 503, a transport error. `getLogsRanges` keeps every range asked for.
- */
-export async function strictRpc(maxLogRange: number) {
-  const { createServer } = await import("node:http");
-  const { freePort } = await import("@launchpad/stack");
-  const upstream = evm()!.rpcUrl;
-  const MULTIPLIER = toFunctionSelector("uiMultiplier()");
-  const state = { failMultiplier: false, getLogsRanges: [] as number[] };
-  const server = createServer((req, res) => {
-    let body = "";
-    req.on("data", (d) => (body += d));
-    req.on("end", async () => {
-      const calls = [JSON.parse(body)].flat() as { id: number; method: string; params: { fromBlock?: Hex; toBlock?: Hex; data?: Hex; input?: Hex }[] }[];
-      for (const call of calls) {
-        if (call.method === "eth_getLogs") {
-          const range = Number(BigInt(call.params[0]!.toBlock!) - BigInt(call.params[0]!.fromBlock!)) + 1;
-          state.getLogsRanges.push(range);
-          if (range > maxLogRange) {
-            res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32600, message: `You can make eth_getLogs requests with up to a ${maxLogRange} block range.` } }));
-            return;
-          }
-        }
-        const data = call.params?.[0]?.data ?? call.params?.[0]?.input;
-        if (state.failMultiplier && call.method === "eth_call" && data?.startsWith(MULTIPLIER)) {
-          res.writeHead(503).end("upstream unavailable");
-          return;
-        }
-      }
-      const answer = await fetch(upstream, { method: "POST", headers: { "content-type": "application/json" }, body });
-      res.writeHead(answer.status, { "content-type": "application/json" }).end(await answer.text());
-    });
-  });
-  const port = await freePort();
-  await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
-  return { url: `http://127.0.0.1:${port}`, state, stop: () => new Promise<void>((resolve) => server.close(() => resolve())) };
-}
-
 /** The operator's alerts, as the operator view lists them. */
 export async function operatorAlerts(apiUrl = env().apiUrl) {
   const res = await fetch(`${apiUrl}/v1/operator/alerts`, { headers: { authorization: `Bearer ${env().operatorToken}` } });
-  return ((await res.json()) as { alerts: { kind: string; subject: string; message: string }[] }).alerts;
+  return ((await res.json()) as { alerts: { kind: string; subject: string; message: string; resolvedAt: string | null }[] }).alerts;
 }

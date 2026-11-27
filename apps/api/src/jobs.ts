@@ -12,20 +12,9 @@ const LEASE_SECONDS = 15 * 60;
  */
 export async function runJob<T>(db: Db, job: JobName, work: () => Promise<T>, opts: { exclusive?: boolean } = {}): Promise<JobRun> {
   const id = crypto.randomUUID();
-  if (opts.exclusive) {
-    const [lease] = await db
-      .insert(jobLocks)
-      .values({ job, runId: id, expiresAt: sql`now() + make_interval(secs => ${LEASE_SECONDS})` })
-      .onConflictDoUpdate({
-        target: jobLocks.job,
-        set: { runId: sql`excluded.run_id`, expiresAt: sql`excluded.expires_at` },
-        setWhere: sql`${jobLocks.expiresAt} < now()`,
-      })
-      .returning({ runId: jobLocks.runId });
-    if (!lease) {
-      const [skipped] = await db.insert(jobRuns).values({ id, job, status: "skipped", finishedAt: sql`now()` }).returning();
-      return toJobRun(skipped!);
-    }
+  if (opts.exclusive && !(await takeLease(db, job, id))) {
+    const [skipped] = await db.insert(jobRuns).values({ id, job, status: "skipped", finishedAt: sql`now()` }).returning();
+    return toJobRun(skipped!);
   }
   await db.insert(jobRuns).values({ id, job, status: "running" });
   try {
@@ -63,7 +52,37 @@ export async function runJob<T>(db: Db, job: JobName, work: () => Promise<T>, op
       });
     throw e;
   } finally {
-    if (opts.exclusive) await db.delete(jobLocks).where(and(eq(jobLocks.job, job), eq(jobLocks.runId, id)));
+    if (opts.exclusive) await releaseLease(db, job, id);
+  }
+}
+
+/** Takes a job's lease for one run of it; false when another run holds it and it has not run out. */
+async function takeLease(db: Db, job: JobName, runId: string) {
+  const [lease] = await db
+    .insert(jobLocks)
+    .values({ job, runId, expiresAt: sql`now() + make_interval(secs => ${LEASE_SECONDS})` })
+    .onConflictDoUpdate({
+      target: jobLocks.job,
+      set: { runId: sql`excluded.run_id`, expiresAt: sql`excluded.expires_at` },
+      setWhere: sql`${jobLocks.expiresAt} < now()`,
+    })
+    .returning({ runId: jobLocks.runId });
+  return lease !== undefined;
+}
+
+const releaseLease = (db: Db, job: JobName, runId: string) => db.delete(jobLocks).where(and(eq(jobLocks.job, job), eq(jobLocks.runId, runId)));
+
+/**
+ * Does `work` while holding a job's lease, with no run recorded: for work that is not the job but must never act beside
+ * it (the operator's replay of an EVM chain beside its Indexer, #279). Null when a run holds the lease.
+ */
+export async function withLease<T>(db: Db, job: JobName, work: () => Promise<T>): Promise<{ done: T } | null> {
+  const id = crypto.randomUUID();
+  if (!(await takeLease(db, job, id))) return null;
+  try {
+    return { done: await work() };
+  } finally {
+    await releaseLease(db, job, id);
   }
 }
 

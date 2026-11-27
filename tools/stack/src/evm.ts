@@ -49,6 +49,8 @@ const REFERRER_FEE_CAP_BPS = 100;
 /** The hook's permission bits (StokerHook.getHookPermissions, contracts/test/utils/StokerTestBase.sol's HOOK_FLAGS). */
 const HOOK_FLAGS = (1n << 13n) | (1n << 11n) | (1n << 9n) | (1n << 7n) | (1n << 6n) | (1n << 5n) | (1n << 3n) | (1n << 2n);
 const ALL_HOOK_MASK = (1n << 14n) - 1n;
+/** EIP-2935's history storage contract, at the same address on every chain that has it. */
+const BLOCK_HASH_HISTORY: Address = "0x0000F90827F1C53a10cb7A02335B175320002935";
 /** Anvil's first account, which every fork starts with ether in: the deployer and the Admin of the stack's contracts. */
 const ADMIN_KEY: Hex = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
@@ -75,7 +77,7 @@ export type EvmStackEnv = {
  * (2,000 blocks, a paid tier's size); a test behind a stricter RPC sees the range shrink.
  */
 export const deploymentOf = (e: EvmStackEnv) => [
-  { chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, taxVault: e.taxVault, fromBlock: e.fromBlock, logBlockRange: 2_000 },
+  { chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, taxVault: e.taxVault, distributor: e.distributor, fromBlock: e.fromBlock, logBlockRange: 2_000 },
 ];
 
 /** Finds the salt that gives the hook, made by the factory at `factory`, an address carrying exactly its permission bits. */
@@ -93,13 +95,21 @@ function mineHookSalt(factory: Address, poolManager: Address, keys: Address, tax
  * to now: a fork otherwise carries on from its block's time, two days back, and every trade would fall outside the
  * board's last 24 hours.
  */
-export async function deployStoker(rpcUrl: string): Promise<EvmStackEnv> {
+export async function deployStoker(rpcUrl: string, { setClock = true }: { setClock?: boolean } = {}): Promise<EvmStackEnv> {
   const chain = { id: ROBINHOOD_CHAIN.chainId, name: ROBINHOOD_CHAIN.name, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } };
   const pub = createPublicClient({ chain, transport: http(rpcUrl) });
   const admin = privateKeyToAccount(ADMIN_KEY);
   const wallet = createWalletClient({ chain, transport: http(rpcUrl), account: admin });
-  await pub.request({ method: "evm_setNextBlockTimestamp" as never, params: [numberToHex(Math.floor(Date.now() / 1000))] as never });
-  await pub.request({ method: "evm_mine" as never, params: [] as never });
+  // Every block anvil mines calls the chain's block-hash history contract (EIP-2935), which writes a storage slot the
+  // fork first reads from the remote RPC: one remote read a block until all 8,191 slots are cached (1,000 blocks took
+  // 147 s on the free tier, and an hour's 34,200 failed at its rate limit, #279). Emptied, the call does nothing, as
+  // the EIP has it for an address without code; nothing of ours reads a block hash.
+  await pub.request({ method: "anvil_setCode" as never, params: [BLOCK_HASH_HISTORY, "0x"] as never });
+  // A second deployment on a fork already at now (a factory deployed again, #279) leaves the clock alone.
+  if (setClock) {
+    await pub.request({ method: "evm_setNextBlockTimestamp" as never, params: [numberToHex(Math.floor(Date.now() / 1000))] as never });
+    await pub.request({ method: "evm_mine" as never, params: [] as never });
+  }
 
   const poolManager = ROBINHOOD_CHAIN.uniswap.poolManager;
   const deployed = async (hash: Hex) => {
@@ -141,8 +151,11 @@ export async function deployStoker(rpcUrl: string): Promise<EvmStackEnv> {
  * Anvil's arguments for a fork of Robinhood Chain at the pinned block. The block is pinned, so Foundry keeps what it
  * reads under `~/.foundry/cache/rpc/` and a later start reads the remote only for state it has not seen: the free RPC
  * tier is shared with the contract lanes. The chain id is given, so a start with everything cached needs no remote call.
+ * Past blocks' states are kept in memory alone (the last 500) and never written to disk: nothing reads one (#279: the
+ * Indexer asks for no past state, and a fork's state read back from disk has lost its contracts' code), and a block
+ * then mines in a twentieth of the time.
  */
 export const forkArgs = (forkUrl: string, port: number) => [
   "--fork-url", forkUrl, "--fork-block-number", String(FORK_BLOCK), "--fork-chain-id", String(ROBINHOOD_CHAIN.chainId), "--no-fork-node-info",
-  "--port", String(port), "--host", "127.0.0.1", "--quiet",
+  "--port", String(port), "--host", "127.0.0.1", "--quiet", "--prune-history",
 ];

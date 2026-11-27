@@ -90,6 +90,11 @@ export const launches = pgTable(
      */
     copyOf: text("copy_of"),
     copyKind: text("copy_kind", { enum: ["ticker", "name", "image", "near"] }),
+    /**
+     * On an EVM chain, the factory that launched the coin (#279): a chain's Indexer reads the pools of the deployment it
+     * is given and no other's, so a factory deployed again never meets the old one's pools. Null on Solana.
+     */
+    factory: text("factory"),
     createdSignature: text("created_signature").notNull(),
     createdSlot: bigint("created_slot", { mode: "number" }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
@@ -99,7 +104,11 @@ export const launches = pgTable(
     index("launches_created_slot_idx").on(t.createdSlot),
     // The board lists every chain's coins together, newest first by time, since slots and block numbers are not comparable.
     index("launches_chain_created_at_idx").on(t.chain, t.createdAt),
+    // And with no chain named, which is how the site asks: the index above leads with the chain and cannot serve that order.
+    index("launches_created_at_idx").on(t.createdAt),
     index("launches_chain_created_slot_idx").on(t.chain, t.createdSlot),
+    // An EVM chain's Indexer finds a pool of its deployment by its id, a transaction at a time (#279).
+    index("launches_pool_idx").on(t.pool),
     index("launches_creator_idx").on(t.creator),
     index("launches_quote_mint_idx").on(t.quoteMint),
     index("launches_name_key_idx").on(t.nameKey),
@@ -1110,6 +1119,30 @@ export const evmQuoteAssets = pgTable(
  * How far each polled chain's Indexer has read (#252): the newest block whose events it has written, and the head it saw
  * on its last run, per deployment. A run starts from the block after `indexed_block`, so a run that dies part way reads that part again.
  */
+/**
+ * A transaction an EVM chain's Indexer could not write (#279), per deployment. The Indexer stops on it and tries it
+ * again on its next runs (`attempts`); after its runs it is set aside (`set_aside_at`) and the Indexer goes on without
+ * it, with the chain's one `indexer_skipped` alert counting the rows set aside and not yet written. A later run or the
+ * operator's replay that writes it closes the row (`resolved_at`), which is kept as the record.
+ */
+export const indexerFailures = pgTable(
+  "indexer_failures",
+  {
+    chain: text("chain").notNull(),
+    factory: text("factory").notNull(),
+    transaction: text("transaction").notNull(),
+    block: bigint("block", { mode: "number" }).notNull(),
+    attempts: integer("attempts").notNull().default(1),
+    /** Why the last attempt failed, with the RPC's URL taken out. */
+    error: text("error").notNull(),
+    firstFailedAt: timestamp("first_failed_at", { withTimezone: true }).notNull().defaultNow(),
+    lastFailedAt: timestamp("last_failed_at", { withTimezone: true }).notNull().defaultNow(),
+    setAsideAt: timestamp("set_aside_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.chain, t.factory, t.transaction] })],
+).enableRLS();
+
 export const chainCursors = pgTable(
   "chain_cursors",
   {
@@ -1119,6 +1152,13 @@ export const chainCursors = pgTable(
   indexedBlock: bigint("indexed_block", { mode: "number" }).notNull(),
   /** The widest `eth_getLogs` block range the chain's RPC last accepted, so a run starts at a size that works. */
   logBlockRange: integer("log_block_range"),
+  /**
+   * The deployment's setting that range was remembered under (#279): the setting is the ceiling, and a run that finds
+   * another setting starts from it again, so changing `logBlockRange` always takes effect.
+   */
+  logBlockRangeSetting: integer("log_block_range_setting"),
+  /** Ranges read in a row since the range last changed: after enough of them a halved range grows back toward its setting. */
+  logCleanRanges: integer("log_clean_ranges").notNull().default(0),
   indexedBlockTime: timestamp("indexed_block_time", { withTimezone: true }),
   headBlock: bigint("head_block", { mode: "number" }),
   headBlockTime: timestamp("head_block_time", { withTimezone: true }),

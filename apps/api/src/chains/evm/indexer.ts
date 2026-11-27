@@ -1,22 +1,34 @@
 import {
-  ContractFunctionRevertedError, ContractFunctionZeroDataError, createPublicClient, erc20Abi, http, parseAbi, type Address, type Hex, type PublicClient,
-  type TransactionReceipt,
+  ContractFunctionZeroDataError, createPublicClient, erc20Abi, http, isAddressEqual, parseAbi, parseEventLogs, type Address, type Hex, type PublicClient, type TransactionReceipt,
 } from "viem";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import {
-  checksum, decodeBurns, decodeGraduations, decodeLaunches, decodeTrades, EvmDecodeError, NATIVE, priceFromSqrtX96, priceFromStartTick, type ChainContracts, type LaunchEvent,
-  type PoolInfo,
+  checksum, decodeBurns, decodeGraduations, decodeLaunches, decodeTrades, EvmDecodeError, NATIVE, poolsNamed, priceFromSqrtX96, priceFromStartTick, type ChainContracts,
+  type LaunchEvent, type PoolInfo,
 } from "@launchpad/evm";
-import { chainCursors, evmQuoteAssets, graduations, launches, launchMarkets, operatorAlerts, type Db } from "@launchpad/db";
+import type { IndexerReplay, ReplayIndexer } from "@launchpad/contract";
+import { chainCursors, evmQuoteAssets, graduations, indexerFailures, launches, launchMarkets, operatorAlerts, type Db } from "@launchpad/db";
 import { insertTrade, openMarket } from "../../market";
-import type { EvmChainConfig } from "./config";
+import { withoutRpcUrl, type EvmChainConfig } from "./config";
 
 /** ERC-8056's one required read (the knowledge base's `09-eip-8056.md`): a Stock Token's multiplier in force, 18 decimals. */
 const scaledUiAbi = parseAbi(["function uiMultiplier() view returns (uint256)"]);
 
-/** How much one run does at most unless the deployment says otherwise: the rest waits for the next minute's run. */
-const MAX_RANGES_PER_RUN = 60;
-const MAX_RUN_SECONDS = 20;
+/**
+ * A run's budget unless the deployment says otherwise (#279): 40 seconds of the minute between two runs, and 2,000 RPC
+ * requests, a fifth of the 10,000 subrequests one invocation of the Worker may make, which the every-minute tick
+ * shares with Solana's jobs. At 10 blocks a range that is up to 20,000 blocks a run against the 571 the chain makes
+ * in a minute, so an hour's gap closes in two runs where the provider answers fast enough.
+ */
+const MAX_RUN_SECONDS = 40;
+const MAX_REQUESTS_PER_RUN = 2_000;
+/** Runs that fail on one transaction before it is set aside: one that can never be written, and one whose failure may be the provider's. */
+const RETRY_RUNS = 3;
+const RETRY_RUNS_UNCLEAR = 60;
+/** Ranges read in a row before a halved range is doubled again, so a provider that refuses the wider one is asked it once in twenty. */
+const GROW_AFTER_CLEAN_RANGES = 20;
+/** The cursor is saved after any range that held a transaction of ours, and at least this often through empty ones. */
+const SAVE_EVERY_RANGES = 20;
 /** The longest name and ticker an EVM coin is stored with; the factory takes any string. */
 const NAME_MAX = 64;
 const SYMBOL_MAX = 16;
@@ -30,146 +42,473 @@ export type EvmIndexRun = {
   traded: number;
   burned: number;
   graduated: number;
-  /** Transactions that could never be written, each with why; each raised an `indexer_skipped` alert and the run went on. */
+  /** Transactions set aside on this run, each with why: tried on its runs, counted by the chain's alert, and the run went on. */
   skipped: { hash: string; error: string }[];
+  /** The transaction the run stopped on, to be read again by the next run; null when it stopped for no transaction. */
+  failed: { hash: string; attempts: number; error: string } | null;
   /** The `eth_getLogs` range the run ended on, which the next starts from. */
   logBlockRange: number;
-  /** Whether the run stopped at its budget with blocks still to read. */
+  /** Whether the run stopped with blocks still to read: at its budget, at a rate limit, or on `failed`. */
   leftForLater: boolean;
+  /** Whether the provider's rate limit ended the run. */
+  rateLimited: boolean;
+  /** The RPC requests the run made, retries included. */
+  requests: number;
 };
 
 /** A pool of ours as the Indexer carries it through a run: what a trade needs to be read, and the price it moved from. */
 type Pool = PoolInfo & { coinDecimals: number; quoteDecimals: number; price: number };
 
-export const evmClient = (c: EvmChainConfig): PublicClient => createPublicClient({ transport: http(c.rpcUrl, { retryCount: 2 }) });
+/** A client for the chain's RPC; `onRequest` is told of every HTTP request it makes, retries included. */
+export const evmClient = (c: EvmChainConfig, onRequest?: () => void): PublicClient =>
+  createPublicClient({ transport: http(c.rpcUrl, { retryCount: 2, ...(onRequest ? { onFetchRequest: onRequest } : {}) }) });
 
-/** Whether viem's error, or any error under it, is one of these. */
-const has = (e: unknown, test: (x: unknown) => boolean) => {
-  for (let x: unknown = e, i = 0; x && i < 10; x = (x as { cause?: unknown }).cause, i++) if (test(x)) return true;
-  return false;
-};
-/** A call the contract refused or answered with nothing: a fact about the contract, the same on every retry. */
-const isRevert = (e: unknown) => has(e, (x) => x instanceof ContractFunctionRevertedError || x instanceof ContractFunctionZeroDataError);
-/** A provider refusing a `getLogs` range as too wide (Alchemy's free tier: -32600, "up to a 10 block range"). */
-const isRangeRefused = (e: unknown) =>
-  has(e, (x) => (x as { code?: unknown }).code === -32600 || /block range|range (is )?too (large|wide)|exceed/i.test(String((x as Error).message ?? "")));
+/** The first thing `test` finds in viem's chain of causes. */
+function find<T>(e: unknown, test: (x: unknown) => T | undefined | false): T | undefined {
+  for (let x: unknown = e, i = 0; x && i < 12; x = (x as { cause?: unknown }).cause, i++) {
+    const found = test(x);
+    if (found !== undefined && found !== false) return found;
+  }
+  return undefined;
+}
+const has = (e: unknown, test: (x: unknown) => boolean) => find(e, test) === true;
+
+type NodeError = { code: number; message: string; data: unknown };
+
 /**
- * Whether a transaction's failure is its own and would recur on every retry: the decoder's refusal, a contract's revert,
- * or Postgres refusing the data (a SQLSTATE of class 22, a data exception such as a NUL byte, or 23, an integrity
- * violation). Anything else (the RPC, the network, the database's connection) is the moment's, and the run stops so
- * the next one reads the same blocks again.
+ * The JSON-RPC error the node answered, under whatever viem made of it: viem reads `-32603` as a revert
+ * (`ContractFunctionRevertedError`), so its own classes cannot say what the node said (#279). The innermost error
+ * that carries a code is the node's own.
+ */
+function nodeError(e: unknown): NodeError | null {
+  let last = null as NodeError | null;
+  for (let x: unknown = e, i = 0; x && i < 12; x = (x as { cause?: unknown }).cause, i++) {
+    const o = x as { code?: unknown; data?: unknown; details?: unknown; shortMessage?: unknown; message?: unknown; status?: unknown };
+    if (typeof o.code === "number") last = { code: o.code, message: String(o.details ?? o.shortMessage ?? o.message ?? ""), data: o.data ?? last?.data };
+    // A provider may answer its JSON-RPC error under an HTTP status, which viem keeps as text: Alchemy's free tier
+    // refuses a wide `getLogs` with 400 and `{"code":-32600,"message":"... up to a 10 block range ..."}` (measured, #279).
+    else if (typeof o.status === "number" && typeof o.details === "string") {
+      const said = parsed(o.details) as { code?: unknown; message?: unknown; data?: unknown } | null;
+      if (typeof said?.code === "number") last = { code: said.code, message: String(said.message ?? ""), data: said.data };
+    }
+  }
+  return last;
+}
+const parsed = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+/** The HTTP status a request ended on, when the provider answered with one. */
+const httpStatus = (e: unknown) => find(e, (x) => (typeof (x as { status?: unknown }).status === "number" ? (x as { status: number }).status : undefined));
+
+/** Whether an error's data is a revert's: the bytes a contract reverted with, as a node carries them. */
+const isRevertData = (data: unknown): boolean =>
+  typeof data === "string" ? /^0x[0-9a-fA-F]{2,}$/.test(data) : typeof data === "object" && data !== null && isRevertData((data as { data?: unknown }).data);
+
+/** The provider throttling us: HTTP 429, or its JSON-RPC error. The moment's, never a fact about a range or a transaction. */
+const isRateLimited = (e: unknown) => {
+  const node = nodeError(e);
+  return httpStatus(e) === 429 || node?.code === 429 || /rate limit|too many requests|compute units|request rate|throttl/i.test(node?.message ?? "");
+};
+/**
+ * A provider refusing a `getLogs` for its width or its answer's size, by what it says: Alchemy's "up to a 10 block
+ * range" and "Log response size exceeded", Infura's "query returned more than 10000 results", "block range is too
+ * wide", "ranges over 10000 blocks", "limited to a 10,000 range". Never by a code alone, and never a rate limit, whose
+ * text also says "exceeded".
+ */
+const isRangeRefused = (e: unknown) =>
+  !isRateLimited(e) &&
+  /blocks? range|range (is )?too (large|wide)|ranges? over [\d,]+ blocks|more than [\d,]+ (results|logs)|response size|limited to (a )?[\d,]+/i.test(nodeError(e)?.message ?? "");
+/** The node saying a call reverted: JSON-RPC code 3, or a revert's data with any code. Never `-32603` alone, which is the provider's own failure. */
+const nodeSaysRevert = (e: unknown) => {
+  const node = nodeError(e);
+  return node !== null && node.code !== 429 && (node.code === 3 || isRevertData(node.data));
+};
+/** A contract that answered a call with nothing, or with what its function's type cannot be read from (a `bytes32` symbol). */
+const answeredUnreadably = (e: unknown) =>
+  has(e, (x) => x instanceof ContractFunctionZeroDataError || /^(AbiDecoding|PositionOutOfBounds|InvalidBytesBoolean|IntegerOutOfRange|SizeOverflow)/.test(String((x as Error).name ?? "")));
+/** A call the contract refused or answered unreadably: a fact about the contract, the same on every retry. */
+const isContractsAnswer = (e: unknown) => nodeSaysRevert(e) || answeredUnreadably(e);
+/**
+ * Whether a transaction's failure is its own and would recur on every retry: the decoder's refusal, a contract's
+ * answer, or Postgres refusing the data (a SQLSTATE of class 22, a data exception such as a NUL byte, or 23, an
+ * integrity violation). Anything else (an internal error, a timeout, the database's connection) may be the moment's.
  */
 const isPermanent = (e: unknown) =>
-  has(e, (x) => x instanceof EvmDecodeError || x instanceof ContractFunctionRevertedError || x instanceof ContractFunctionZeroDataError) ||
-  has(e, (x) => /^2[23]/.test(String((x as { code?: unknown }).code ?? "")));
+  has(e, (x) => x instanceof EvmDecodeError) || isContractsAnswer(e) || has(e, (x) => /^2[23]/.test(String((x as { code?: unknown }).code ?? "")));
 
-/** A coin's or an asset's name or ticker as it is stored: no control characters (Postgres refuses a NUL), at most `max` characters. */
-export const cleanText = (s: string, max: number) =>
-  [...s]
-    .filter((ch) => {
-      const code = ch.codePointAt(0)!;
-      return code > 0x1f && code !== 0x7f;
-    })
-    .slice(0, max)
-    .join("");
+/** Why a transaction failed, in one line an operator can act on, with the RPC's URL taken out. */
+function reasonOf(e: unknown, c: EvmChainConfig) {
+  const node = nodeError(e);
+  const first = withoutRpcUrl(e, c).message.split("\n")[0]!;
+  return (node ? `${first} (JSON-RPC ${node.code}: ${withoutRpcUrl(node.message, c).message.split("\n")[0]})` : first).slice(0, 400);
+}
 
 /**
- * One run of an EVM chain's Indexer (#252): reads our factory's, hook's and Tax Vault's events from the block after the
- * last one it wrote to the chain's head less its finality depth, a bounded range of blocks at a time, and writes each
- * Launch, its Quote Asset, every trade in its pool and every Reward Burn, as Solana's Indexer writes them
- * (`insertTrade`), so the board, the trades and the candles read both chains alike. Each transaction that logged an
- * event of ours is read whole from its receipt, so a trade's wallet (the transaction's sender) and the PoolManager's
- * `Swap` beside our hook's fees come together.
- *
- * The cursor moves after each range is written, so a run that dies reads that range again; every write is idempotent.
- * A transaction that can never be written is set aside with an operator alert and the run goes on; a provider that
- * refuses a range has it halved, and the size that worked is kept; a run stops at its budget of ranges and seconds.
+ * A coin's or an asset's name or ticker as it is stored (#279): no control characters (Postgres refuses a NUL) and no
+ * format characters, which hide or reorder what a page shows (a right-to-left override, a zero-width space or joiner,
+ * a byte-order mark), no line or paragraph separator, none of the letters and symbols that draw as nothing (the Hangul
+ * fillers, the blank Braille pattern), trimmed, at most `max` characters. It can come out empty.
  */
-export async function indexEvmChain(db: Db, c: EvmChainConfig, client: PublicClient = evmClient(c)): Promise<EvmIndexRun> {
-  const contracts: ChainContracts = { factory: c.factory, hook: c.hook, poolManager: c.profile.uniswap.poolManager, taxVault: c.taxVault };
-  const head = await client.getBlock({ blockTag: "latest" });
-  const target = Number(head.number) - c.profile.finalityDepth;
-  const cursorKey = and(eq(chainCursors.chain, c.chain), eq(chainCursors.factory, c.factory));
-  const [cursor] = await db.select().from(chainCursors).where(cursorKey).limit(1);
-  const from = cursor ? cursor.indexedBlock + 1 : c.fromBlock;
-  let range = cursor?.logBlockRange ?? c.logBlockRange ?? c.profile.logBlockRange;
-  const run: EvmIndexRun = {
-    chain: c.chain, from: from <= target ? from : null, to: null, head: Number(head.number), launched: 0, traded: 0, burned: 0, graduated: 0, skipped: [], logBlockRange: range,
-    leftForLater: false,
-  };
-  const pools = await knownPools(db, c);
-  const times = new Map<bigint, Date>([[head.number, new Date(Number(head.timestamp) * 1000)]]);
-  const timeOf = async (block: bigint) => {
-    let t = times.get(block);
-    if (!t) times.set(block, (t = new Date(Number((await client.getBlock({ blockNumber: block })).timestamp) * 1000)));
-    return t;
-  };
-  const saveCursor = (values: Partial<typeof chainCursors.$inferInsert>) =>
-    db.insert(chainCursors).values({ chain: c.chain, factory: c.factory, indexedBlock: from - 1, ...values }).onConflictDoUpdate({ target: [chainCursors.chain, chainCursors.factory], set: values });
+export const cleanText = (s: string, max: number) => [...s.replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u2800]/gu, "").trim()].slice(0, max).join("").trim();
 
+/** A coin with no name or ticker a page can show goes by its address, shortened as an explorer shows one. */
+const orAddress = (text: string, address: Address) => text || `${address.slice(0, 6)}...${address.slice(-4)}`;
+
+/** What one reading of a chain shares: its client, the pools met so far, each block's time, and the budget. */
+type Session = {
+  db: Db;
+  c: EvmChainConfig;
+  client: PublicClient;
+  contracts: ChainContracts;
+  pools: Map<Hex, Pool>;
+  /** Pool ids met that are not this deployment's: another hook's pools, which a router's path may cross. */
+  notOurs: Set<Hex>;
+  timeOf: (block: bigint) => Promise<Date>;
+  /** The failures still open for this deployment, by transaction. */
+  failures: Map<string, typeof indexerFailures.$inferSelect>;
+  requests: { made: number };
+  started: number;
+  ranges: number;
+  blocks: number;
+  /** The `getLogs` range in use, the deployment's ceiling on it, and the ranges read in a row at this size. */
+  range: number;
+  ceiling: number;
+  clean: number;
+  counts: { launched: number; traded: number; burned: number; graduated: number };
+  resolved: number;
+};
+
+async function session(db: Db, c: EvmChainConfig): Promise<Session & { head: { number: bigint; time: Date }; cursor: typeof chainCursors.$inferSelect | undefined }> {
+  const requests = { made: 0 };
+  const client = evmClient(c, () => void requests.made++);
   const started = Date.now();
-  const maxRanges = c.maxRangesPerRun ?? MAX_RANGES_PER_RUN;
-  const maxMs = (c.maxRunSeconds ?? MAX_RUN_SECONDS) * 1000;
-  let ranges = 0;
-  for (let start = from; start <= target; ) {
-    if (ranges >= maxRanges || Date.now() - started >= maxMs) {
-      run.leftForLater = true;
-      break;
-    }
-    const end = Math.min(target, start + range - 1);
+  const head = await client.getBlock({ blockTag: "latest" });
+  const times = new Map<bigint, Date>([[head.number, new Date(Number(head.timestamp) * 1000)]]);
+  const [cursor] = await db.select().from(chainCursors).where(and(eq(chainCursors.chain, c.chain), eq(chainCursors.factory, c.factory))).limit(1);
+  // The deployment's setting is the ceiling, and what was remembered under another setting is forgotten.
+  const ceiling = c.logBlockRange ?? c.profile.logBlockRange;
+  const remembered = cursor?.logBlockRangeSetting === ceiling ? cursor : null;
+  const open = await db.select().from(indexerFailures).where(and(eq(indexerFailures.chain, c.chain), eq(indexerFailures.factory, c.factory), isNull(indexerFailures.resolvedAt)));
+  return {
+    db, c, client, requests, started, head: { number: head.number, time: times.get(head.number)! }, cursor,
+    contracts: { factory: c.factory, hook: c.hook, poolManager: c.profile.uniswap.poolManager, taxVault: c.taxVault },
+    pools: new Map(), notOurs: new Set(),
+    async timeOf(block) {
+      let t = times.get(block);
+      if (!t) times.set(block, (t = new Date(Number((await client.getBlock({ blockNumber: block })).timestamp) * 1000)));
+      return t;
+    },
+    failures: new Map(open.map((f) => [f.transaction, f])),
+    ranges: 0, blocks: 0, ceiling, range: remembered ? Math.min(ceiling, Math.max(1, remembered.logBlockRange ?? ceiling)) : ceiling, clean: remembered?.logCleanRanges ?? 0,
+    counts: { launched: 0, traded: 0, burned: 0, graduated: 0 }, resolved: 0,
+  };
+}
+
+/** Whether a reading has spent its budget of seconds, requests or ranges. */
+const spent = (s: Session) =>
+  Date.now() - s.started >= (s.c.maxRunSeconds ?? MAX_RUN_SECONDS) * 1000 ||
+  s.requests.made >= (s.c.maxRequestsPerRun ?? MAX_REQUESTS_PER_RUN) ||
+  (s.c.maxRangesPerRun !== undefined && s.ranges >= s.c.maxRangesPerRun);
+
+type Stop = "budget" | "rate limit" | "failed";
+
+/**
+ * Reads the blocks `from` to `to` a range at a time and hands every transaction that logged an event of ours to
+ * `write`, block by block in the chain's order. It answers the last block it finished, and why it stopped short if it
+ * did. The budget is looked at between ranges and between blocks, never inside one, and the first block of a reading
+ * is always finished, so a reading always gets somewhere; `progress` is told of each range or block finished.
+ */
+async function scan(
+  s: Session, from: number, to: number, write: (hash: Hex, block: number) => Promise<Stop | null>, progress: (through: number, wrote: boolean) => Promise<void>,
+): Promise<{ through: number; stopped: Stop | null }> {
+  let through = from - 1;
+  for (let start = from; start <= to; ) {
+    if (s.ranges > 0 && spent(s)) return { through, stopped: "budget" };
+    const end = Math.min(to, start + s.range - 1);
     let logs;
     try {
-      logs = await client.getLogs({ address: [c.factory, c.hook, c.taxVault], fromBlock: BigInt(start), toBlock: BigInt(end) });
+      logs = await s.client.getLogs({ address: [s.c.factory, s.c.hook, s.c.taxVault], fromBlock: BigInt(start), toBlock: BigInt(end) });
     } catch (e) {
-      if (range > 1 && isRangeRefused(e)) {
-        range = Math.max(1, Math.floor(range / 2));
+      if (isRateLimited(e)) return { through, stopped: "rate limit" };
+      if (s.range > 1 && isRangeRefused(e)) {
+        s.range = Math.max(1, Math.floor(s.range / 2));
+        s.clean = 0;
         continue;
       }
       throw e;
     }
-    ranges++;
-    for (const hash of [...new Set(logs.map((l) => l.transactionHash!))]) {
-      try {
-        const written = await writeTransaction(db, c, client, hash, contracts, pools, timeOf);
-        run.launched += written.launched;
-        run.traded += written.traded;
-        run.burned += written.burned;
-        run.graduated += written.graduated;
-      } catch (e) {
-        if (!isPermanent(e)) throw e;
-        const error = (e as Error).message.split("\n")[0]!.slice(0, 300);
-        run.skipped.push({ hash, error });
-        await setAside(db, c, hash, error);
-      }
+    s.ranges++;
+    const byBlock = new Map<number, Hex[]>();
+    for (const l of [...logs].sort((a, b) => Number(a.blockNumber! - b.blockNumber!) || a.logIndex! - b.logIndex!)) {
+      const hashes = byBlock.get(Number(l.blockNumber)) ?? [];
+      if (!hashes.includes(l.transactionHash!)) byBlock.set(Number(l.blockNumber), [...hashes, l.transactionHash!]);
     }
-    // The block's time is read once a run, after the last range, so keeping up costs one `getLogs` a range and no more.
-    await saveCursor({ indexedBlock: end, indexedBlockTime: null, logBlockRange: range });
-    run.to = end;
+    for (const [block, hashes] of byBlock) {
+      if (s.blocks > 0 && spent(s)) return { through: Math.max(through, block - 1), stopped: "budget" };
+      for (const hash of hashes) {
+        const stop = await write(hash, block);
+        if (stop) return { through: Math.max(through, block - 1), stopped: stop };
+      }
+      s.blocks++;
+      through = block;
+      await progress(through, true);
+    }
+    through = end;
+    if (++s.clean >= GROW_AFTER_CLEAN_RANGES && s.range < s.ceiling) {
+      s.range = Math.min(s.ceiling, s.range * 2);
+      s.clean = 0;
+    }
+    await progress(through, byBlock.size > 0);
     start = end + 1;
   }
-  run.logBlockRange = range;
-  if (run.to !== null) await saveCursor({ indexedBlock: run.to, indexedBlockTime: await timeOf(BigInt(run.to)) });
-  await saveCursor({ headBlock: Number(head.number), headBlockTime: times.get(head.number)!, checkedAt: new Date(), logBlockRange: range });
-  await refreshMultipliers(db, c, client);
+  return { through, stopped: null };
+}
+
+const failureKey = (c: EvmChainConfig, hash: string) => and(eq(indexerFailures.chain, c.chain), eq(indexerFailures.factory, c.factory), eq(indexerFailures.transaction, hash));
+
+/** Writes one transaction and counts what it wrote; a failure of its own that it had before is closed. */
+async function writeCounted(s: Session, hash: Hex) {
+  const written = await writeTransaction(s, hash);
+  for (const k of ["launched", "traded", "burned", "graduated"] as const) s.counts[k] += written[k];
+  if (s.failures.has(hash)) {
+    await s.db.update(indexerFailures).set({ resolvedAt: sql`now()` }).where(failureKey(s.c, hash));
+    s.failures.delete(hash);
+    s.resolved++;
+  }
+}
+
+/**
+ * One run of an EVM chain's Indexer (#252, #279): reads our factory's, hook's and Tax Vault's events from the block
+ * after the last one it wrote, and a few before it again, to the chain's head less its finality depth, a bounded range
+ * of blocks at a time, and writes each Launch, its Quote Asset, every trade in its pool and every Reward Burn, as
+ * Solana's Indexer writes them (`insertTrade`), so the board, the trades and the candles read both chains alike. Each
+ * transaction that logged an event of ours is read whole from its receipt, so a trade's wallet (the transaction's
+ * sender) and the PoolManager's `Swap` beside our hook's fees come together.
+ *
+ * The cursor moves as blocks are written, so a run that dies reads from there again; every write is idempotent. A
+ * transaction that fails stops the run, which reads it again on its next runs (by its hash when the cursor is already
+ * past its block), and is set aside only after them (three when it can never be written, sixty when the failure may be
+ * the provider's), counted by the chain's one alert until a replay writes it. A provider that refuses a range has it halved, and it grows back to the deployment's setting; a
+ * rate limit ends the run where it is; a run stops at its budget of seconds and requests, between two blocks.
+ */
+export async function indexEvmChain(db: Db, c: EvmChainConfig): Promise<EvmIndexRun> {
+  const s = await session(db, c);
+  const target = Number(s.head.number) - c.profile.finalityDepth;
+  const unread = s.cursor ? s.cursor.indexedBlock + 1 : c.fromBlock;
+  // A node behind the one that gave the head answers a range with what it has, so the blocks read last are read again:
+  // those that were within the finality depth and the re-read of the head when the last run read them. A run that
+  // is catching up read old blocks, which no node lacks, and reads none of them twice.
+  const fresh = s.cursor?.headBlock == null ? unread : s.cursor.headBlock - c.profile.finalityDepth - c.profile.rereadBlocks + 1;
+  const from = Math.max(c.fromBlock, Math.min(unread, Math.max(unread - c.profile.rereadBlocks, fresh)));
+  const run: EvmIndexRun = {
+    chain: c.chain, from: unread <= target ? unread : null, to: null, head: Number(s.head.number), launched: 0, traded: 0, burned: 0, graduated: 0, skipped: [], failed: null,
+    logBlockRange: s.range, leftForLater: false, rateLimited: false, requests: 0,
+  };
+  let indexed = unread - 1;
+  let unsaved = 0;
+  const saveCursor = (values: Partial<typeof chainCursors.$inferInsert>) =>
+    db
+      .insert(chainCursors)
+      .values({ chain: c.chain, factory: c.factory, indexedBlock: indexed, ...values })
+      .onConflictDoUpdate({ target: [chainCursors.chain, chainCursors.factory], set: { ...values, indexedBlock: sql`greatest(${chainCursors.indexedBlock}, ${indexed})` } });
+  const rangeState = () => ({ logBlockRange: s.range, logBlockRangeSetting: s.ceiling, logCleanRanges: s.clean });
+
+  /** One transaction: written, or its failure counted and the run stopped on it, or set aside after its runs. */
+  const write = async (hash: Hex, block: number): Promise<Stop | null> => {
+    // Set aside already: the run goes on without it until a replay writes it.
+    if (s.failures.get(hash)?.setAsideAt) return null;
+    try {
+      await writeCounted(s, hash);
+      return null;
+    } catch (e) {
+      if (isRateLimited(e)) return "rate limit";
+      const error = reasonOf(e, c);
+      const [failure] = await db
+        .insert(indexerFailures)
+        .values({ chain: c.chain, factory: c.factory, transaction: hash, block, error })
+        .onConflictDoUpdate({
+          target: [indexerFailures.chain, indexerFailures.factory, indexerFailures.transaction],
+          set: { attempts: sql`${indexerFailures.attempts} + 1`, error, lastFailedAt: sql`now()`, resolvedAt: null },
+        })
+        .returning();
+      s.failures.set(hash, failure!);
+      if (failure!.attempts < (isPermanent(e) ? (c.retryRuns ?? RETRY_RUNS) : (c.retryRunsUnclear ?? RETRY_RUNS_UNCLEAR))) {
+        run.failed = { hash, attempts: failure!.attempts, error };
+        return "failed";
+      }
+      console.error(`${c.chain}: setting aside ${hash} after ${failure!.attempts} runs: ${error}`);
+      const [aside] = await db.update(indexerFailures).set({ setAsideAt: sql`now()` }).where(failureKey(c, hash)).returning();
+      s.failures.set(hash, aside!);
+      run.skipped.push({ hash, error });
+      return null;
+    }
+  };
+  const hadFailures = s.failures.size > 0;
+  try {
+    // A transaction that failed while its block was read again sits behind the cursor, where no later scan meets it
+    // (the blocks read again are the last run's, and that run moved on). Each one still being tried is read by its
+    // hash before anything else, oldest first, and counts, stops the run and is set aside like any other.
+    let stopped: Stop | null = null;
+    const behind = [...s.failures.values()].filter((f) => !f.setAsideAt && f.block < unread).sort((a, b) => a.block - b.block);
+    for (const f of behind) if ((stopped = await write(f.transaction as Hex, f.block))) break;
+    // An old trade written late moves no market back (`insertTrade`), so the prices the blocks ahead start from are read again.
+    if (behind.length > 0) s.pools.clear();
+    if (!stopped) {
+      const scanned = await scan(s, from, target, write, async (to, wrote) => {
+        indexed = Math.max(indexed, to);
+        if (!wrote && ++unsaved < SAVE_EVERY_RANGES) return;
+        unsaved = 0;
+        // The block's time is read once a run, at its end, so keeping up costs one `getLogs` a range and no more.
+        await saveCursor({ indexedBlockTime: null, ...rangeState() });
+      });
+      indexed = Math.max(indexed, scanned.through);
+      stopped = scanned.stopped;
+    }
+    run.leftForLater = stopped !== null;
+    run.rateLimited = stopped === "rate limit";
+  } finally {
+    // What was read stays read, whatever ended the run, and so does what it learned about the provider's range.
+    if (indexed >= unread) await saveCursor({ indexedBlockTime: null, ...rangeState() });
+    else if (s.cursor) await db.update(chainCursors).set(rangeState()).where(and(eq(chainCursors.chain, c.chain), eq(chainCursors.factory, c.factory)));
+  }
+  Object.assign(run, s.counts, { logBlockRange: s.range, to: indexed >= unread ? indexed : null });
+  await saveCursor({
+    ...(indexed >= unread && !run.rateLimited ? { indexedBlockTime: await s.timeOf(BigInt(indexed)) } : {}),
+    headBlock: Number(s.head.number), headBlockTime: s.head.time, checkedAt: new Date(), ...rangeState(),
+  });
+  if (!run.rateLimited) await refreshMultipliers(db, c, s.client).catch((e: unknown) => (isRateLimited(e) ? void (run.rateLimited = true) : Promise.reject(e)));
+  if (hadFailures || run.skipped.length > 0) await syncAlert(db, c);
+  run.requests = s.requests.made;
   return run;
 }
 
+/**
+ * The operator's replay (#279): reads a transaction's block, or a range of blocks, again and writes what is missing,
+ * a transaction set aside among it. A transaction that launched a coin is followed to where the Indexer has read, so
+ * the trades it passed over while the coin was unknown are found. It never moves the cursor, and it stops at the same
+ * budget as a run, answering where to go on from. Its caller holds the Indexer's lease: a run that met a coin's pool
+ * before the replay wrote the coin would go on passing its trades over, past where the replay reads to.
+ */
+export async function replayEvmChain(db: Db, c: EvmChainConfig, ask: ReplayIndexer): Promise<IndexerReplay> {
+  const s = await session(db, c);
+  const read = s.cursor?.indexedBlock ?? c.fromBlock;
+  let from: number;
+  let to: number;
+  if (ask.transaction !== undefined) {
+    const receipt = await s.client.getTransactionReceipt({ hash: ask.transaction as Hex }).catch(() => null);
+    if (!receipt) throw new ReplayRefused(`${c.profile.name} has no transaction ${ask.transaction}`);
+    from = Number(receipt.blockNumber);
+    to = decodeLaunches(receipt.logs, s.contracts).length > 0 ? Math.max(from, read) : from;
+  } else {
+    from = ask.fromBlock!;
+    to = Math.min(ask.toBlock ?? Math.max(from, read), Number(s.head.number));
+    if (from > to) throw new ReplayRefused(`block ${from} is past ${c.profile.name}'s head, ${Number(s.head.number)}`);
+  }
+  const failed: { hash: string; error: string }[] = [];
+  const { through, stopped } = await scan(
+    s, from, to,
+    async (hash) => {
+      try {
+        await writeCounted(s, hash);
+        return null;
+      } catch (e) {
+        if (isRateLimited(e)) return "rate limit";
+        failed.push({ hash, error: reasonOf(e, c) });
+        return null;
+      }
+    },
+    async () => undefined,
+  );
+  if (s.resolved > 0) await syncAlert(db, c);
+  return { chain: c.chain, from, to, next: stopped ? through + 1 : null, ...s.counts, resolved: s.resolved, failed };
+}
+
+/** A replay the operator asked for that cannot be made, with why. */
+export class ReplayRefused extends Error {}
+
+/** The failures still open on a deployment, newest first: those the Indexer is trying again, and those set aside. */
+export const openFailures = (db: Db, c: EvmChainConfig) =>
+  db
+    .select()
+    .from(indexerFailures)
+    .where(and(eq(indexerFailures.chain, c.chain), eq(indexerFailures.factory, c.factory), isNull(indexerFailures.resolvedAt)))
+    .orderBy(sql`${indexerFailures.block} desc`)
+    .limit(500);
+
+/**
+ * The chain's one alert for what its Indexer has set aside (#279): raised, with the count, while any transaction is
+ * set aside and not yet written, and resolved when none is. The transactions are `indexer_failures`' rows.
+ */
+async function syncAlert(db: Db, c: EvmChainConfig) {
+  const [counted] = await db
+    .select({ n: count() })
+    .from(indexerFailures)
+    .where(and(eq(indexerFailures.chain, c.chain), eq(indexerFailures.factory, c.factory), isNotNull(indexerFailures.setAsideAt), isNull(indexerFailures.resolvedAt)));
+  const n = counted?.n ?? 0;
+  const alert = and(eq(operatorAlerts.kind, "indexer_skipped"), eq(operatorAlerts.subject, c.chain));
+  if (n === 0) return void (await db.update(operatorAlerts).set({ resolvedAt: sql`now()` }).where(and(alert, isNull(operatorAlerts.resolvedAt))));
+  const message =
+    `${c.profile.name}'s Indexer has set aside ${n} transaction${n === 1 ? "" : "s"} it could not write and went on without ${n === 1 ? "it" : "them"}. ` +
+    `GET /v1/operator/indexer/failures?chain=${c.chain} lists ${n === 1 ? "it" : "them"}; POST /v1/operator/indexer/replay writes one again.`;
+  await db
+    .insert(operatorAlerts)
+    .values({ kind: "indexer_skipped", subject: c.chain, message })
+    .onConflictDoUpdate({
+      target: [operatorAlerts.kind, operatorAlerts.subject],
+      // Kept current with the count while it is open, and posted once; raised again after it was resolved.
+      set: {
+        message,
+        raisedAt: sql`case when ${operatorAlerts.resolvedAt} is null then ${operatorAlerts.raisedAt} else now() end`,
+        notifiedAt: sql`case when ${operatorAlerts.resolvedAt} is null then ${operatorAlerts.notifiedAt} else null end`,
+        resolvedAt: null,
+      },
+    });
+}
+
+/** The pools of this deployment among `ids`, read once a reading: what a receipt's trades need, with the price each last traded at. */
+async function knowPools(s: Session, ids: Hex[]) {
+  const unknown = ids.filter((id) => !s.pools.has(id) && !s.notOurs.has(id));
+  if (unknown.length === 0) return;
+  const rows = await s.db
+    .select({ pool: launches.pool, coin: launches.mint, quote: launches.quoteMint, decimals: launches.decimals, quoteDecimals: evmQuoteAssets.decimals, price: launchMarkets.price })
+    .from(launches)
+    .innerJoin(evmQuoteAssets, and(eq(evmQuoteAssets.chain, launches.chain), eq(evmQuoteAssets.address, launches.quoteMint)))
+    .leftJoin(launchMarkets, eq(launchMarkets.mint, launches.mint))
+    // This deployment's alone: a factory deployed again never reads the old one's pools as its own.
+    .where(and(eq(launches.chain, s.c.chain), eq(launches.factory, s.c.factory), inArray(launches.pool, unknown)));
+  for (const r of rows) {
+    s.pools.set(r.pool as Hex, {
+      poolId: r.pool as Hex, coin: r.coin as Address, quote: r.quote as Address, quoteIsCurrency0: BigInt(r.quote) < BigInt(r.coin),
+      coinDecimals: r.decimals, quoteDecimals: r.quoteDecimals, price: r.price ?? 0,
+    });
+  }
+  for (const id of unknown) if (!s.pools.has(id)) s.notOurs.add(id);
+}
+
 /** Writes what one transaction did: its Launches, its trades and its Reward Burns. */
-async function writeTransaction(
-  db: Db, c: EvmChainConfig, client: PublicClient, hash: Hex, contracts: ChainContracts, pools: Map<Hex, Pool>, timeOf: (block: bigint) => Promise<Date>,
-) {
+async function writeTransaction(s: Session, hash: Hex) {
+  const { db, c, client, contracts, pools } = s;
   const written = { launched: 0, traded: 0, burned: 0, graduated: 0 };
   const receipt = await client.getTransactionReceipt({ hash });
   if (receipt.status !== "success") return written;
-  const blockTime = await timeOf(receipt.blockNumber);
+  const blockTime = await s.timeOf(receipt.blockNumber);
   for (const e of decodeLaunches(receipt.logs, contracts)) written.launched += await writeLaunch(db, c, client, e, receipt, blockTime, pools);
+  // The pools this transaction names that are this deployment's, the ones just launched among them.
+  await knowPools(s, poolsNamed(receipt.logs, contracts));
   written.traded += await writeTrades(db, c, receipt, blockTime, contracts, pools);
-  for (const b of decodeBurns(receipt.logs, contracts)) {
-    const pool = pools.get(b.poolId);
+  // One read of the supply for each pool burned in, whichever parts of the burn its events name.
+  for (const poolId of new Set(decodeBurns(receipt.logs, contracts).map((b) => b.poolId))) {
+    const pool = pools.get(poolId);
     if (!pool) continue;
-    // The supply after the burn, read at its own block, so a range read again writes the same figure.
-    const supply = await client.readContract({ address: pool.coin, abi: erc20Abi, functionName: "totalSupply", blockNumber: receipt.blockNumber });
-    await db.update(launches).set({ supply: supply.toString() }).where(and(eq(launches.chain, c.chain), eq(launches.mint, pool.coin)));
+    // The supply as it stands now. A coin is only ever burned, so the figure kept is the lowest read: a block read
+    // again, or replayed long after, never puts back what a later burn took, and no past block's state is asked for,
+    // which a node that is not an archive (and a fork, after a few blocks) no longer has (#279).
+    const supply = await client.readContract({ address: pool.coin, abi: erc20Abi, functionName: "totalSupply" });
+    await db.update(launches).set({ supply: sql`least(${launches.supply}, ${supply.toString()}::numeric)` }).where(and(eq(launches.chain, c.chain), eq(launches.mint, pool.coin)));
     written.burned++;
   }
   // Graduation (#244): recorded once by the hook and never undone; it moves nothing and takes no fee (ADR 0024, 0027).
@@ -186,60 +525,35 @@ async function writeTransaction(
   return written;
 }
 
-/** Raises the operator's alert for a transaction the Indexer could not write, and set aside to go on. */
-async function setAside(db: Db, c: EvmChainConfig, hash: string, error: string) {
-  console.error(`${c.chain}: setting aside ${hash}: ${error}`);
-  await db
-    .insert(operatorAlerts)
-    .values({ kind: "indexer_skipped", subject: hash, message: `${c.profile.name}'s Indexer could not write transaction ${hash} and went on without it: ${error}` })
-    .onConflictDoNothing();
-}
-
-/** Every pool of ours on the chain, with the price it last traded at. */
-async function knownPools(db: Db, c: EvmChainConfig) {
-  const rows = await db
-    .select({ pool: launches.pool, coin: launches.mint, quote: launches.quoteMint, decimals: launches.decimals, quoteDecimals: evmQuoteAssets.decimals, price: launchMarkets.price })
-    .from(launches)
-    .innerJoin(evmQuoteAssets, and(eq(evmQuoteAssets.chain, launches.chain), eq(evmQuoteAssets.address, launches.quoteMint)))
-    .leftJoin(launchMarkets, eq(launchMarkets.mint, launches.mint))
-    .where(eq(launches.chain, c.chain));
-  return new Map<Hex, Pool>(
-    rows.map((r) => [
-      r.pool as Hex,
-      {
-        poolId: r.pool as Hex, coin: r.coin as Address, quote: r.quote as Address, quoteIsCurrency0: BigInt(r.quote) < BigInt(r.coin),
-        coinDecimals: r.decimals, quoteDecimals: r.quoteDecimals, price: r.price ?? 0,
-      },
-    ]),
-  );
-}
-
 /**
  * Writes a Launch and opens its market at the Listing's start price. Its Quote Asset is read from its contract the
- * first time a Launch pairs with it (the native asset from the chain's profile), and the coin's name, ticker and
- * supply at the launch's own block: the supply is what the factory left after burning the seed's rounding dust.
+ * first time a Launch pairs with it (the native asset from the chain's profile). The coin's name, ticker and decimals
+ * are read from its contract as it stands, since nothing can change them, and its supply from the launch's own
+ * `Transfer` events (what was minted less the seed's rounding dust, which the factory burns): no read of a past
+ * block's state, so a launch can be read, and replayed, however old it is (#279).
  */
 async function writeLaunch(db: Db, c: EvmChainConfig, client: PublicClient, e: LaunchEvent, receipt: TransactionReceipt, blockTime: Date, pools: Map<Hex, Pool>) {
   const quote = await quoteAsset(db, c, client, e.quote);
-  const at = { blockNumber: receipt.blockNumber };
-  const [name, symbol, decimals, supply] = await Promise.all([
-    client.readContract({ address: e.coin, abi: erc20Abi, functionName: "name", ...at }),
-    client.readContract({ address: e.coin, abi: erc20Abi, functionName: "symbol", ...at }),
-    client.readContract({ address: e.coin, abi: erc20Abi, functionName: "decimals", ...at }),
-    client.readContract({ address: e.coin, abi: erc20Abi, functionName: "totalSupply", ...at }),
+  const [name, symbol, decimals] = await Promise.all([
+    client.readContract({ address: e.coin, abi: erc20Abi, functionName: "name" }),
+    client.readContract({ address: e.coin, abi: erc20Abi, functionName: "symbol" }),
+    client.readContract({ address: e.coin, abi: erc20Abi, functionName: "decimals" }),
   ]);
+  const supply = supplyAfter(receipt, e.coin);
   const inserted = await db
     .insert(launches)
     .values({
       chain: c.chain,
+      factory: c.factory,
       mint: e.coin,
       pool: e.poolId,
       creator: e.creator,
       quoteMint: e.quote,
       globalConfig: null,
-      // The factory takes any string: a NUL would be refused by Postgres and a long one would fill the page.
-      name: cleanText(name, NAME_MAX),
-      symbol: cleanText(symbol, SYMBOL_MAX),
+      // The factory takes any string: a NUL would be refused by Postgres, a long one would fill the page, an override
+      // would reorder it, and one with nothing to show goes by the coin's address.
+      name: orAddress(cleanText(name, NAME_MAX), e.coin),
+      symbol: orAddress(cleanText(symbol, SYMBOL_MAX), e.coin),
       // No metadata of ours until a launch is prepared through the API on an EVM chain (#253).
       metadataUri: "",
       decimals,
@@ -264,6 +578,17 @@ async function writeLaunch(db: Db, c: EvmChainConfig, client: PublicClient, e: L
     pools.set(e.poolId, { poolId: e.poolId, coin: e.coin, quote: e.quote, quoteIsCurrency0: e.quoteIsCurrency0, coinDecimals: decimals, quoteDecimals: quote.decimals, price: start });
   }
   return inserted.length;
+}
+
+/** A coin's supply after the transaction that made it: what its `Transfer` events minted, less what they burned. */
+function supplyAfter(receipt: TransactionReceipt, coin: Address) {
+  let supply = 0n;
+  for (const t of parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: receipt.logs })) {
+    if (!isAddressEqual(t.address, coin)) continue;
+    if (isAddressEqual(t.args.from, NATIVE)) supply += t.args.value;
+    if (isAddressEqual(t.args.to, NATIVE)) supply -= t.args.value;
+  }
+  return supply;
 }
 
 /** A Launch's tax terms as Solana's columns hold them (ADR 0006): none for a standard coin. */
@@ -311,8 +636,11 @@ async function writeTrades(db: Db, c: EvmChainConfig, receipt: TransactionReceip
   return written;
 }
 
-/** A read that answers null when the contract refuses it (it has no such function) and throws on anything else. */
-const unlessReverted = <T>(read: Promise<T>) => read.catch((e: unknown) => (isRevert(e) ? null : Promise.reject(e)));
+/**
+ * A read that answers null when the contract refuses it or answers what cannot be read (it has no such function, or a
+ * `bytes32` where a string is asked), and throws on anything else: a provider's failure is never a fact about the contract.
+ */
+const unlessReverted = <T>(read: Promise<T>) => read.catch((e: unknown) => (isContractsAnswer(e) ? null : Promise.reject(e)));
 
 /** The chain's row for a Quote Asset, read from its contract (or the chain's profile, for the native asset) the first time. */
 async function quoteAsset(db: Db, c: EvmChainConfig, client: PublicClient, address: Address) {
@@ -333,7 +661,7 @@ async function quoteAsset(db: Db, c: EvmChainConfig, client: PublicClient, addre
     // An asset is a Stock Token by what its contract does (ERC-8056's multiplier), never by its name; anything else waits
     // for the chain's Quote Registry job to classify it (#254).
     row = {
-      chain: c.chain, address, symbol: symbol === null ? null : cleanText(symbol, SYMBOL_MAX), name: name === null ? null : cleanText(name, NAME_MAX), decimals,
+      chain: c.chain, address, symbol: symbol === null ? null : cleanText(symbol, SYMBOL_MAX) || null, name: name === null ? null : cleanText(name, NAME_MAX) || null, decimals,
       category: multiplier === null ? "community" : "tokenized_stock", multiplier: multiplier?.toString() ?? null, multiplierAt: multiplier === null ? null : new Date(),
     };
   }

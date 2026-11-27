@@ -7,9 +7,21 @@ import {
 } from "@launchpad/contract";
 import { WSOL_MINT, type RawTransaction } from "@launchpad/chain";
 import { accountAddressTries } from "@launchpad/localnet";
-import { QUOTE_REGISTRY_CRON } from "@launchpad/stack";
+import { QUOTE_REGISTRY_CRON, type StackEnv } from "@launchpad/stack";
 
-export const env = () => inject("harness");
+let otherStack: StackEnv | null = null;
+/** The stack every helper here acts on: the suite's, or another one while `onStack` runs. */
+export const env = () => otherStack ?? inject("harness");
+
+/** Runs `work` with every helper here, and in ./evm.ts, acting on another stack (one a test started for itself). */
+export async function onStack<T>(stack: StackEnv, work: () => Promise<T>): Promise<T> {
+  otherStack = stack;
+  try {
+    return await work();
+  } finally {
+    otherStack = null;
+  }
+}
 export const connection = () => new Connection(env().rpcUrl, "confirmed");
 
 /** A valid 1x1 PNG. */

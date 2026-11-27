@@ -23,8 +23,9 @@ function deployment(raw: unknown, i: number): EvmDeployment {
     return v as number;
   };
   return {
-    chain: d.chain, factory: addr("factory"), hook: addr("hook"), registry: addr("registry"), keys: addr("keys"), taxVault: addr("taxVault"),
+    chain: d.chain, factory: addr("factory"), hook: addr("hook"), registry: addr("registry"), keys: addr("keys"), taxVault: addr("taxVault"), distributor: addr("distributor"),
     fromBlock: d.fromBlock as number, logBlockRange: positive("logBlockRange"), maxRangesPerRun: positive("maxRangesPerRun"), maxRunSeconds: positive("maxRunSeconds"),
+    maxRequestsPerRun: positive("maxRequestsPerRun"), retryRuns: positive("retryRuns"), retryRunsUnclear: positive("retryRunsUnclear"),
   };
 }
 
