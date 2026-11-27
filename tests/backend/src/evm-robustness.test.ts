@@ -361,8 +361,6 @@ describe.skipIf(!hasEvm)("EVM chain: a factory deployed again", () => {
     const old = await launchCoin(await evmWallet());
     await runIndexer();
     const fresh = await onFork(second, async () => launchCoin(await evmWallet()));
-    // Past both coins' Opening Fee, so each buy is a plain one.
-    await new Promise((r) => setTimeout(r, 21_000));
     const trader = await evmWallet();
     const receipt = await buyBoth(trader, [old, fresh], 10n ** 15n);
 
