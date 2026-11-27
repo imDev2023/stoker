@@ -252,7 +252,7 @@ app.post("/v1/transactions/:signature", async (c) => {
  * Solana's chain (its holders, its quote, its trust figures, its lock, its earnings, its rewards, its marks) and come to
  * the EVM chains slice by slice (#253 to #256), so for an EVM coin they answer 404 by name, never a Solana error.
  */
-const EVM_COIN_READS = new Set(["trades", "candles"]);
+const EVM_COIN_READS = new Set(["trades", "candles", "quote"]);
 app.use("/v1/launches/:mint/:part{.+}", async (c, next) => {
   const part = c.req.param("part");
   if (/^0x[0-9a-fA-F]{40}$/.test(c.req.param("mint")) && !EVM_COIN_READS.has(part)) {

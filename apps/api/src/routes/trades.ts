@@ -17,6 +17,7 @@ import {
 import { curves, launches, quoteAssets, trades, type Db } from "@launchpad/db";
 import { solRoutes, type AppEnv, type Bindings, type Config } from "../env";
 import { referralShare } from "../quotes/assets";
+import { isEvmAddress, prepareEvmTrade, quoteEvmTrade } from "../evm/trade";
 
 /**
  * Trading a Launch's coin: quotes and unsigned trade transactions (ADR 0003), plus the indexed trade history and candles.
@@ -26,6 +27,8 @@ export const tradeRoutes = new Hono<AppEnv>();
 
 /** A quote at the market's current state, for showing what a trade would do before the trader commits. */
 tradeRoutes.get("/launches/:mint/quote", async (c) => {
+  // A coin on an EVM chain is priced by its own chain's contracts (#253); Solana's coins go on as before.
+  if (isEvmAddress(c.req.param("mint"))) return quoteEvmTrade(c, c.req.param("mint"));
   const query = TradeQuoteQuery.safeParse(c.req.query());
   if (!query.success) return c.json({ error: "invalid quote request", details: query.error.issues }, 400);
   const { quote } = await quoteMarket(c.env, c.get("db"), c.get("cfg"), c.req.param("mint"), query.data);
@@ -34,7 +37,9 @@ tradeRoutes.get("/launches/:mint/quote", async (c) => {
 
 /** The trade transaction for the trader's wallet to sign, with the quote it was built from. */
 tradeRoutes.post("/trades/prepare", async (c) => {
-  const body = PrepareTradeRequest.safeParse(await c.req.json().catch(() => null));
+  const sent: unknown = await c.req.json().catch(() => null);
+  if (isEvmAddress((sent as { mint?: unknown } | null)?.mint)) return prepareEvmTrade(c, sent);
+  const body = PrepareTradeRequest.safeParse(sent);
   if (!body.success) return c.json({ error: "invalid trade request", details: body.error.issues }, 400);
   const trader = new PublicKey(body.data.trader);
   const { quote, prepare } = await quoteMarket(c.env, c.get("db"), c.get("cfg"), body.data.mint, body.data, trader);
