@@ -253,6 +253,13 @@
       "when": 1795543251655,
       "tag": "0035_chains",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1795568421384,
+      "tag": "0036_indexer_failures",
+      "breakpoints": true
     }
   ]
 }

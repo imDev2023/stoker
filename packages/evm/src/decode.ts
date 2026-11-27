@@ -232,3 +232,14 @@ export function decodeBurns(logs: readonly Log[], c: ChainContracts): { poolId: 
 export function decodeGraduations(logs: readonly Log[], c: ChainContracts): { poolId: Hex; graduatedAt: bigint }[] {
   return decodeLogs(logs, c).flatMap((e) => (e.kind === "graduated" ? [{ poolId: e.poolId, graduatedAt: e.graduatedAt }] : []));
 }
+
+/**
+ * Every pool id a receipt's logs name (#279): the PoolManager's swaps, which are in any pool on the chain, and our own
+ * contracts' events. The Indexer looks these up among its deployment's pools before it reads the receipt's trades, so
+ * it never needs every pool in memory.
+ */
+export function poolsNamed(logs: readonly Log[], c: ChainContracts): Hex[] {
+  const ids = new Set<Hex>();
+  for (const e of decodeLogs(logs, c)) ids.add("poolId" in e ? e.poolId : e.args.poolId);
+  return [...ids];
+}
