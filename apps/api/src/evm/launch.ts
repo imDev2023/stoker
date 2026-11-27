@@ -131,8 +131,16 @@ const firstBuyToContract = (q: Extract<FirstBuyQuote, { ok: true }>): EvmFirstBu
 export function firstBuyOrRefuse(
   listed: ListedQuote, settings: FactorySettings, p: { amountIn: bigint; taxBps: number; lockBps: number; quoteIsCurrency0: boolean },
 ): Extract<FirstBuyQuote, { ok: true }> {
-  const seed = seedPosition({ startTick: listed.startTick, tickSpacing: settings.tickSpacing, quoteIsCurrency0: p.quoteIsCurrency0, lockBps: p.lockBps });
-  const quote = quoteFirstBuy(seed, { amountIn: p.amountIn, platformFeeBps: settings.platformFeeBps, taxBps: p.taxBps });
+  let quote: FirstBuyQuote;
+  try {
+    const seed = seedPosition({ startTick: listed.startTick, tickSpacing: settings.tickSpacing, quoteIsCurrency0: p.quoteIsCurrency0, lockBps: p.lockBps });
+    quote = quoteFirstBuy(seed, { amountIn: p.amountIn, platformFeeBps: settings.platformFeeBps, taxBps: p.taxBps });
+  } catch (e) {
+    // A start price so far out that the seed's liquidity or its price leaves Uniswap's own ranges: the factory could not
+    // place such a seed either, in this currency order.
+    if (!(e instanceof RangeError)) throw e;
+    return refuse(400, `${listed.option.symbol ?? "That asset"}'s Listing can't take a first buy right now. Launch without one, or choose another asset.`);
+  }
   if (!quote.ok) return refuse(400, quote.reason === "too_small" ? TOO_SMALL : TOO_LARGE);
   return quote;
 }
