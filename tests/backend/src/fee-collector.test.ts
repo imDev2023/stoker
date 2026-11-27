@@ -5,10 +5,10 @@
 // Creators their share of what was collected; the sweep leaves that share behind for it.
 import { beforeAll, describe, expect, it } from "vitest";
 import { PublicKey, type Keypair } from "@solana/web3.js";
-import { ACCOUNT_SIZE, getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { ACCOUNT_SIZE, createFreezeAccountInstruction, createThawAccountInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import BN from "bn.js";
 import { cpmmCoder, launchlabPdas, lockCoder, lockPdas, programsFor, WSOL_MINT } from "@launchpad/chain";
-import { LOCAL_QUOTES, migrateCurve, mintLocalQuote } from "@launchpad/localnet";
+import { LOCAL_QUOTES, UNLUCKY_QUOTE_TRIES, accountAddressTries, localnetKeys, migrateCurve, mintLocalQuote, send } from "@launchpad/localnet";
 import { FEE_COLLECTOR_CRON } from "@launchpad/stack";
 import { BudgetsPage, CoinRewards, HolderList, JobRun, JobRunList, LaunchList, LedgerPage, Revenue, type LedgerEntry } from "@launchpad/contract";
 import {
@@ -20,6 +20,11 @@ const WSOL = WSOL_MINT.toBase58();
 const USDC = LOCAL_QUOTES.USDC;
 const usdc = (n: number) => BigInt(Math.round(n * 1e6));
 const ops = () => new PublicKey(env().platform.operationsWallet);
+/**
+ * The stack's unlucky Quote Asset (#282), worth 1 USD like USDC and with its 6 decimals: the operations wallet's account
+ * for it has an address that takes at least 14 tries to derive, where half of all accounts take one.
+ */
+const unlucky = () => new PublicKey(env().unluckyQuote!);
 
 /**
  * SOL the operations wallet holds for the holders of Reward Launches paid in SOL (ADR 0006, #43): what their Reward
@@ -47,11 +52,29 @@ const sum = (xs: bigint[]) => xs.reduce((a, b) => a + b, 0n);
 
 /** Runs the Fee Collector's Cron Trigger and returns the run it recorded, as the operator sees it. */
 async function runCollector() {
+  const { ok, status, run } = await collectorRun();
+  if (!ok || run.status !== "succeeded") throw new Error(`the Fee Collector failed: ${status} ${JSON.stringify(run)}`);
+  return run;
+}
+
+/** The same, for a run that may fail: whether the Cron Trigger's whole run succeeded, and the Fee Collector's record of its own. */
+async function collectorRun() {
   const res = await fetch(`${env().apiUrl}/__scheduled?cron=${encodeURIComponent(FEE_COLLECTOR_CRON)}`);
   const [run] = (await jobRuns()).runs;
   expect(run, "the run's record").toBeDefined();
-  if (!res.ok || run!.status !== "succeeded") throw new Error(`the Fee Collector failed: ${res.status} ${JSON.stringify(run)}`);
-  return run!;
+  return { ok: res.ok, status: res.status, run: run! };
+}
+
+/** A coin paired with `quoteMint` and one buy of it on its curve, indexed: the Platform Fee the buy left in the asset's vault. */
+async function curveBuy(quoteMint: PublicKey, amount: bigint) {
+  const creator = await fundedWallet();
+  const { prepared, signature } = await launch(creator, { quoteMint: quoteMint.toBase58() });
+  await deliverWebhook([signature]);
+  const trader = await fundedWallet();
+  if (!quoteMint.equals(WSOL_MINT)) await mintLocalQuote(connection(), quoteMint, trader.publicKey, amount);
+  const buy = await trade(trader, prepared.mint, "buy", amount);
+  await deliverWebhook([buy.signature]);
+  return { creator, fee: BigInt(buy.quote.fees.platform) };
 }
 
 /** What the Creator Forward sent in the Cron Trigger's run just made, which must have succeeded. */
@@ -249,6 +272,76 @@ describe("the Platform Fee", () => {
       expect.objectContaining({ signature: sweep.signature, kind: "sweep", asset: usdcRef, amount: swept.toString(), source: ops().toBase58(), destination: treasury().toBase58() }),
       expect.objectContaining({ signature: claim.signature, kind: "platform_fee", asset: usdcRef, amount: (dust + paid).toString(), source: vault.toBase58() }),
     ]);
+  });
+});
+
+describe("a Quote Asset whose account for the operations wallet has an unlucky address", () => {
+  // The claim opens the operations wallet's account for the Quote Asset when nothing has yet, and LaunchLab and the
+  // program that opens the account search for its address on-chain three times between them, at 1,500 compute units a
+  // try. Half of all accounts take one try; this one takes 14 or more, so its claim costs 58,500 units more than the
+  // 45,000 of most, and under a limit of 100,000 it ran out of them, on every run, with nothing else to open the
+  // account (#282).
+  const vault = () => platformFeeVault(unlucky());
+  const account = () => getAssociatedTokenAddressSync(unlucky(), ops(), true);
+
+  it("claims its vault like any other, opening the account in the claim", async () => {
+    expect(accountAddressTries(ops(), unlucky())).toBeGreaterThanOrEqual(UNLUCKY_QUOTE_TRIES);
+    expect(UNLUCKY_QUOTE_TRIES).toBeGreaterThanOrEqual(12);
+    // No other file launches against the asset and nothing here has yet, so nothing has opened the account.
+    expect(await connection().getAccountInfo(account())).toBeNull();
+    const bought = await curveBuy(unlucky(), usdc(40));
+    expect(await tokenBalance(vault())).toBe(bought.fee);
+    // A SOL vault waits in the same run, which claims it whatever becomes of the other claim.
+    await curveBuy(WSOL_MINT, SOL(0.3));
+
+    const run = await runCollector();
+    const claims = sentBy(run).filter((s) => s.purpose === "platform_fee");
+    expect(claims).toContainEqual({ purpose: "platform_fee", subject: vault().toBase58(), signature: expect.any(String), outcome: "landed", entries: 1 });
+    expect(claims).toContainEqual({ purpose: "platform_fee", subject: platformFeeVault(WSOL_MINT).toBase58(), signature: expect.any(String), outcome: "landed", entries: 1 });
+    expect(await tokenBalance(vault())).toBe(0n);
+    const claim = claims.find((c) => c.subject === vault().toBase58())!;
+    expect(await entriesOf([claim.signature])).toEqual([expect.objectContaining({
+      kind: "platform_fee", asset: expect.objectContaining({ mint: unlucky().toBase58(), symbol: "UNLUCKY", decimals: 6 }), amount: bought.fee.toString(),
+      source: vault().toBase58(), destination: ops().toBase58(),
+    })]);
+    // The claim left the account open, and what it paid in went where every Platform Fee goes: the Creator's half to
+    // the Creator (ADR 0009), the rest to the treasury.
+    const share = bought.fee / 2n;
+    expect(await connection().getAccountInfo(account())).not.toBeNull();
+    expect((await forwarded()).find((f) => f.creator === bought.creator.publicKey.toBase58())).toMatchObject({ mint: unlucky().toBase58(), amount: share.toString(), outcome: "paid" });
+    expect(await tokensOf(bought.creator.publicKey, unlucky())).toBe(share);
+    expect(await tokensOf(treasury(), unlucky())).toBe(bought.fee - share);
+    expect(await tokensOf(ops(), unlucky())).toBe(0n);
+  });
+
+  it("goes on to every other collection when its claim fails, and claims it once it can", async () => {
+    // The asset's issuer can freeze wallets, as a stablecoin's or a stock's can, and freezes the operations wallet's
+    // account: the claim of this one vault fails for as long as that lasts.
+    const { admin } = localnetKeys();
+    const bought = await curveBuy(unlucky(), usdc(40));
+    const sol = await curveBuy(WSOL_MINT, SOL(0.3));
+    await send(connection(), [createFreezeAccountInstruction(account(), unlucky(), admin.publicKey)], [admin]);
+    try {
+      const failed = await collectorRun();
+      expect(failed.ok).toBe(false);
+      expect(failed.run).toMatchObject({ status: "failed", error: expect.stringContaining(`platform_fee ${vault().toBase58()}: failed`) });
+      // The run's record keeps what it did beside why it failed: the other vault was claimed, and the fee is on the Ledger.
+      const sent = sentBy(failed.run);
+      expect(sent.find((s) => s.subject === vault().toBase58())).toMatchObject({ purpose: "platform_fee", outcome: "failed", entries: 0 });
+      const solClaim = sent.find((s) => s.subject === platformFeeVault(WSOL_MINT).toBase58())!;
+      expect(solClaim).toMatchObject({ purpose: "platform_fee", outcome: "landed", entries: 1 });
+      expect(await entriesOf([solClaim.signature])).toEqual([expect.objectContaining({ kind: "platform_fee", amount: sol.fee.toString() })]);
+      // The Creator Forward, the next job of the same Cron Trigger, paid the SOL coin's Creator all the same.
+      expect((await forwarded()).find((f) => f.creator === sol.creator.publicKey.toBase58())).toMatchObject({ mint: WSOL, amount: (sol.fee / 2n).toString(), outcome: "paid" });
+      // Nothing is lost: what the failed claim would have moved is still in its vault.
+      expect(await tokenBalance(vault())).toBe(bought.fee);
+    } finally {
+      await send(connection(), [createThawAccountInstruction(account(), unlucky(), admin.publicKey)], [admin]);
+    }
+    const run = await runCollector();
+    expect(sentBy(run).find((s) => s.subject === vault().toBase58())).toMatchObject({ purpose: "platform_fee", outcome: "landed", entries: 1 });
+    expect(await tokenBalance(vault())).toBe(0n);
+    expect((await forwarded()).find((f) => f.creator === bought.creator.publicKey.toBase58())).toMatchObject({ mint: unlucky().toBase58(), amount: (bought.fee / 2n).toString(), outcome: "paid" });
   });
 });
 
@@ -524,9 +617,11 @@ describe("the operator's view of the job", () => {
   it("lists every run with what it did, and nothing left pending", async () => {
     const { runs, pending } = await jobRuns();
     expect(runs.length).toBeGreaterThan(5);
-    // operator.test.ts makes one run fail on purpose (`?fail=simulated`), and the files run in any order.
+    // operator.test.ts makes one run fail on purpose (`?fail=simulated`), and the files run in any order; this file
+    // makes one fail too, by freezing the operations wallet's account for the unlucky Quote Asset under its claim.
     const simulated = (r: JobRun) => r.status === "failed" && r.error === "failure simulated by the operator";
-    expect(runs.every((r) => r.job === "fee-collector" && (["succeeded", "skipped"].includes(r.status) || simulated(r)))).toBe(true);
+    const frozen = (r: JobRun) => r.status === "failed" && r.error?.startsWith(`platform_fee ${platformFeeVault(unlucky()).toBase58()}: failed`) === true;
+    expect(runs.filter((r) => r.job !== "fee-collector" || !(["succeeded", "skipped"].includes(r.status) || simulated(r) || frozen(r)))).toEqual([]);
     expect(pending).toEqual([]);
   });
 });
