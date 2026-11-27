@@ -21,7 +21,7 @@ Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `ston
 ### The frontier (2026-11-27)
 
 - **Running:** relay lanes on #251 (PR #285), #253 (PR #288) and #254, side by side (owner, 2026-11-24).
-  The main session's unit: review #285 and #288, each on the head its lane calls final; land it, start what it unblocks (#255 after #254).
+  The main session's unit: review #285 and #288, each on the head its lane calls final; land it, start what it unblocks.
 - **Next unit:** Stoker on EVM chains, built here and not in kiln (owner, 2026-11-22): the PRD is #231, grilled with the owner in #235 (ADRs 0024 to 0030).
   #241 to #249, #271 (`contracts/README.md` first), #252 and #279 have landed; #251, the gate, is the last contract slice.
   The EVM Indexer stays off (`EVM_DEPLOYMENTS` unset) until the rehearsal (#257); #256 follows #253, #287 before a second chain.
