@@ -185,8 +185,10 @@ CI builds from nothing and is not affected; anyone who changes `src` and runs th
 **What it adds to CI.**
 The campaign runs fewer and longer runs than the profile's, since Graduation, a raise, a lock's claim and a paid round each come at the end of a sequence: in CI 64 runs of 256 calls for the eight invariants (16,384 calls, every invariant after each), and 32 runs of 128 for the two probing properties, each probe a snapshot rolled back.
 On the loaded Mac at CI's depth that is 168 seconds and 56, of 1,507 seconds of CPU for the whole local suite, whose wall time, 180 seconds, is set by its longest contracts.
-In CI's `contracts` job (run 46056373135, 2026-11-27) the campaign's main contract took 103 seconds and its probes 16, and the step that runs every local test went from 1 minute 52 on `main` to 2 minutes 16.
-The job as a whole went from 14 minutes to 19 minutes 15, of its 30: four minutes of that is the build, which now compiles this slice's scripts and tests; 24 seconds the tests; and 28 seconds the gate itself (Slither's install, the sources built for it, solhint, Slither and the pre-deployment gate).
+In CI's `contracts` job (run 46056373135, 2026-11-27) the campaign's main contract took 103 seconds and its probes 16.
+The job's time follows the runner it lands on, so it is given as ranges over that day's runs: five of `main` on the same sources took 15 minutes 06 to 19 minutes 47, and this slice's three took 19 minutes 18, 25 minutes 04 and 26 minutes 40.
+Of those three, the build, which now compiles this slice's scripts and tests, took 15 minutes 51 to 21 minutes 32 (12 minutes 26 to 16 minutes 15 on `main`); the step that runs every local test 2 minutes 16 to 4 minutes 09 (1 minute 42 to 3 minutes 11 on `main`); and the gate itself (Slither's install, the sources built for it, solhint, Slither and the pre-deployment gate) 28 to 37 seconds.
+On the averages the slice adds about six minutes, and 26 minutes 40 was too near the job's limit of 30, which is 45 since this slice.
 
 The build is the part to watch, and not for its time.
 With this slice's tests added, one compiler process building the whole workspace held 11 GB, and CI's 16 GB runner died in the build step twice with no compiler error.

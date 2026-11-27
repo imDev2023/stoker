@@ -77,7 +77,9 @@ jobs:
   # ROBINHOOD_RPC_URL secret exists (an archive endpoint; the URL carries a key and is never printed).
   contracts:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45 since #251: the job's time follows the runner it lands on. On 2026-11-27 the same sources took
+    # 15 to 20 minutes on `main` and, with #251's tests and the gate, 19 to 27, too near a limit of 30.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: contracts
