@@ -25,6 +25,11 @@ import {
 } from "./launch";
 import { runJob, toJobRun, withLease } from "./jobs";
 import { runIndexers } from "./chains/indexers";
+import { runKeeper } from "./chains/evm/keeper";
+import { runEvmLadder } from "./chains/evm/ladder";
+import { runEvmQuotes } from "./chains/evm/prices";
+import { runEvmRebates } from "./chains/evm/rebates";
+import { operatorEvmRoutes } from "./routes/evm";
 import { evmChains, withoutRpcUrl } from "./chains/evm/config";
 import { openFailures, replayEvmChain, ReplayRefused } from "./chains/evm/indexer";
 import { chainFilter } from "./chains/filter";
@@ -254,7 +259,7 @@ app.post("/v1/transactions/:signature", async (c) => {
  * Solana's chain (its holders, its quote, its trust figures, its lock, its earnings, its rewards, its marks) and come to
  * the EVM chains slice by slice (#253 to #256), so for an EVM coin they answer 404 by name, never a Solana error.
  */
-const EVM_COIN_READS = new Set(["trades", "candles"]);
+const EVM_COIN_READS = new Set(["trades", "candles", "ledger"]);
 app.use("/v1/launches/:mint/:part{.+}", async (c, next) => {
   const part = c.req.param("part");
   if (/^0x[0-9a-fA-F]{40}$/.test(c.req.param("mint")) && !EVM_COIN_READS.has(part)) {
@@ -303,6 +308,7 @@ app.route("/v1/operator", operatorAirdropRoutes);
 app.route("/v1/operator", operatorMintKeyRoutes);
 app.route("/v1/operator", operatorRegionRoutes);
 app.route("/v1/operator", operatorMarkRoutes);
+app.route("/v1/operator", operatorEvmRoutes);
 
 /**
  * Runs one scheduled job now, as its Cron Trigger would, and answers with the run: 500 with the failed run when it
@@ -361,6 +367,15 @@ app.post("/v1/operator/jobs/rebates", (c) => {
 
 /** Every polled chain's Indexer (#252): the EVM chains', which read our contracts' events up to each chain's finality depth. */
 app.post("/v1/operator/jobs/indexer", (c) => manualJob(c, "indexer", () => runIndexers(c.env, c.get("cfg"), c.get("db"))));
+
+/**
+ * The EVM chains' jobs (#254), each run on every chain `EVM_DEPLOYMENTS` names: the Keeper's calls anyone may make, the
+ * ladder key's tier raises, the chains' Volume Rebates and their Quote Assets' prices.
+ */
+app.post("/v1/operator/jobs/keeper", (c) => manualJob(c, "keeper", () => runKeeper(c.env, c.get("db"))));
+app.post("/v1/operator/jobs/evm-ladder", (c) => manualJob(c, "evm-ladder", () => runEvmLadder(c.env, c.get("cfg"), c.get("db"))));
+app.post("/v1/operator/jobs/evm-rebates", (c) => manualJob(c, "evm-rebates", () => runEvmRebates(c.env, c.get("cfg"), c.get("db"))));
+app.post("/v1/operator/jobs/evm-quotes", (c) => manualJob(c, "evm-quotes", () => runEvmQuotes(c.env, c.get("db"), quoteMarket(c.env))));
 
 /** The transactions an EVM chain's Indexer could not write and has not written since (#279): those it is trying again, and those set aside. */
 app.get("/v1/operator/indexer/failures", async (c) => {
@@ -485,6 +500,8 @@ export default {
       // Every job takes its lease: a slow run overlapping the next Cron Trigger, or a manual run, must never act twice.
       if (run(CRONS.quoteRegistry)) {
         await job(runJob(db, "quote-registry", () => refreshQuoteRegistry({ db, cfg: config(env), market: quoteMarket(env), operations: operationsKey(env) }), { exclusive: true }));
+        // The EVM chains' Quote Asset prices (#254), after Solana's, so each chain's revenue is valued as Solana's is.
+        if (env.EVM_DEPLOYMENTS) await job(runJob(db, "evm-quotes", () => runEvmQuotes(env, db, quoteMarket(env)), { exclusive: true }));
         await job(pruneUsage(db));
       }
       // Launches that sold out but that Raydium has not migrated, and graduated Reward Launches whose tax is not locked yet.
@@ -508,6 +525,12 @@ export default {
         await job(runJob(db, "creator-forward", () => forwardCreatorShares({ db, cfg: config(env), operations: operationsKey(env) }), { exclusive: true }));
         // Then the traders' share (ADR 0021): a Rebate Week that has ended is settled on what was just collected, and paid.
         await job(runJob(db, "rebates", () => runRebates({ db, cfg: config(env), operations: operationsKey(env) }), { exclusive: true }));
+        // The EVM chains' (#254), after Solana's: each graduated coin's Active Days and tier raises, then each chain's
+        // Volume Rebates, paid on that chain in its native asset.
+        if (env.EVM_DEPLOYMENTS) {
+          await job(runJob(db, "evm-ladder", () => runEvmLadder(env, config(env), db), { exclusive: true }));
+          await job(runJob(db, "evm-rebates", () => runEvmRebates(env, config(env), db), { exclusive: true }));
+        }
       }
       // The Burn and Flywheel, on the hour's revenue, half an hour after the Fee Collector has claimed it.
       if (run(CRONS.burn)) {
@@ -517,6 +540,9 @@ export default {
       // Reward Rounds: harvest each Reward Launch's tax, open a round where enough has collected, pay the open ones.
       if (run(CRONS.rewardRounds))
         await job(runJob(db, "reward-rounds", () => runRewardRounds({ db, cfg: config(env), operations: operationsKey(env) }), { exclusive: true }));
+      // The Keeper's calls on each EVM chain (#254), after Solana's jobs: the Destinations' earnings, the Payout Calls
+      // and the Tax Vault's pieces, which take one piece a pool a minute at most.
+      if (run(CRONS.rewardRounds) && env.EVM_DEPLOYMENTS) await job(runJob(db, "keeper", () => runKeeper(env, db), { exclusive: true }));
       // Posts on X naming the coins that traded lately (#160, ADR 0018), on the same ten-minute clock: a paid search per
       // coin, so it runs only once the owner has set the key, and never on a stack without one.
       if (run(CRONS.rewardRounds) && env.TWITTERAPI_API_KEY)

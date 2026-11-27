@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Chain } from "./chains";
+import { Chain, ChainAddress, PoolRef } from "./chains";
 import { QuoteRef } from "./quotes";
 
 /**
@@ -52,10 +52,32 @@ const raw = z.string().regex(/^\d+$/, "must be a whole number of raw units");
  *   Key the operations wallet holds. The holders' tax, never revenue and never a spending of the Budget Table. A
  *   Liquidity Launch's additions (#215) are recorded the same way: its whole tax, which is the pool's and never revenue.
  */
+/*
+ * On an EVM chain (#254) every entry comes from our contracts' own events, read by the chain's Indexer, with the
+ * chain's transaction hash in place of a signature and its block number in place of a slot:
+ * - `platform_fee`: the platform's Credits paid to the Admin by a Payout Call (ADR 0025, ADR 0030), in the Quote Asset;
+ *   already net of the Creators' share, which is credited apart, and counted as revenue like Solana's.
+ * - `creator_credit`: a Creator's Credits paid to the coin's Creator Earnings Destination (the Creator's wallet or one
+ *   of the three Destination contracts) by a Payout Call; one entry per coin the payment covered.
+ * - `referrer_fee`: a referrer's Credits paid to it by a Payout Call (ADR 0027); never revenue.
+ * - `support_liquidity`: a coin's own tax and Opening Fees added to its pool by the Tax Vault as Support Liquidity
+ *   (ADR 0025): a Reward Launch's Reward Liquidity share, a Stoke Launch's whole tax, every coin's Opening Fee.
+ * - `reward_burn` (on an EVM chain): the coins the Tax Vault bought with a Reward Launch's Reward Burn share and burned.
+ * - `earnings_applied`: a coin's Creator earnings a Destination handed on (#248): to the Tax Vault for a burn or for
+ *   Support Liquidity, to the Distributor for the holders.
+ * - `burn_funded` and `support_funded`: Quote Asset someone other than our Destinations gave a coin's burn or Support
+ *   Liquidity in the Tax Vault.
+ * - `funded_burn`: the coins the Tax Vault bought with what was funded for a coin's burn and burned.
+ * - `funded_liquidity`: what was funded for a coin's Support Liquidity, added to its pool.
+ * - `rebate` (on an EVM chain): a trader's Volume Rebates paid in the chain's native asset by the Keeper.
+ * - `burn_carry`: the Burn's budget of an EVM chain carried to Solana by the owner by hand (ADR 0030): an entry on the
+ *   EVM chain for what left the Admin's address, and one on Solana for what reached the operations wallet.
+ */
 export const LedgerKind = z.enum([
   "platform_fee", "pool_fee", "fee_key", "sweep", "creator_forward", "burn", "flywheel", "arweave_top_up", "metadata_upload", "reward_sale", "graduation_fee",
   "holder_dividend", "creator_burn", "creator_liquidity", "rebate", "reward_burn",
   "burn_liquidity", "flywheel_liquidity", "reward_liquidity",
+  "creator_credit", "referrer_fee", "support_liquidity", "earnings_applied", "burn_funded", "support_funded", "funded_burn", "funded_liquidity", "burn_carry",
 ]);
 export type LedgerKind = z.infer<typeof LedgerKind>;
 
@@ -75,12 +97,15 @@ export const LedgerEntry = z.object({
   kind: LedgerKind,
   asset: RevenueAsset,
   amount: raw,
-  /** Where it came from: a Platform Fee vault, a CPMM pool, or the operations wallet for a sweep. */
-  source: base58,
-  /** Where it went: the operations wallet, the treasury for a sweep, or the Creator for a Creator Forward. A Graduation Fee names the Creator as its source and the operations wallet as its destination, though nothing moves. */
-  destination: base58,
+  /**
+   * Where it came from: a Platform Fee vault, a CPMM pool, or the operations wallet for a sweep; on an EVM chain (#254)
+   * our hook, the Tax Vault, a Destination or the Keeper.
+   */
+  source: ChainAddress,
+  /** Where it went: the operations wallet, the treasury for a sweep, or the Creator for a Creator Forward. A Graduation Fee names the Creator as its source and the operations wallet as its destination, though nothing moves. On an EVM chain the owner a Credit was paid to, the coin's pool for Support Liquidity, or the Tax Vault or the Distributor for a Destination's work. */
+  destination: ChainAddress.or(PoolRef),
   /** The graduated coin whose pool paid it, or whose Graduation Fee it is; null for the Platform Fee (one vault collects every Launch's) and sweeps. */
-  launch: z.object({ mint: base58, symbol: z.string(), name: z.string() }).nullable(),
+  launch: z.object({ mint: ChainAddress, symbol: z.string(), name: z.string() }).nullable(),
   slot: z.number().int(),
   time: z.iso.datetime(),
 });
@@ -97,7 +122,7 @@ export type LedgerPage = z.infer<typeof LedgerPage>;
 export const LedgerQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   /** A `next` cursor from a previous page: the slot, the moment the Ledger recorded the entry, the signature and the position. */
-  before: z.string().regex(/^\d+\.\d+\.[1-9A-HJ-NP-Za-km-z]{64,88}\.\d+$/, "must be a cursor from a previous page").optional(),
+  before: z.string().regex(/^\d+\.\d+\.([1-9A-HJ-NP-Za-km-z]{64,88}|0x[0-9a-fA-F]{64})\.\d+$/, "must be a cursor from a previous page").optional(),
   kind: LedgerKind.optional(),
   /** Only the entries of this chain (#252). */
   chain: Chain.optional(),
@@ -115,6 +140,8 @@ export const RevenueStreams = z.object({
 export type RevenueStreams = z.infer<typeof RevenueStreams>;
 
 export const RevenueTotal = RevenueStreams.extend({
+  /** The chain the asset was collected on (#254): an asset's totals are per chain. */
+  chain: Chain,
   asset: RevenueAsset,
   /** Moved on to the treasury so far. */
   swept: raw,
@@ -134,7 +161,7 @@ export const RevenueDay = z.object({
   /** A UTC calendar day, YYYY-MM-DD. */
   day: z.iso.date(),
   /** What each asset collected that day; assets with nothing that day are left out. */
-  assets: z.array(RevenueStreams.extend({ asset: RevenueAsset })),
+  assets: z.array(RevenueStreams.extend({ chain: Chain, asset: RevenueAsset })),
 });
 export type RevenueDay = z.infer<typeof RevenueDay>;
 
@@ -151,13 +178,22 @@ export const Revenue = z.object({
   totals: z.array(RevenueTotal),
   /** Daily totals for the latest 90 days with revenue, newest first. */
   days: z.array(RevenueDay),
+  /**
+   * The Platform Net (ADR 0019) per chain and together (#254): what each chain collected less its Creators' share,
+   * valued in SOL at the Quote Registry's latest prices, in lamports. An asset without a price counts for nothing.
+   */
+  platformNet: z.object({ lamports: raw, chains: z.array(z.object({ chain: Chain, lamports: raw })) }),
 });
 export type Revenue = z.infer<typeof Revenue>;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Operator: scheduled job runs.
 
-export const JobName = z.enum(["quote-registry", "graduation-watch", "fee-collector", "creator-forward", "reward-tax-lock", "reward-rounds", "burn", "metadata-upload", "mentions", "rebates", "indexer"]);
+export const JobName = z.enum([
+  "quote-registry", "graduation-watch", "fee-collector", "creator-forward", "reward-tax-lock", "reward-rounds", "burn", "metadata-upload", "mentions", "rebates", "indexer",
+  // The EVM chains' jobs (#254), each run for every chain `EVM_DEPLOYMENTS` names, after Solana's.
+  "keeper", "evm-ladder", "evm-rebates", "evm-quotes",
+]);
 export type JobName = z.infer<typeof JobName>;
 
 export const JobRun = z.object({

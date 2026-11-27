@@ -2,7 +2,7 @@ import type { PublicKey } from "@solana/web3.js";
 import { eq, inArray } from "drizzle-orm";
 import { decodeRevenue, type RawTransaction, type RevenueContext } from "@launchpad/chain";
 import type { RevenueAsset } from "@launchpad/contract";
-import { graduations, launches, launchMetadata, ledgerEntries, quoteAssets, type Db } from "@launchpad/db";
+import { evmQuoteAssets, graduations, launches, launchMetadata, ledgerEntries, quoteAssets, type Db } from "@launchpad/db";
 import type { Config } from "../env";
 
 export function revenueContext(cfg: Config, operationsWallet: PublicKey): RevenueContext {
@@ -57,7 +57,7 @@ export async function recordRevenue(db: Db, ctx: RevenueContext, raw: RawTransac
  */
 export async function revenueAssets(db: Db, publicApiUrl: string, decimals: Map<string, number>) {
   const mints = [...decimals.keys()];
-  const [quotes, coins] = mints.length
+  const [quotes, coins, evmAssets] = mints.length
     ? await Promise.all([
         db.select().from(quoteAssets).where(inArray(quoteAssets.mint, mints)),
         db
@@ -65,9 +65,12 @@ export async function revenueAssets(db: Db, publicApiUrl: string, decimals: Map<
           .from(launches)
           .leftJoin(launchMetadata, eq(launchMetadata.id, launches.mint))
           .where(inArray(launches.mint, mints)),
+        // An EVM chain's Quote Assets (#254), read from their contracts by the chain's Indexer.
+        db.select().from(evmQuoteAssets).where(inArray(evmQuoteAssets.address, mints)),
       ])
-    : [[], []];
+    : [[], [], []];
   const known = new Map<string, RevenueAsset>([
+    ...evmAssets.map((a): [string, RevenueAsset] => [a.address, { mint: a.address, symbol: a.symbol, name: a.name, decimals: a.decimals, logo: null }]),
     ...coins.map((c): [string, RevenueAsset] => [
       c.mint,
       { mint: c.mint, symbol: c.symbol, name: c.name, decimals: c.decimals, logo: c.image ? `${publicApiUrl}/metadata/${c.mint}/image` : null },

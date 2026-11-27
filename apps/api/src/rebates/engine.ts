@@ -53,7 +53,7 @@ export function earningSpans(inEffect: BudgetTable[]): Span[] {
 }
 
 /** The weeks that have ended, hold some earning time and come after the last one settled, oldest first. */
-function dueWeeks(spans: Span[], lastSettled: number | null, nowMs: number, weekMs: number, limit: number) {
+export function dueWeeks(spans: Span[], lastSettled: number | null, nowMs: number, weekMs: number, limit: number) {
   const due: number[] = [];
   let next = lastSettled === null ? -Infinity : lastSettled + 1;
   for (const s of spans) {

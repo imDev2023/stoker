@@ -38,3 +38,22 @@ export const priceFromStartTick = (startTick: number, coinDecimals: number, quot
 
 /** Uniswap's protocol fee on a swap's input at the rate the `Swap` event reports, in pips (millionths), rounded up. */
 export const protocolFeeOn = (input: bigint, pips: number) => (pips === 0 ? 0n : mulDivUp(input, BigInt(pips), 1_000_000n));
+
+const Q96N = 1n << 96n;
+
+/**
+ * The Quote Asset it takes, net of every fee, to carry a pool's price from its opening sqrt price to its Graduation
+ * Target's through the Seed Position's liquidity (ADR 0027, #254), raw units, rounded up as v4's `SqrtPriceMath` rounds
+ * an amount in. With the Quote Asset as currency1 a buy raises the pool's price: L * (sqrtTarget - sqrtOpen) / Q96. With
+ * it as currency0 a buy lowers it: L * Q96 * (sqrtOpen - sqrtTarget) / (sqrtOpen * sqrtTarget). The seed spans the
+ * whole move, since the factory places it from the start price up past the target.
+ */
+export function graduationQuote(seedLiquidity: bigint, openSqrtPriceX96: bigint, graduationSqrtPriceX96: bigint, quoteIsCurrency0: boolean): bigint {
+  if (seedLiquidity === 0n || openSqrtPriceX96 === graduationSqrtPriceX96) return 0n;
+  if (!quoteIsCurrency0) {
+    const delta = graduationSqrtPriceX96 > openSqrtPriceX96 ? graduationSqrtPriceX96 - openSqrtPriceX96 : 0n;
+    return mulDivUp(seedLiquidity, delta, Q96N);
+  }
+  const delta = openSqrtPriceX96 > graduationSqrtPriceX96 ? openSqrtPriceX96 - graduationSqrtPriceX96 : 0n;
+  return mulDivUp(mulDivUp(seedLiquidity * Q96N, delta, openSqrtPriceX96), 1n, graduationSqrtPriceX96);
+}

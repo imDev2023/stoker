@@ -584,6 +584,8 @@ describe("the Ledger", () => {
     for (const t of r.totals) {
       const streams = { platformFee: total(t.asset.mint, "platform_fee"), poolFee: total(t.asset.mint, "pool_fee"), feeKey: total(t.asset.mint, "fee_key") };
       expect(t).toEqual({
+        // Each asset's totals are those of the chain it was collected on (#254), the same chain as its entries.
+        chain: entries.find((e) => e.asset.mint === t.asset.mint)!.chain,
         asset: expect.objectContaining({ mint: t.asset.mint }),
         platformFee: streams.platformFee.toString(),
         poolFee: streams.poolFee.toString(),
@@ -604,7 +606,7 @@ describe("the Ledger", () => {
     // Everything here happened today, so today's totals are the all-time totals.
     expect(r.days).toHaveLength(1);
     expect(r.days[0]!.day).toBe(new Date().toISOString().slice(0, 10));
-    expect(r.days[0]!.assets).toEqual(r.totals.map((t) => ({ asset: t.asset, platformFee: t.platformFee, poolFee: t.poolFee, feeKey: t.feeKey, total: t.total })));
+    expect(r.days[0]!.assets).toEqual(r.totals.map((t) => ({ chain: t.chain, asset: t.asset, platformFee: t.platformFee, poolFee: t.poolFee, feeKey: t.feeKey, total: t.total })));
   });
 });
 

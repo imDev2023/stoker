@@ -1,12 +1,14 @@
 import { Hono } from "hono";
 import { AnnounceBudgetTable } from "@launchpad/contract";
+import { chainFilter } from "../chains/filter";
 import type { AppEnv } from "../env";
 import { announceBudgetTable, budgetsPage, budgetVersions, tableVersion } from "../fees/budget";
 
 /** The Budget Table's figures, public (ADR 0019): the Platform Net and what each row has been allotted, has spent and has left. */
 export const budgetRoutes = new Hono<AppEnv>();
 
-budgetRoutes.get("/budgets", async (c) => c.json(await budgetsPage(c.get("db"))));
+/** `?chain=` names the chain whose rows are answered (#254): Solana's unless set, each chain's allotted from what it collected. */
+budgetRoutes.get("/budgets", async (c) => c.json(await budgetsPage(c.get("db"), new Date(), chainFilter(c) ?? "solana")));
 
 /**
  * Operator: announces the next version of the Budget Table. Its shares must sum to 100%, and it takes effect no sooner

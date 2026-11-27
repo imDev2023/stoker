@@ -18,10 +18,11 @@ import {
 import { createSolRoutes, type SolRoutes } from "@launchpad/localnet/routes";
 import { startTurboStandIn, type TurboStandIn } from "./turbo";
 import { startXStandIn } from "./x";
-import { deployStoker, deploymentOf, forkArgs, type EvmStackEnv } from "./evm";
+import { ROBINHOOD_CHAIN } from "@launchpad/evm";
+import { deployStoker, deploymentOf, forkArgs, serverKeyVars, type EvmStackEnv } from "./evm";
 
 export type { EvmStackEnv } from "./evm";
-export { deployStoker, deploymentOf, forkArgs } from "./evm";
+export { deployStoker, deploymentOf, forkArgs, serverKeyVars } from "./evm";
 export { startRpcStandIn, type RpcBehaviour, type RpcFault, type RpcRule, type RpcStandIn } from "./rpc";
 export { runMigrations } from "@launchpad/db/migrate";
 
@@ -491,7 +492,8 @@ export async function startStack(opts: StackOptions = {}): Promise<{ env: StackE
       PLATFORM_LOOKUP_TABLE: platform.lookupTable,
       GRADUATION_TARGET_LAMPORTS: platform.graduationTargetLamports,
       PRICE_SOURCE: "static",
-      QUOTE_PRICES_USD: JSON.stringify({ ...LOCAL_QUOTE_PRICES_USD, ...(unluckyQuote ? { [unluckyQuote]: "1" } : {}) }),
+      // ETH's twin on Solana prices Robinhood Chain's native asset (#254): $3,000, so an ETH is worth 20 SOL here.
+      QUOTE_PRICES_USD: JSON.stringify({ ...LOCAL_QUOTE_PRICES_USD, ...(unluckyQuote ? { [unluckyQuote]: "1" } : {}), [ROBINHOOD_CHAIN.native.priceTwin!]: "3000" }),
       QUOTE_TOKEN_LIST: JSON.stringify(LOCAL_QUOTE_TOKEN_LIST),
       QUOTE_LOGOS: JSON.stringify(LOCAL_QUOTE_LOGOS),
       OPERATIONS_KEY: JSON.stringify(Array.from(localnetKeys().operations.secretKey)),
@@ -546,7 +548,7 @@ export async function startStack(opts: StackOptions = {}): Promise<{ env: StackE
       ANON_PREPARE_RATE_LIMIT_PER_MINUTE: "1000000",
       SOL_ROUTE_SOURCE: "raydium-cpmm",
       SOL_ROUTE_POOLS: JSON.stringify(solRoutes.pools),
-      ...(evm ? { EVM_DEPLOYMENTS: JSON.stringify(deploymentOf(evm)), ROBINHOOD_RPC_URL: evm.rpcUrl } : {}),
+      ...(evm ? { EVM_DEPLOYMENTS: JSON.stringify(deploymentOf(evm)), ROBINHOOD_RPC_URL: evm.rpcUrl, ...serverKeyVars(evm) } : {}),
     };
     const api = await startApi({ port: apiPort, vars, databaseUrl: pg.url });
     cleanups.push(api.stop);

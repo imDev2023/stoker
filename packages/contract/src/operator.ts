@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Chain } from "./chains";
 import { JobRun } from "./revenue";
 
 /**
@@ -74,3 +75,56 @@ export const PreparedFeeChange = z.object({
   lastValidBlockHeight: z.number().int(),
 });
 export type PreparedFeeChange = z.infer<typeof PreparedFeeChange>;
+
+/**
+ * Operator: each EVM chain's keys (ADR 0030, story 47): the Admin and the three server keys, each with its address on
+ * the chain, what it can and cannot do, and whether this API holds the key (a Worker secret); and the Keeper's native
+ * balance, which pays every job's gas and the chain's Volume Rebates (#254).
+ */
+export const EvmKey = z.object({
+  role: z.enum(["admin", "round_key", "ladder_key", "keeper"]),
+  /** The address the chain's StokerKeys names; null when the role is held by nobody (revoked, or never appointed). */
+  address: z.string().nullable(),
+  /** Whether this API holds the role's key, and it is the address the chain names. Never for the Admin, a hardware wallet. */
+  heldByApi: z.boolean(),
+  /** What the role can do, and what no key of ours can do. */
+  can: z.array(z.string()),
+  cannot: z.array(z.string()),
+});
+export type EvmKey = z.infer<typeof EvmKey>;
+
+export const EvmChainKeys = z.object({
+  chain: Chain,
+  name: z.string(),
+  keys: z.array(EvmKey),
+  keeper: z.object({
+    /** The Keeper's native balance in raw units of the chain's native asset; null when the API holds no Keeper key. */
+    balance: z.string().nullable(),
+    symbol: z.string(),
+    decimals: z.number().int(),
+    /** Below this the chain's `keeper_low` alert is open and the Keeper pays no Volume Rebate. */
+    minBalance: z.string(),
+    low: z.boolean(),
+  }),
+});
+export type EvmChainKeys = z.infer<typeof EvmChainKeys>;
+
+export const EvmKeysPage = z.object({ chains: z.array(EvmChainKeys), problem: z.string().nullable() });
+export type EvmKeysPage = z.infer<typeof EvmKeysPage>;
+
+/**
+ * Operator: the owner's record of an EVM chain's Burn budget carried to Solana by hand (ADR 0030): what left the Admin's
+ * address on the EVM chain, in which transaction, and what reached the operations wallet on Solana, in which. The
+ * Ledger gains one entry on each side; Solana's Burn may spend what arrived, and the EVM chain's budget is the less.
+ */
+export const RecordBurnCarry = z.object({
+  chain: Chain.exclude(["solana"]),
+  /** The EVM chain's transaction from the Admin's address. */
+  evmTransaction: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  /** What left, in raw units of the chain's native asset. */
+  amount: z.string().regex(/^[1-9]\d*$/),
+  /** The Solana transaction that paid the operations wallet, and the lamports it paid. */
+  solanaSignature: z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/),
+  lamports: z.string().regex(/^[1-9]\d*$/),
+});
+export type RecordBurnCarry = z.infer<typeof RecordBurnCarry>;

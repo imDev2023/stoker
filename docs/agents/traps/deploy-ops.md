@@ -51,3 +51,9 @@ The text is the original's, one sentence a line.
 - `info@stoker.markets` receives through Cloudflare Email Routing (forwarded to the owner's Gmail) and sends from that Gmail through Brevo's SMTP relay, which signs with the domain's DKIM key (`brevo1` and `brevo2._domainkey`); sending through `smtp.gmail.com` instead brings back Outlook's "can't verify the sender" banner.
   The method, a checklist and a DNS checker are in https://github.com/imDev2023/custom-domain-email.
   The Brevo SMTP key expires after 90 days without use.
+
+## EVM chains' server keys (#254)
+
+- Each EVM deployment's jobs read two Worker secrets, `<CHAIN>_KEEPER_KEY` and `<CHAIN>_LADDER_KEY` (32-byte hex private keys); neither is set anywhere today, and only the owner sets them, after the Admin has appointed their addresses in that chain's StokerKeys (propose, then accept from the key itself).
+- The Keeper pays every job's gas and the chain's Volume Rebates from its own balance, which the owner funds by hand; under `keeperMinBalance` (0.01 of the native asset unless the deployment sets it) the chain's `keeper_low` alert opens and no rebate is paid.
+- `GET /v1/operator/evm-keys` shows each key's address on the chain, whether this API holds it, and the Keeper's balance.

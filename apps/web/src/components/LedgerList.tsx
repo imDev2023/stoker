@@ -30,10 +30,24 @@ const KIND: Record<LedgerKind, string> = {
   // A Reward Launch's Reward Liquidity (#214) and a Liquidity Launch's whole tax (#215) share the kind, and an entry
   // does not say which coin it is, so the row names neither type: a coin's own tax, added to its pool.
   reward_liquidity: "Coin tax added as locked liquidity",
+  // On an EVM chain (#254): Credits the hook recorded in each trade, paid out by a Payout Call, and what the Tax Vault
+  // and the Creator Earnings Destinations did with a coin's tax and earnings.
+  creator_credit: "Creator share paid from Credits",
+  referrer_fee: "Referrer Fee paid from Credits",
+  support_liquidity: "Coin tax added as Support Liquidity",
+  earnings_applied: "Creator Earnings handed to their destination",
+  burn_funded: "Given to a coin's burn",
+  support_funded: "Given to a coin's Support Liquidity",
+  funded_burn: "Given Quote Asset bought back and burned",
+  funded_liquidity: "Given Quote Asset added as Support Liquidity",
+  burn_carry: "Burn budget carried to Solana",
 };
 
 /** Entries that move revenue out of the operations wallet rather than into it. */
-const OUT = new Set<LedgerKind>(["sweep", "creator_forward", "holder_dividend", "arweave_top_up", "metadata_upload", "rebate"]);
+const OUT = new Set<LedgerKind>(["sweep", "creator_forward", "holder_dividend", "arweave_top_up", "metadata_upload", "rebate", "creator_credit", "referrer_fee"]);
+
+/** An EVM chain's entries that were never platform revenue (#254): a coin's own tax and earnings, at work for that coin. */
+const NEITHER = new Set<LedgerKind>(["support_liquidity", "earnings_applied", "burn_funded", "support_funded", "funded_burn", "funded_liquidity", "burn_carry"]);
 
 /**
  * A buyback that names its coin on both entries: a Creator's (ADR 0011), which burns what it buys or adds it to the
@@ -49,7 +63,7 @@ const inItsCoin = (e: LedgerEntry) => e.launch?.mint === e.asset.mint;
  * transaction, so they are a count beside the money spent, neither revenue in nor revenue out. So is a Reward Burn
  * (#183): the holders' tax a coin burns instead of paying out, which was never revenue.
  */
-const isCoinCount = (e: LedgerEntry) => (BUYBACK.has(e.kind) && inItsCoin(e)) || e.kind === "reward_burn" || e.kind === "reward_liquidity";
+const isCoinCount = (e: LedgerEntry) => (BUYBACK.has(e.kind) && inItsCoin(e)) || e.kind === "reward_burn" || e.kind === "reward_liquidity" || NEITHER.has(e.kind);
 
 /**
  * A Reward Sale is two entries: the coins that left the wallet, and the Quote Asset that came in (the holders' pot, not

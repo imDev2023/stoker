@@ -25,6 +25,10 @@ const ARTIFACTS = [
   { name: "StokerKeys", deploy: true },
   { name: "TaxVault", deploy: true },
   { name: "Distributor", deploy: true },
+  // The Creator Earnings Destinations (#248), which the test stack deploys and the Keeper calls (#254).
+  { name: "BurnDestination", deploy: true },
+  { name: "HoldersDestination", deploy: true },
+  { name: "LiquidityDestination", deploy: true },
   { name: "IPoolManager" },
   { name: "IERC20Metadata" },
 ];

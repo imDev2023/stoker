@@ -478,7 +478,7 @@ describe.skipIf(!hasEvm || !process.env.ROBINHOOD_RPC_URL)("EVM chain: Graduatio
       const run = (await runIndexer()) as { summary: { chains: { graduated: number }[] } };
       expect(run.summary.chains[0]!.graduated).toBe(1);
       const coin = LaunchSummary.parse(await get(`/v1/launches/${l.coin}`));
-      expect(coin.graduation).toMatchObject({ pool: l.poolId, signature: receipt.transactionHash, fee: null, creatorTier: null });
+      expect(coin.graduation).toMatchObject({ pool: l.poolId, signature: receipt.transactionHash, fee: null, creatorTier: { tier: 1, activeDays: 0 } });
       expect(coin.curve.status).toBe("graduated");
 
       // The board holds all five coins, and a list filtered to Solana is the list from before any EVM coin existed.
@@ -492,13 +492,17 @@ describe.skipIf(!hasEvm || !process.env.ROBINHOOD_RPC_URL)("EVM chain: Graduatio
 
       // Every Solana job, each to its end: the Cron Triggers as a deployment fires them, then each job by hand.
       for (const expression of [QUOTE_REGISTRY_CRON, GRADUATION_WATCH_CRON, FEE_COLLECTOR_CRON, REWARD_ROUNDS_CRON, BURN_CRON]) await cron(expression);
-      for (const job of ["quote-registry", "fee-collector", "creator-forward", "rebates", "reward-rounds", "burn", "metadata-upload", "mentions", "indexer"]) {
+      for (const job of ["quote-registry", "fee-collector", "creator-forward", "rebates", "reward-rounds", "burn", "metadata-upload", "mentions", "indexer", "keeper", "evm-ladder", "evm-rebates", "evm-quotes"]) {
         const res = await fetch(`${own.env.apiUrl}/v1/operator/jobs/${job}`, { method: "POST", headers: { authorization: `Bearer ${own.env.operatorToken}` } });
         expect(((await res.json()) as { status: string }).status, job).toBe("succeeded");
       }
       const latest = (await operatorGet("/v1/operator/overview")) as { jobs: { job: string; status: string; error: string | null }[] };
       expect(latest.jobs.map((j) => j.job).sort()).toEqual(
-        ["burn", "creator-forward", "fee-collector", "graduation-watch", "indexer", "mentions", "metadata-upload", "quote-registry", "rebates", "reward-rounds", "reward-tax-lock"].sort(),
+        [
+          "burn", "creator-forward", "fee-collector", "graduation-watch", "indexer", "mentions", "metadata-upload", "quote-registry", "rebates", "reward-rounds", "reward-tax-lock",
+          // The EVM chains' jobs (#254), which the same Cron Triggers run after Solana's.
+          "keeper", "evm-ladder", "evm-rebates", "evm-quotes",
+        ].sort(),
       );
       for (const j of latest.jobs) expect(j.status, `${j.job}: ${j.error}`).toBe("succeeded");
     });
