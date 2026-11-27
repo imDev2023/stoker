@@ -5,7 +5,7 @@
  * one made without our API, or in the minute before the original was indexed; after it: allowed, and still said). A
  * Creator may reuse their own coins' name, ticker and image.
  */
-import { and, desc, gt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
 import type { CopyKind, CopyVerdict, ProtectedCoin } from "@launchpad/contract";
 import { launches, type Db } from "@launchpad/db";
 import type { Config } from "../env";
@@ -41,7 +41,10 @@ export async function checkCopies(db: Db, cfg: Config, c: Candidate, now = new D
       imageHash: launches.imageHash, creator: launches.creator, createdAt: launches.createdAt,
     })
     .from(launches)
-    .where(and(gt(launches.createdAt, since), c.creator ? ne(launches.creator, c.creator) : undefined, sql`${launches.createdAt} <= ${now.toISOString()}::timestamptz`))
+    // Solana's coins alone (#279): every caller is Solana's (its prepare, its check, its Indexer), and an EVM coin, which
+    // anyone launches straight on the factory for the chain's gas, would otherwise refuse a Solana launch one edit from
+    // its name for the whole window. What Copy Protection is across chains is #253's to build (story 11).
+    .where(and(eq(launches.chain, "solana"), gt(launches.createdAt, since), c.creator ? ne(launches.creator, c.creator) : undefined, sql`${launches.createdAt} <= ${now.toISOString()}::timestamptz`))
     .orderBy(desc(launches.createdAt))
     .limit(WINDOW_ROWS);
   const until = (r: ProtectedRow) => new Date(r.createdAt.getTime() + cfg.copyProtectionSeconds * 1000);
