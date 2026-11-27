@@ -11,6 +11,7 @@ import {
 import { timeAgo } from "@/lib/format";
 import { SEARCH_HASH } from "@/lib/search";
 import { AssetBar } from "./AssetBar";
+import { useChains } from "./ChainsProvider";
 import type { ExplorerCluster } from "./CoinActions";
 import { CoinGrid } from "./CoinGrid";
 import { CoinTable } from "./CoinTable";
@@ -85,10 +86,12 @@ export function Board({
     }
   }, [initialView]);
 
+  // Every read names the chains this visitor is shown, as the server's first one did (src/lib/chains.ts).
+  const chains = useChains();
   const load = useCallback(async (q: BoardQuery) => {
     try {
       const asked = viewRef.current;
-      const [{ launches: next, nextOffset }, { quotes: inUse }] = await Promise.all([listLaunches({ ...q, fields: [...fieldsFor(asked)] }), listLaunchQuotes()]);
+      const [{ launches: next, nextOffset }, { quotes: inUse }] = await Promise.all([listLaunches({ ...q, chains, fields: [...fieldsFor(asked)] }), listLaunchQuotes(chains)]);
       // A slow answer for a query the visitor has since changed is dropped, and one without the lines the cards now want.
       if (!sameQuery(q, latest.current) || (asked !== viewRef.current && viewRef.current === "cards")) return;
       setLaunches(next);
@@ -100,7 +103,7 @@ export function Board({
       // keep showing the last good list; the next tick retries, and the status line says how old the list is
     }
     setNow(Date.now());
-  }, []);
+  }, [chains]);
 
   useEffect(() => {
     setNow(Date.now());

@@ -3,8 +3,9 @@ import {
   HolderList, LaunchTrust, IssuedApiKey, MarkList, LaunchList, LaunchQuoteList, LaunchSummary, LedgerPage, OperatorAlertList, OperatorOverview, PlatformInfo, PlatformStats, PreparedAirdrop,
   PreparedFeeChange, PreparedLaunch, PreparedTrade, QuoteAsset, QuoteAssetList, Revenue, RewardRoundDetail, RewardRulesPage, TradeList,
   RebatesPage, Region, RegionGatesView, TradeQuote, WalletHolding, WalletRebates, WalletRewards,
-  type AnnounceFeeChange, type CandleInterval, type MarkQuery, type CreateApiKey, type CurveStatus, type LaunchField, type LaunchSort, type PrepareTradeRequest,
-  type QuoteCategory, type QuoteIssuer, type RegionGates, type TaxKind, type TradeQuoteQuery,
+  EvmLaunchOptions, EvmLaunchQuote, EvmTradeQuote, EvmTransactionReport, EvmWalletBalances, LaunchRefusal, PreparedEvmLaunch, PreparedEvmTrade,
+  type AnnounceFeeChange, type CandleInterval, type Chain, type EvmChain, type MarkQuery, type CreateApiKey, type CurveStatus, type LaunchField, type LaunchSort,
+  type PrepareEvmTradeRequest, type PrepareTradeRequest, type QuoteCategory, type QuoteIssuer, type RegionGates, type TaxKind, type TradeQuoteQuery, type TradeSide,
 } from "@launchpad/contract";
 
 /** The web app is a client of the public API like any other; it never builds transactions itself (ADR 0003). */
@@ -65,11 +66,15 @@ export const BOARD_SIZE = 60;
 /** The board's sort and filters, as both the API and the page's URL take them. */
 export type BoardQuery = { sort: LaunchSort; category: QuoteCategory | null; issuer: QuoteIssuer | null; quote: string | null; q: string };
 
+/**
+ * A page of the board. `chains` is required: every list names the chains this site shows (src/lib/chains.ts), so a chain
+ * the API has begun to read never appears on a site that is not ready for it (#253).
+ */
 export async function listLaunches(
-  q: Partial<BoardQuery> & { status?: CurveStatus; creator?: string; limit?: number; offset?: number; fields?: LaunchField[] } = {},
+  q: Partial<BoardQuery> & { chains: readonly Chain[]; status?: CurveStatus; creator?: string; limit?: number; offset?: number; fields?: LaunchField[] },
   signal?: AbortSignal,
 ) {
-  const query = new URLSearchParams({ limit: String(q.limit ?? BOARD_SIZE) });
+  const query = new URLSearchParams({ limit: String(q.limit ?? BOARD_SIZE), chains: q.chains.join(",") });
   if (q.offset) query.set("offset", String(q.offset));
   if (q.fields?.length) query.set("fields", q.fields.join(","));
   for (const key of ["sort", "category", "issuer", "quote", "status", "creator", "q"] as const) {
@@ -79,9 +84,9 @@ export async function listLaunches(
   return read(await apiFetch(`${API_URL}/v1/launches?${query}`, { cache: "no-store", signal }), LaunchList);
 }
 
-/** The Quote Assets Launches are paired with, most used first. */
-export async function listLaunchQuotes() {
-  return read(await apiFetch(`${API_URL}/v1/launches/quotes`, { cache: "no-store" }), LaunchQuoteList);
+/** The Quote Assets Launches are paired with on the chains this site shows, most used first. */
+export async function listLaunchQuotes(chains: readonly Chain[]) {
+  return read(await apiFetch(`${API_URL}/v1/launches/quotes?${new URLSearchParams({ chains: chains.join(",") })}`, { cache: "no-store" }), LaunchQuoteList);
 }
 
 /** Top holders and the Creator's holding, read from the chain by the API. */
@@ -313,6 +318,95 @@ export async function reportLaunch(signature: string, { attempts = 14, waitMs = 
     }
   }
   return false;
+}
+
+// ------------------------------------------------------------------------------------------------------ EVM chains (#253)
+
+/** An API refusal of a launch that names what a chain's own rules refuse, field by field, beside the sentence. */
+export class LaunchRefusedError extends ApiRequestError {
+  constructor(message: string, status: number, readonly refusals: LaunchRefusal[]) {
+    super(message, status);
+  }
+}
+
+/** Everything an EVM chain offers a Launch, read from the chain's contracts: its Quote Assets, launch types, limits and addresses. */
+export async function getEvmLaunchOptions(chain: EvmChain, signal?: AbortSignal) {
+  return read(await apiFetch(`${API_URL}/v1/chains/${chain}/launch-options`, { cache: "no-store", signal }), EvmLaunchOptions);
+}
+
+/**
+ * What a First Buy would buy on an EVM chain and what the launch would cost in the chain's native asset, as the form's
+ * choices stand. `quote` is the Quote Asset's address; the rest may be left out.
+ */
+export async function getEvmLaunchQuote(
+  chain: EvmChain,
+  q: { quote: string; creator?: string | null; firstBuy?: string | null; taxBps?: number; lockBps?: number },
+  signal?: AbortSignal,
+) {
+  const query = new URLSearchParams({ quote: q.quote });
+  if (q.creator) query.set("creator", q.creator);
+  if (q.firstBuy) query.set("firstBuy", q.firstBuy);
+  if (q.taxBps) query.set("taxBps", String(q.taxBps));
+  if (q.lockBps) query.set("lockBps", String(q.lockBps));
+  return read(await apiFetch(`${API_URL}/v1/chains/${chain}/launch-quote?${query}`, { cache: "no-store", signal }), EvmLaunchQuote);
+}
+
+/**
+ * Prepares a launch on an EVM chain: the form's fields with `chain`, and the image on the first call. The answer's
+ * `step` says what the wallet does next. A refusal by the chain's own rules arrives as `LaunchRefusedError`, with each
+ * refused field's sentence.
+ */
+export async function prepareEvmLaunch(form: FormData) {
+  const res = await apiFetch(`${API_URL}/v1/launches/prepare`, { method: "POST", body: form });
+  if (!res.ok) {
+    const body: unknown = await res.clone().json().catch(() => null);
+    const refusals = LaunchRefusal.array().safeParse((body as { refusals?: unknown } | null)?.refusals);
+    const err = ApiError.safeParse(body);
+    if (refusals.success && refusals.data.length > 0) throw new LaunchRefusedError(err.success ? err.data.error : refusals.data[0]!.reason, res.status, refusals.data);
+  }
+  return read(res, PreparedEvmLaunch);
+}
+
+/** What a trade of a coin on an EVM chain pays and what reaches the wallet, read from the chain at one block. */
+export async function getEvmQuote(coin: string, q: { side: TradeSide; amount: string; slippageBps: number; referrer?: string | null }, signal?: AbortSignal) {
+  const query = new URLSearchParams({ side: q.side, amount: q.amount, slippageBps: String(q.slippageBps) });
+  if (q.referrer) query.set("referrer", q.referrer);
+  return read(await apiFetch(`${API_URL}/v1/launches/${encodeURIComponent(coin)}/quote?${query}`, { cache: "no-store", signal }), EvmTradeQuote);
+}
+
+/** Prepares a trade of a coin on an EVM chain; the answer's `step` says what the wallet does next. */
+export async function prepareEvmTrade(body: PrepareEvmTradeRequest) {
+  return read(
+    await apiFetch(`${API_URL}/v1/trades/prepare`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+    PreparedEvmTrade,
+  );
+}
+
+/** What a wallet holds on an EVM chain at one block: the native asset, and each ERC-20 named (at most 8). */
+export async function getEvmWalletBalances(chain: EvmChain, wallet: string, assets: readonly string[], signal?: AbortSignal) {
+  const query = assets.length > 0 ? `?${new URLSearchParams({ assets: assets.join(",") })}` : "";
+  return read(await apiFetch(`${API_URL}/v1/chains/${chain}/wallets/${encodeURIComponent(wallet)}${query}`, { cache: "no-store", signal }), EvmWalletBalances);
+}
+
+/**
+ * Reports a transaction the site sent on an EVM chain and waits until the API has written its events, so the coin's page
+ * finds its coin and a trade shows at once. `pending` means the chain has not made it final yet, and an answer that is
+ * no report means the API has not seen it: either way it is asked again, for about a minute, as `reportLaunch` does on
+ * Solana; after that the Indexer's own run is what finds it. The transaction's block once it is indexed, or null.
+ */
+export async function reportEvmTransaction(chain: EvmChain, hash: string, { attempts = 40, waitMs = 1_500 }: { attempts?: number; waitMs?: number } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    try {
+      const res = await apiFetch(`${API_URL}/v1/transactions/${hash}?${new URLSearchParams({ chain })}`, { method: "POST" });
+      if (!res.ok) continue;
+      const report = EvmTransactionReport.safeParse(await res.json().catch(() => null));
+      if (report.success && report.data.status === "indexed") return { block: report.data.block };
+    } catch {
+      // Not seen yet, or the API was out of reach for a moment: ask again.
+    }
+  }
+  return null;
 }
 
 /** Every announced Platform Fee or Creator Fee change, newest effective time first; public, so none comes as a surprise. */

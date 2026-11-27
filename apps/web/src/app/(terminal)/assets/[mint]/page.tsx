@@ -6,6 +6,7 @@ import { assetKind, CATEGORY_NOTES, formatUsd, graduationInWords, marketNote, ma
 import { isSol, quoteTicker } from "@/lib/format";
 import { breadcrumbList, pageMeta } from "@/lib/meta";
 import { siteOrigin } from "@/lib/origin";
+import { visitorChains } from "@/lib/visitorChains";
 import { Address } from "@/components/Address";
 import { CoinTable } from "@/components/CoinTable";
 import { CopyButton } from "@/components/CopyButton";
@@ -44,10 +45,11 @@ export default async function AssetPage({ params }: Props) {
   const { mint } = await params;
   const quote = await getQuoteAsset(mint);
   if (!quote) notFound();
+  const chains = await visitorChains();
   const [platform, paired, inUse] = await Promise.all([
     getPlatform(),
-    listLaunches({ quote: mint, sort: "market_cap", limit: COINS_SHOWN }),
-    listLaunchQuotes(),
+    listLaunches({ chains, quote: mint, sort: "market_cap", limit: COINS_SHOWN }),
+    listLaunchQuotes(chains),
   ]);
   const ticker = quoteTicker(quote);
   const origin = await siteOrigin();

@@ -7,6 +7,7 @@ import { listLaunches } from "@/lib/api";
 import type { HeroVariant } from "@/lib/landing";
 import { quoteKind } from "@/lib/landing";
 import { quoteTicker } from "@/lib/format";
+import { useChains } from "./ChainsProvider";
 import { CoinImage } from "./CoinImage";
 import { Change } from "./Change";
 import { HeroPicker } from "./HeroPicker";
@@ -40,17 +41,18 @@ function progressOf(launch: LaunchSummary) {
  */
 function Rows({ initial, quotes }: { initial: LaunchSummary[]; quotes: QuoteAsset[] }) {
   const [launches, setLaunches] = useState(initial);
+  const chains = useChains();
   useEffect(() => {
     const id = setInterval(async () => {
       try {
-        const { launches: next } = await listLaunches({ sort: "trending", limit: 5 });
+        const { launches: next } = await listLaunches({ chains, sort: "trending", limit: 5 });
         setLaunches(next);
       } catch {
         // keep showing the last good rows; the next tick retries
       }
     }, REFRESH_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [chains]);
   if (launches.length === 0) return <Cycle quotes={quotes} />;
   return (
     <div className={styles.rows}>
