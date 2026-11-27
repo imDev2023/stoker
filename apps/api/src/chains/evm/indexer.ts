@@ -487,8 +487,9 @@ async function writeTransaction(s: Session, hash: Hex) {
   // The pools this transaction names that are this deployment's, the ones just launched among them.
   await knowPools(s, poolsNamed(receipt.logs, contracts));
   written.traded += await writeTrades(db, c, receipt, blockTime, contracts, pools);
-  for (const b of decodeBurns(receipt.logs, contracts)) {
-    const pool = pools.get(b.poolId);
+  // One read of the supply for each pool burned in, whichever parts of the burn its events name.
+  for (const poolId of new Set(decodeBurns(receipt.logs, contracts).map((b) => b.poolId))) {
+    const pool = pools.get(poolId);
     if (!pool) continue;
     // The supply as it stands now. A coin is only ever burned, so the figure kept is the lowest read: a block read
     // again, or replayed long after, never puts back what a later burn took, and no past block's state is asked for,

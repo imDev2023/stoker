@@ -170,6 +170,33 @@ describe.skipIf(!hasEvm)("EVM chain: the Indexer stays up", () => {
     expect(coin.market.holders).toBe(0);
   });
 
+  test("a burn anyone funded lowers the coin's supply as the coin's own Reward Burn does", async () => {
+    // A standard coin has no tax to burn: what burns is what a wallet gave its burn (#248), as a Creator Earnings
+    // Destination of the burn does with its coin's earnings.
+    const funder = await evmWallet();
+    const l = await launchCoin(await evmWallet());
+    await runIndexer();
+    const launched = BigInt(LaunchSummary.parse(await api(`/v1/launches/${l.coin}`)).supply);
+    // The vault buys nothing while the Launch's Opening Fee runs (#246).
+    await new Promise((r) => setTimeout(r, 21_000));
+    const vault = inject("harness").evm!.taxVault;
+    const wallet = clients().wallet(funder.key);
+    const funded = await clients().public.waitForTransactionReceipt({ hash: await wallet.writeContract({ address: vault, abi: taxVaultAbi, functionName: "fundBurn", args: [l.key, 10n ** 15n], value: 10n ** 15n, gas: SWAP_GAS }) });
+    expect(funded.status).toBe("success");
+    const hash = await wallet.writeContract({ address: vault, abi: taxVaultAbi, functionName: "burn", args: [l.key], gas: SWAP_GAS });
+    const burnt = await clients().public.waitForTransactionReceipt({ hash });
+    expect(burnt.status, burnt.status === "success" ? "" : await whyReverted(hash)).toBe("success");
+    const supply = await clients().public.readContract({ address: l.coin, abi: erc20Abi, functionName: "totalSupply" });
+    expect(supply).toBeLessThan(launched);
+
+    const run = await runIndexer();
+    expect((run.summary as { chains: { burned: number }[] }).chains[0]!.burned).toBe(1);
+    const coin = LaunchSummary.parse(await api(`/v1/launches/${l.coin}`));
+    expect(coin.supply).toBe(supply.toString());
+    // The buy is the vault's own trade, never the funder's.
+    expect(TradeList.parse(await api(`/v1/launches/${l.coin}/trades`)).trades.map((t) => [t.signature, t.trader])).toEqual([[hash, vault]]);
+  });
+
   test("Copy Protection on Solana does not read an EVM coin: a name and a ticker one edit from one stay free there", async () => {
     // Launched straight on the factory, for the chain's gas: nothing of ours prepared it.
     const tag = Array.from(crypto.getRandomValues(new Uint8Array(5)), (b) => "ABCDEFGHJKLMNPQRSTUVWXYZ"[b % 24]).join("");

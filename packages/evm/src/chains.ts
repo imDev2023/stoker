@@ -87,6 +87,8 @@ export type EvmDeployment = {
   keys: Address;
   /** The Tax Vault (#245): its buys are its own, never the wallet's that sent the transaction. */
   taxVault: Address;
+  /** The Distributor (#247), which holds each coin's collected tax and pays Round Roots; its rounds are read by #255. */
+  distributor: Address;
   /** The block the factory was deployed in: the Indexer starts there. */
   fromBlock: number;
   /** The widest `eth_getLogs` block range the provider takes, which a run never asks past; the chain's profile's when unset. */

@@ -106,7 +106,9 @@ function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
         else if (e.eventName === "ReferrerFeeCredited") out.push({ kind: "referrer", logIndex, poolId: e.args.poolId, referrer: checksum(e.args.referrer), fee: e.args.fee });
       } else if (isAddressEqual(log.address, c.taxVault)) {
         const e = decodeEventLog({ abi: taxVaultAbi, data: log.data, topics });
-        if (e.eventName === "RewardBurned") out.push({ kind: "burned", logIndex, poolId: e.args.poolId, coinsBurned: e.args.coinsBurned });
+        // A burn's coins: the part the coin's own Reward Burn share bought, and the part someone funded (#248), each
+        // logged for the one buy that made it.
+        if (e.eventName === "RewardBurned" || e.eventName === "FundedBurned") out.push({ kind: "burned", logIndex, poolId: e.args.poolId, coinsBurned: e.args.coinsBurned });
       } else if (isAddressEqual(log.address, c.poolManager)) {
         const e = decodeEventLog({ abi: iPoolManagerAbi, data: log.data, topics });
         if (e.eventName === "Swap") out.push({ kind: "swap", logIndex, poolId: e.args.id, sender: checksum(e.args.sender), amount0: e.args.amount0, amount1: e.args.amount1, sqrtPriceX96: e.args.sqrtPriceX96, feePips: e.args.fee });
@@ -223,7 +225,11 @@ export function decodeTrades(logs: readonly Log[], c: ChainContracts, pools: Rea
   });
 }
 
-/** The coins the Tax Vault burned in a receipt (#245's Reward Burn), by pool: each lowers its coin's supply. */
+/**
+ * The coins the Tax Vault burned in a receipt, by event: #245's Reward Burn (`RewardBurned`) and a burn someone funded
+ * (#248, `FundedBurned`, a Creator Earnings Destination of the burn among them). One buy may log both, and each lowers
+ * its coin's supply.
+ */
 export function decodeBurns(logs: readonly Log[], c: ChainContracts): { poolId: Hex; coinsBurned: bigint }[] {
   return decodeLogs(logs, c).flatMap((e) => (e.kind === "burned" ? [{ poolId: e.poolId, coinsBurned: e.coinsBurned }] : []));
 }

@@ -24,6 +24,7 @@ The text is the original's, one sentence a line.
   Alchemy's free tier refuses a range past 10 blocks with HTTP 400 and `-32600` in the body (measured 2026-11-25, 0.11 s a call), not with a 200.
   A new read of a contract inside the Indexer goes through those classifiers, never `instanceof ContractFunctionRevertedError`.
 - The EVM Indexer asks for no past block's state: a coin's name, ticker and decimals are fixed and read as they stand, a launch's supply is its own `Transfer` events (minted less the dust the factory burns), and a burn reads the supply at the head and writes `least(supply, read)`, since a coin's supply only falls; so a block read again or replayed out of order never puts back what a later burn took, and the Indexer's RPC need not be an archive (the test stack's fork does need one, to fork at a pinned block).
+- Of #248's events the EVM Indexer reads `FundedBurned` alone, for the supply; a tier raise (`CreatorTierRaised`) and each Destination's work (`EarningsApplied`, `BurnFunded`, `SupportFunded`, `FundedSupportAdded`) are not indexed: a `creator_tiers` row needs the Active Days and the ladder version the raise was made on, which only the ladder's job knows (#254), and a Destination's work is a Ledger entry of a chain that has no Ledger yet (#254, #255).
 - The EVM Indexer's writes carry `factory`, and it finds a pool by its id among its own deployment's coins: a query for "the chain's pools" would hand a redeployed factory the old one's, whose hook's events it cannot read.
 
 ## The Ledger, the fees and the Burn

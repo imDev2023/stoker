@@ -77,7 +77,7 @@ export type EvmStackEnv = {
  * (2,000 blocks, a paid tier's size); a test behind a stricter RPC sees the range shrink.
  */
 export const deploymentOf = (e: EvmStackEnv) => [
-  { chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, taxVault: e.taxVault, fromBlock: e.fromBlock, logBlockRange: 2_000 },
+  { chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, taxVault: e.taxVault, distributor: e.distributor, fromBlock: e.fromBlock, logBlockRange: 2_000 },
 ];
 
 /** Finds the salt that gives the hook, made by the factory at `factory`, an address carrying exactly its permission bits. */
