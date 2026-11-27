@@ -238,4 +238,53 @@ describe.skipIf(!hasEvm)("EVM chain: the Indexer and its provider", () => {
     expect((await indexerRun(wide.url)).run!.traded).toBe(1);
     expect((await tradesOf(l.coin)).map((t) => t.signature)).toEqual([receipt.transactionHash]);
   });
+
+  test("a transaction that fails while its block is read again is tried again by the next run, never left open behind the cursor", async () => {
+    await caughtUp(wide.url);
+    const trader = await evmWallet();
+    const l = await launchCoin(await evmWallet());
+    await caughtUp(wide.url);
+    const { receipt } = await swapExactIn(trader, l, "buy", 10n ** 15n);
+    // A node behind the head: the run passes the trade's block without the trade, and the cursor is past it.
+    rpc.behaviour.lagBlocks = ROBINHOOD_CHAIN.finalityDepth + 15;
+    const short = await indexerRun(wide.url);
+    expect(short.run!.to).toBeGreaterThanOrEqual(Number(receipt.blockNumber));
+    expect(await tradesOf(l.coin)).toEqual([]);
+    rpc.behaviour.lagBlocks = 0;
+    // The next run reads that block again and finds the trade, and the provider fails its receipt for that run.
+    const outage = rpc.fail({ method: "eth_getTransactionReceipt", fault: INTERNAL });
+    const failed = await indexerRun(wide.url);
+    expect(failed.run!.failed).toMatchObject({ hash: receipt.transactionHash, attempts: 1 });
+    outage.stop();
+    // The run after it starts from the failure, though the cursor is past its block and no node was behind this time.
+    const mended = await indexerRun(wide.url);
+    expect(mended.status).toBe("succeeded");
+    expect(mended.run).toMatchObject({ failed: null, skipped: [], traded: 1 });
+    expect((await tradesOf(l.coin)).map((t) => t.signature)).toEqual([receipt.transactionHash]);
+    expect((await failures()).map((f) => f.transaction)).not.toContain(receipt.transactionHash);
+  });
+
+  test("a replay never runs beside the Indexer: it answers 409 while a run holds the lease, and reads once the run has ended", async () => {
+    await caughtUp(wide.url);
+    const l = await launchCoin(await evmWallet());
+    await clients().test.mine({ blocks: 200 });
+    const replay = () =>
+      fetch(`${env().apiUrl}/v1/operator/indexer/replay`, {
+        method: "POST", headers: { ...operator(), "content-type": "application/json" },
+        body: JSON.stringify({ chain: "robinhood", fromBlock: Number(l.receipt.blockNumber), toBlock: Number(l.receipt.blockNumber) }),
+      });
+    const latest = async () => ((await (await fetch(`${env().apiUrl}/v1/operator/jobs?job=indexer`, { headers: operator() })).json()) as { runs: { status: string }[] }).runs[0]?.status;
+    // A slow provider, so the run lasts seconds: the replay arrives while it holds the lease.
+    rpc.behaviour.delayMs = 400;
+    const running = indexerRun(wide.url);
+    for (let i = 0; i < 200 && (await latest()) !== "running"; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(await latest()).toBe("running");
+    const refused = await replay();
+    expect([refused.status, ((await refused.json()) as { error: string }).error]).toEqual([409, expect.stringContaining("the Indexer is running")]);
+    rpc.behaviour.delayMs = 0;
+    expect((await running).status).toBe("succeeded");
+    const allowed = await replay();
+    expect(allowed.status).toBe(200);
+    expect(IndexerReplay.parse(await allowed.json())).toMatchObject({ launched: 0, failed: [], next: null });
+  });
 });

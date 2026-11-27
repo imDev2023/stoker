@@ -150,9 +150,10 @@ function reasonOf(e: unknown, c: EvmChainConfig) {
 /**
  * A coin's or an asset's name or ticker as it is stored (#279): no control characters (Postgres refuses a NUL) and no
  * format characters, which hide or reorder what a page shows (a right-to-left override, a zero-width space or joiner,
- * a byte-order mark), no line or paragraph separator, trimmed, at most `max` characters. It can come out empty.
+ * a byte-order mark), no line or paragraph separator, none of the letters and symbols that draw as nothing (the Hangul
+ * fillers, the blank Braille pattern), trimmed, at most `max` characters. It can come out empty.
  */
-export const cleanText = (s: string, max: number) => [...s.replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/gu, "").trim()].slice(0, max).join("").trim();
+export const cleanText = (s: string, max: number) => [...s.replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u2800]/gu, "").trim()].slice(0, max).join("").trim();
 
 /** A coin with no name or ticker a page can show goes by its address, shortened as an explorer shows one. */
 const orAddress = (text: string, address: Address) => text || `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -289,9 +290,9 @@ async function writeCounted(s: Session, hash: Hex) {
  * sender) and the PoolManager's `Swap` beside our hook's fees come together.
  *
  * The cursor moves as blocks are written, so a run that dies reads from there again; every write is idempotent. A
- * transaction that fails stops the run, which reads it again on its next runs, and is set aside only after them (three
- * when it can never be written, sixty when the failure may be the provider's), counted by the chain's one alert until
- * a replay writes it. A provider that refuses a range has it halved, and it grows back to the deployment's setting; a
+ * transaction that fails stops the run, which reads it again on its next runs (by its hash when the cursor is already
+ * past its block), and is set aside only after them (three when it can never be written, sixty when the failure may be
+ * the provider's), counted by the chain's one alert until a replay writes it. A provider that refuses a range has it halved, and it grows back to the deployment's setting; a
  * rate limit ends the run where it is; a run stops at its budget of seconds and requests, between two blocks.
  */
 export async function indexEvmChain(db: Db, c: EvmChainConfig): Promise<EvmIndexRun> {
@@ -348,14 +349,25 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig): Promise<EvmIndex
   };
   const hadFailures = s.failures.size > 0;
   try {
-    const { through, stopped } = await scan(s, from, target, write, async (to, wrote) => {
-      indexed = Math.max(indexed, to);
-      if (!wrote && ++unsaved < SAVE_EVERY_RANGES) return;
-      unsaved = 0;
-      // The block's time is read once a run, at its end, so keeping up costs one `getLogs` a range and no more.
-      await saveCursor({ indexedBlockTime: null, ...rangeState() });
-    });
-    indexed = Math.max(indexed, through);
+    // A transaction that failed while its block was read again sits behind the cursor, where no later scan meets it
+    // (the blocks read again are the last run's, and that run moved on). Each one still being tried is read by its
+    // hash before anything else, oldest first, and counts, stops the run and is set aside like any other.
+    let stopped: Stop | null = null;
+    const behind = [...s.failures.values()].filter((f) => !f.setAsideAt && f.block < unread).sort((a, b) => a.block - b.block);
+    for (const f of behind) if ((stopped = await write(f.transaction as Hex, f.block))) break;
+    // An old trade written late moves no market back (`insertTrade`), so the prices the blocks ahead start from are read again.
+    if (behind.length > 0) s.pools.clear();
+    if (!stopped) {
+      const scanned = await scan(s, from, target, write, async (to, wrote) => {
+        indexed = Math.max(indexed, to);
+        if (!wrote && ++unsaved < SAVE_EVERY_RANGES) return;
+        unsaved = 0;
+        // The block's time is read once a run, at its end, so keeping up costs one `getLogs` a range and no more.
+        await saveCursor({ indexedBlockTime: null, ...rangeState() });
+      });
+      indexed = Math.max(indexed, scanned.through);
+      stopped = scanned.stopped;
+    }
     run.leftForLater = stopped !== null;
     run.rateLimited = stopped === "rate limit";
   } finally {
@@ -378,7 +390,8 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig): Promise<EvmIndex
  * The operator's replay (#279): reads a transaction's block, or a range of blocks, again and writes what is missing,
  * a transaction set aside among it. A transaction that launched a coin is followed to where the Indexer has read, so
  * the trades it passed over while the coin was unknown are found. It never moves the cursor, and it stops at the same
- * budget as a run, answering where to go on from.
+ * budget as a run, answering where to go on from. Its caller holds the Indexer's lease: a run that met a coin's pool
+ * before the replay wrote the coin would go on passing its trades over, past where the replay reads to.
  */
 export async function replayEvmChain(db: Db, c: EvmChainConfig, ask: ReplayIndexer): Promise<IndexerReplay> {
   const s = await session(db, c);

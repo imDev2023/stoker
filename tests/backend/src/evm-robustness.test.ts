@@ -85,8 +85,9 @@ describe.skipIf(!hasEvm)("EVM chain: the Indexer stays up", () => {
   test("a coin's name and ticker are stored without characters that hide or reorder text, and never empty", async () => {
     // A NUL and a bell (Postgres refuses the first), a right-to-left override, a zero-width space and joiner, a C1 control.
     const dressed = await launchCoin(await evmWallet(), { name: "Nul\u0000Coin\u0007 \u202Egnp.exe\u200B\u200D\u0085", symbol: "N\u0000\u202EL\u200B" });
-    // Nothing a page can show: only invisible characters, and only spaces.
-    const unnamed = await launchCoin(await evmWallet(), { name: "\u200B\u202E\u2060\uFEFF", symbol: "   " });
+    // Nothing a page can show: only invisible characters and letters that draw as nothing (a Hangul filler, the blank
+    // Braille pattern), and only spaces.
+    const unnamed = await launchCoin(await evmWallet(), { name: "\u200B\u202E\u2060\uFEFF\u3164\u2800", symbol: " \u115F\uFFA0 " });
     await runIndexer();
     expect(LaunchSummary.parse(await api(`/v1/launches/${dressed.coin}`))).toMatchObject({ name: "NulCoin gnp.exe", symbol: "NL" });
     // A coin with no name of its own goes by its address, as an explorer shows one.

@@ -23,7 +23,7 @@ import { sniffImageType } from "./images";
 import {
   buildLaunch, creatorLockChoice, launchQuoteAsset, loadDraft, newMintKeyNonce, refuseWith, resolveLaunchModes, saveDraft, taxChoice,
 } from "./launch";
-import { runJob, toJobRun } from "./jobs";
+import { runJob, toJobRun, withLease } from "./jobs";
 import { runIndexers } from "./chains/indexers";
 import { evmChains, withoutRpcUrl } from "./chains/evm/config";
 import { openFailures, replayEvmChain, ReplayRefused } from "./chains/evm/indexer";
@@ -377,7 +377,9 @@ app.get("/v1/operator/indexer/failures", async (c) => {
 
 /**
  * Reads a transaction, or a range of blocks, of an EVM chain again and writes what is missing (#279): the way back for
- * a transaction the Indexer set aside. It takes no lease: every write is idempotent, so it may run beside the Indexer.
+ * a transaction the Indexer set aside. It holds the Indexer's lease and answers 409 while a run has it: every write is
+ * idempotent, but a run that met a coin's pool before the replay wrote the coin passes that coin's trades over to its
+ * own end, past where the replay reads to.
  */
 app.post("/v1/operator/indexer/replay", async (c) => {
   const body = ReplayIndexer.safeParse(await c.req.json().catch(() => null));
@@ -385,9 +387,10 @@ app.post("/v1/operator/indexer/replay", async (c) => {
   const deployment = evmChains(c.env).find((d) => d.chain === body.data.chain);
   if (!deployment) return c.json({ error: `this API reads no EVM chain called ${body.data.chain}` }, 400);
   try {
-    const replay = await replayEvmChain(c.get("db"), deployment, body.data);
+    const replay = await withLease(c.get("db"), "indexer", () => replayEvmChain(c.get("db"), deployment, body.data));
+    if (!replay) return c.json({ error: "the Indexer is running: ask again when its run has ended" }, 409);
     await notifyPending(c.get("db"), c.get("cfg"));
-    return c.json(replay);
+    return c.json(replay.done);
   } catch (e) {
     if (e instanceof ReplayRefused) return c.json({ error: e.message }, 400);
     return c.json({ error: withoutRpcUrl(e, deployment).message.split("\n")[0] }, 502);
