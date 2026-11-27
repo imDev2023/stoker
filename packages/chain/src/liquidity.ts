@@ -381,12 +381,12 @@ export type LiquidityAddRequest = {
 
 /**
  * The compute-unit limit of a liquidity addition. On the local chain one used 197,000 units with its accounts open
- * already and up to 221,000 when it opened them, with a Token-2022 coin; most of it is the lock, which creates the Fee
+ * already and up to 234,000 when it opened them, with a Token-2022 coin; most of it is the lock, which creates the Fee
  * Key's mint, its account and the position's record. The rest is room for the addresses the programs derive, whose
  * cost varies from one to the next: every addition has a new Fee Key, so its account, its metadata and the position's
  * record are new addresses each time, searched for on-chain at 1,500 units a try and, where a program derives one more
  * than once, up to 4,500 (#282, and `PLATFORM_FEE_CLAIM_COMPUTE_UNITS` in revenue.ts). At the 300,000 this was before
- * that left 17 tries of the costliest; this leaves 39. The operations wallet signs every addition, at no price a unit.
+ * that left 14 tries of the costliest; this leaves 36. The operations wallet signs every addition, at no price a unit.
  */
 const LIQUIDITY_ADD_COMPUTE_UNITS = 400_000;
 

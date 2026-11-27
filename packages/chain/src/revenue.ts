@@ -57,7 +57,7 @@ const PLATFORM_FEE_CLAIM_COMPUTE_UNITS = 250_000;
  * A pool's creator fee: 79,000 units when it opens both of the creator's accounts, and 3,000 for every further try of
  * either's address (our own instruction that opens it, and the pool program's check). The coin's account is a new
  * address with every coin: at the 150,000 this was before, a coin whose account takes 25 tries could never have been
- * collected, and one of 18 where the Quote Asset's own account takes 8, as the worst of mainnet's does.
+ * collected, nor one of fewer tries where the Quote Asset's own account is unlucky too.
  * Room for 56 more tries between the two.
  */
 const POOL_CREATOR_FEE_COMPUTE_UNITS = 250_000;
