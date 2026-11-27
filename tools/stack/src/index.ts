@@ -572,7 +572,9 @@ export async function startStack(opts: StackOptions = {}): Promise<{ env: StackE
         ["exec", "next", "dev", "--port", String(webPort), "--hostname", "127.0.0.1"],
         join(REPO, "apps", "web"),
         // A separate build directory, so tests never fight a developer's running `next dev` for its lock.
-        { NEXT_PUBLIC_API_URL: apiUrl, API_KEY: webApiKey, NEXT_DIST_DIR: `.next-test-${webPort}`, NEXT_TELEMETRY_DISABLED: "1" },
+        // The fork's chain is a preview chain of the test site (#253): shown only to a browser with the preview cookie, so every
+        // page a test opens without it is Solana's alone, as the site is deployed today.
+        { NEXT_PUBLIC_API_URL: apiUrl, API_KEY: webApiKey, NEXT_DIST_DIR: `.next-test-${webPort}`, NEXT_TELEMETRY_DISABLED: "1", ...(evm ? { NEXT_PUBLIC_PREVIEW_CHAINS: evm.chain } : {}) },
       );
       // `next dev` may still be writing as it stops, so the removal tries again for a moment.
       cleanups.push(web.stop, () => rmSync(join(REPO, "apps", "web", `.next-test-${webPort}`), { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
