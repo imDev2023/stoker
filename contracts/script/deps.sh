@@ -18,7 +18,9 @@ fetch() {
   fi
   # Nested dependencies (v4-core, v4-periphery, permit2, OpenZeppelin contracts) are pinned by
   # the gitlinks inside each repository at this revision, so they follow from the one rev above.
-  git -C "lib/$dir" submodule update --init --recursive --quiet
+  if [ "${4:-}" != "no-submodules" ]; then
+    git -C "lib/$dir" submodule update --init --recursive --quiet
+  fi
   echo "lib/$dir $(git -C "lib/$dir" rev-parse HEAD)"
 }
 
@@ -26,3 +28,7 @@ mkdir -p lib
 fetch forge-std https://github.com/foundry-rs/forge-std 8bbcf6e3f8f62f419e5429a0bd89331c85c37824
 # OpenZeppelin uniswap-hooks v1.2.1; v4-core, v4-periphery and OpenZeppelin contracts are reached through it.
 fetch uniswap-hooks https://github.com/OpenZeppelin/uniswap-hooks acbd604c409a827f7f98c9517236da860c4fca1a
+# The security standards (#251): the property mixins the whole-set invariant campaign inherits, and the
+# pre-deployment gate CI runs (gate/check.py with the robinhood-4663 profile). Its own forge-std is left
+# out: the mixins compile against the one above (remappings.txt), so there is one `Test` in the build.
+fetch evm-security-standards https://github.com/imDev2023/evm-security-standards 96a6eb89e922b39fb832c801c138310cab80301b no-submodules
