@@ -3,13 +3,13 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { WSOL_MINT } from "@launchpad/chain";
 import {
-  BUDGET_ROWS, BUDGET_TOTAL_BPS, SPENDING_ROWS, type BudgetRow, type BudgetShares, type BudgetsPage, type BudgetTableVersion, type PublishedBudgetTable,
+  type Chain, BUDGET_ROWS, BUDGET_TOTAL_BPS, SPENDING_ROWS, type BudgetRow, type BudgetShares, type BudgetsPage, type BudgetTableVersion, type PublishedBudgetTable,
   type SpendingRow,
 } from "@launchpad/contract";
 import { budgetTables, ledgerEntries, type Db } from "@launchpad/db";
 import { rebatesOwed } from "../rebates/owed";
 import { creatorMoney } from "./creatorShares";
-import { lamportsWorth, quotePrices, type QuotePrice } from "./value";
+import { allPrices, worthOn, type QuotePrice } from "./value";
 
 const WSOL = WSOL_MINT.toBase58();
 
@@ -24,6 +24,16 @@ export const REVENUE_KINDS = ["platform_fee", "pool_fee", "fee_key"] as const;
 const SPENT_KINDS: Partial<Record<SpendingRow, readonly string[]>> = {
   burn: ["burn", "burn_liquidity"], flywheel: ["flywheel", "flywheel_liquidity"], rebates: ["rebate"],
 };
+
+/**
+ * On an EVM chain (#254, ADR 0030) each row is allotted from that chain's own net, where its money is: the Burn's budget
+ * leaves only when the owner carries it to Solana (`burn_carry`), the rebates are paid in the chain's native asset, and
+ * the Flywheel's budget stays on the chain, spent by nothing yet. Each is valued in SOL at the latest prices.
+ */
+const EVM_SPENT_KINDS: Partial<Record<SpendingRow, readonly string[]>> = { burn: ["burn_carry"], rebates: ["rebate"] };
+
+/** The kind under which the owner's carry of an EVM chain's Burn budget reaches Solana's operations wallet, which Solana's Burn may spend. */
+export const BURN_CARRY_KIND = "burn_carry";
 
 export type BudgetTable = typeof budgetTables.$inferSelect;
 
@@ -76,21 +86,37 @@ export async function announceBudgetTable(db: Db, shares: BudgetShares, effectiv
  * their share is the platform's, ADR 0015). SOL at par; an asset without a price, or a coin a Fee Key paid out, counts
  * for nothing until it has one.
  */
-async function netLamports(db: Db, prices: Map<string, QuotePrice>, before: Date | null) {
+async function netLamports(db: Db, prices: Map<string, QuotePrice>, before: Date | null, chain = "solana") {
   const collected = await db
     .select({ mint: ledgerEntries.assetMint, amount: sql<string>`sum(${ledgerEntries.amount})::text` })
     .from(ledgerEntries)
-    .where(and(inArray(ledgerEntries.kind, REVENUE_KINDS), before ? sql`${ledgerEntries.blockTime} < ${before.toISOString()}::timestamptz` : undefined))
+    .where(and(inArray(ledgerEntries.kind, REVENUE_KINDS), eq(ledgerEntries.chain, chain), before ? sql`${ledgerEntries.blockTime} < ${before.toISOString()}::timestamptz` : undefined))
     .groupBy(ledgerEntries.assetMint);
-  // What was collected for Creators is theirs, forwarded or not, and no part of any budget.
-  const creators = await creatorMoney(db, before ?? undefined);
+  // What was collected for Creators is theirs, forwarded or not, and no part of any budget. On an EVM chain the hook
+  // credits their share apart, so what reaches the Admin is the platform's alone (ADR 0025).
+  const creators = chain === "solana" ? await creatorMoney(db, before ?? undefined) : new Map<string, { accrued: bigint }>();
   let net = 0n;
   for (const c of collected) {
     const gross = BigInt(c.amount);
     const theirs = creators.get(c.mint)?.accrued ?? 0n;
-    net += lamportsWorth(c.mint, gross > theirs ? gross - theirs : 0n, prices.get(c.mint)) ?? 0n;
+    net += worthOn(chain, c.mint, gross > theirs ? gross - theirs : 0n, prices) ?? 0n;
   }
   return net;
+}
+
+/**
+ * The Platform Net of every chain that has collected anything, Solana always first, and all of them together (#254):
+ * the one figure the Budget Table divides, which each chain's rows take their share of where its money is.
+ */
+export async function chainNets(db: Db) {
+  const prices = await allPrices(db);
+  const others = await db
+    .selectDistinct({ chain: ledgerEntries.chain })
+    .from(ledgerEntries)
+    .where(and(inArray(ledgerEntries.kind, REVENUE_KINDS), sql`${ledgerEntries.chain} <> 'solana'`));
+  const chains = ["solana", ...others.map((o) => o.chain).sort()];
+  const nets = await Promise.all(chains.map(async (chain) => ({ chain, lamports: await netLamports(db, prices, null, chain) })));
+  return { chains: nets, together: nets.reduce((sum, n) => sum + n.lamports, 0n) };
 }
 
 /** What one spending row has been allotted, has spent and has left, in lamports. */
@@ -112,12 +138,12 @@ export type Budgets = {
  * starting from nothing and the last running to now. While a row's share has never changed that is its share of the
  * whole net, the formula ADR 0006 had. What a row has left is its allotment less what the Ledger shows it spent.
  */
-export async function budgets(db: Db, now = new Date()): Promise<Budgets> {
+export async function budgets(db: Db, now = new Date(), chain = "solana"): Promise<Budgets> {
   const { inEffect, inForce } = split(await budgetVersions(db), now);
-  const prices = await quotePrices(db);
+  const prices = await allPrices(db);
   // The net up to each later version's start, then all of it: one figure per version in effect.
   const upTo: bigint[] = [];
-  for (const next of [...inEffect.slice(1).map((t) => t.effectiveAt), null]) upTo.push(await netLamports(db, prices, next));
+  for (const next of [...inEffect.slice(1).map((t) => t.effectiveAt), null]) upTo.push(await netLamports(db, prices, next, chain));
   const net = upTo.at(-1)!;
   const allotted = (row: BudgetRow) => {
     let weighted = 0n;
@@ -126,18 +152,24 @@ export async function budgets(db: Db, now = new Date()): Promise<Budgets> {
     });
     return weighted > 0n ? weighted / BigInt(BUDGET_TOTAL_BPS) : 0n;
   };
-  const kinds = Object.values(SPENT_KINDS).flat();
+  const spentKinds = chain === "solana" ? SPENT_KINDS : EVM_SPENT_KINDS;
+  const kinds = [...Object.values(spentKinds).flat(), BURN_CARRY_KIND];
   const spentRows = await db
-    .select({ kind: ledgerEntries.kind, lamports: sql<string>`coalesce(sum(${ledgerEntries.amount}), 0)::text` })
+    .select({ kind: ledgerEntries.kind, mint: ledgerEntries.assetMint, amount: sql<string>`coalesce(sum(${ledgerEntries.amount}), 0)::text` })
     .from(ledgerEntries)
-    .where(and(inArray(ledgerEntries.kind, kinds), eq(ledgerEntries.assetMint, WSOL)))
-    .groupBy(ledgerEntries.kind);
-  const spentOf = new Map(spentRows.map((r) => [r.kind, BigInt(r.lamports)]));
+    // Solana's rows spend SOL alone, as they always have; an EVM chain's spend its native asset.
+    .where(and(inArray(ledgerEntries.kind, kinds), eq(ledgerEntries.chain, chain), chain === "solana" ? eq(ledgerEntries.assetMint, WSOL) : undefined))
+    .groupBy(ledgerEntries.kind, ledgerEntries.assetMint);
+  const spentOf = new Map<string, bigint>();
+  for (const r of spentRows) spentOf.set(r.kind, (spentOf.get(r.kind) ?? 0n) + (worthOn(chain, r.mint, BigInt(r.amount), prices) ?? 0n));
+  // What the owner carried to Solana from the EVM chains' Burn budgets (ADR 0030) is Solana's Burn's to spend too.
+  const received = chain === "solana" ? (spentOf.get(BURN_CARRY_KIND) ?? 0n) : 0n;
   const shares = sharesOf(inForce);
   const rows = Object.fromEntries(SPENDING_ROWS.map((row): [SpendingRow, RowBudget] => {
     const total = allotted(row);
-    const spent = (SPENT_KINDS[row] ?? []).reduce((sum, kind) => sum + (spentOf.get(kind) ?? 0n), 0n);
-    return [row, { shareBps: shares[row], allotted: total, spent, available: total > spent ? total - spent : 0n }];
+    const spent = (spentKinds[row] ?? []).reduce((sum, kind) => sum + (spentOf.get(kind) ?? 0n), 0n);
+    const has = total + (row === "burn" ? received : 0n);
+    return [row, { shareBps: shares[row], allotted: total, spent, available: has > spent ? has - spent : 0n }];
   })) as Record<SpendingRow, RowBudget>;
   const toRows = SPENDING_ROWS.reduce((sum, row) => sum + rows[row].allotted, 0n);
   return { revenueLamports: net, inForce, rows, treasury: { shareBps: shares.treasury, allotted: net > toRows ? net - toRows : 0n } };
@@ -154,10 +186,13 @@ export async function reservedLamports(db: Db) {
 }
 
 /** `GET /v1/budgets`: the net, every version, and each row's allotment, spending and remainder. */
-export async function budgetsPage(db: Db, now = new Date()): Promise<BudgetsPage> {
-  const [all, b] = [await budgetVersions(db), await budgets(db, now)];
+export async function budgetsPage(db: Db, now = new Date(), chain: Chain = "solana"): Promise<BudgetsPage> {
+  const [all, b, nets] = [await budgetVersions(db), await budgets(db, now, chain), await chainNets(db)];
   return {
+    chain,
     netLamports: b.revenueLamports.toString(),
+    chains: nets.chains.map((n) => ({ chain: n.chain as Chain, netLamports: n.lamports.toString() })),
+    togetherLamports: nets.together.toString(),
     versions: all.map(tableVersion),
     inForce: b.inForce.version,
     rows: BUDGET_ROWS.map((row) =>

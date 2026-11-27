@@ -380,7 +380,8 @@ launchRoutes.get("/launches/:mint", async (c) => {
   const cfg = c.get("cfg");
   // A graduated coin's place on the Creator Ladder (ADR 0020), which only this answer carries.
   // Solana's Creator Ladder alone: an EVM coin's tier is raised by the ladder key on its chain (#248).
-  const tier = row.graduation && row.launch.chain === "solana" ? (await coinTiers(c.get("db"), [row.launch.mint])).get(row.launch.mint)! : null;
+  // A graduated coin's place on the Creator Ladder, on either chain (#254): on an EVM chain the tier the ladder key raised.
+  const tier = row.graduation ? (await coinTiers(c.get("db"), [row.launch.mint])).get(row.launch.mint)! : null;
   return c.json(toSummary(cfg, row, tier));
 });
 

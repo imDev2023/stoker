@@ -62,6 +62,10 @@ export async function launchCoin(
   opts: {
     quote?: Address; firstBuy?: bigint; name?: string; symbol?: string; reward?: { taxBps: number; burnShareBps: number; liquidityShareBps: number };
     lock?: { bps: number; cliff: number; unlock: number };
+    /** A Stoke Launch's tax (#215, `liquidity` in code): all of it Support Liquidity. */
+    stoke?: { taxBps: number };
+    /** The Creator Earnings Destination the Creator's Credits are recorded to (#248): the Creator's own wallet unless set. */
+    destination?: Address;
   } = {},
 ): Promise<EvmLaunch> {
   const e = evm()!;
@@ -71,8 +75,8 @@ export async function launchCoin(
   const wallet = clients().wallet(creator.key);
   const hash = await wallet.writeContract({
     address: e.factory, abi: stokerFactoryAbi, functionName: "launch",
-    args: [{ name: opts.name ?? `Fork Coin ${tag}`, symbol: opts.symbol ?? `F${tag}`, quote, salt: keccak256(toHex(tag)), creatorDestination: NATIVE, firstBuy,
-      launchType: opts.reward ? LAUNCH_TYPE.reward : LAUNCH_TYPE.standard, taxBps: opts.reward?.taxBps ?? 0, burnShareBps: opts.reward?.burnShareBps ?? 0,
+    args: [{ name: opts.name ?? `Fork Coin ${tag}`, symbol: opts.symbol ?? `F${tag}`, quote, salt: keccak256(toHex(tag)), creatorDestination: opts.destination ?? NATIVE, firstBuy,
+      launchType: opts.reward ? LAUNCH_TYPE.reward : opts.stoke ? LAUNCH_TYPE.liquidity : LAUNCH_TYPE.standard, taxBps: opts.reward?.taxBps ?? opts.stoke?.taxBps ?? 0, burnShareBps: opts.reward?.burnShareBps ?? 0,
       liquidityShareBps: opts.reward?.liquidityShareBps ?? 0, payoutAsset: 0,
       creatorLockBps: opts.lock?.bps ?? 0, creatorLockCliff: opts.lock?.cliff ?? 0, creatorLockUnlock: opts.lock?.unlock ?? 0 }],
     gas: SWAP_GAS,
@@ -283,3 +287,30 @@ export async function operatorAlerts(apiUrl = env().apiUrl) {
   const res = await fetch(`${apiUrl}/v1/operator/alerts`, { headers: { authorization: `Bearer ${env().operatorToken}` } });
   return ((await res.json()) as { alerts: { kind: string; subject: string; message: string; resolvedAt: string | null }[] }).alerts;
 }
+
+/** Runs one of the API's jobs by hand, as the operator does, and answers with the run. */
+export async function runApiJob(job: string, apiUrl = env().apiUrl) {
+  const res = await fetch(`${apiUrl}/v1/operator/jobs/${job}`, { method: "POST", headers: { authorization: `Bearer ${env().operatorToken}` } });
+  return (await res.json()) as { status: string; error: string | null; summary: { chains: Record<string, unknown>[] } };
+}
+
+/**
+ * Runs the Keeper (#254) as its cron does. It decides on the chain's `safe` block, which anvil answers 32 blocks behind
+ * its head, so the fork first mines past it, as the chain would in seconds; then the Indexer reads what it sent.
+ */
+export async function runKeeper(apiUrl = env().apiUrl) {
+  await clients().test.mine({ blocks: 40 });
+  const run = await runApiJob("keeper", apiUrl);
+  if (run.status !== "succeeded") throw new Error(`keeper run ${run.status}: ${run.error}`);
+  await runIndexer(apiUrl);
+  return run.summary.chains[0] as { paid: { asset: string; owners: number; hash: string }[]; support: { coin: string; hash: string }[]; burned: { coin: string; hash: string }[]; applied: { coin: string; hash: string }[]; refused: { call: string; subject: string; reason: string }[] };
+}
+
+/** One page of the Ledger, as anyone reads it. */
+export async function ledgerOf(query: string, apiUrl = env().apiUrl) {
+  const res = await fetch(`${apiUrl}/v1/ledger?limit=100&${query}`);
+  if (!res.ok) throw new Error(`GET /v1/ledger?${query}: ${res.status} ${await res.text()}`);
+  return ((await res.json()) as { entries: LedgerRow[] }).entries;
+}
+
+export type LedgerRow = { chain: string; signature: string; index: number; kind: string; asset: { mint: string; decimals: number }; amount: string; source: string; destination: string; launch: { mint: string } | null; slot: number };

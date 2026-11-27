@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Chain } from "./chains";
 
 /**
  * The Budget Table (ADR 0019): how the Platform Net, the Ledger's revenue less the Creators' share, is divided. One
@@ -82,8 +83,17 @@ export type RowBudget = z.infer<typeof RowBudget>;
 
 /** `GET /v1/budgets`: the Platform Net and what every row of the Budget Table has been allotted, has spent and has left. */
 export const BudgetsPage = z.object({
-  /** The Ledger's revenue less the Creators' share, valued in SOL at the latest prices, in lamports. */
+  /**
+   * The chain whose rows these are (#254): each chain's rows are allotted from what that chain collected, where its
+   * money is, Solana's unless `?chain=` names another; an EVM chain's Burn budget waits at its Admin's address until
+   * the owner carries it to Solana (ADR 0030).
+   */
+  chain: Chain,
+  /** The chain's revenue less the Creators' share, valued in SOL at the latest prices, in lamports. */
   netLamports: raw,
+  /** The Platform Net of every chain, and all of them together: the one figure the Budget Table divides. */
+  chains: z.array(z.object({ chain: Chain, netLamports: raw })),
+  togetherLamports: raw,
   /** Every version there is, oldest first, those announced for later included: with the Ledger, enough to redo each allotment. */
   versions: z.array(BudgetTableVersion),
   /** The version in force. */

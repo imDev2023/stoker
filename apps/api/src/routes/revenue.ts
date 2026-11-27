@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Chain } from "@launchpad/contract";
 import { desc, eq, inArray, sql } from "drizzle-orm";
 import { WSOL_MINT } from "@launchpad/chain";
@@ -9,6 +9,8 @@ import { jobRuns, jobTransactions, launches, ledgerEntries } from "@launchpad/db
 import { operationsKey, type AppEnv } from "../env";
 import { creatorMoney, unforwarded } from "../fees/creatorShares";
 import { revenueAssets } from "../fees/ledger";
+import { chainNets } from "../fees/budget";
+import { chainFilter } from "../chains/filter";
 import { toJobRun } from "../jobs";
 
 /** Platform revenue in public: the Ledger, and totals per asset and per day. Every figure is a sum of Ledger entries. */
@@ -27,39 +29,55 @@ function streams(s: StreamSums): RevenueStreams {
   return { platformFee: platformFee.toString(), poolFee: poolFee.toString(), feeKey: feeKey.toString(), total: (platformFee + poolFee + feeKey).toString() };
 }
 
+/**
+ * `GET /v1/revenue`: what every chain collected (#254), per chain and asset, and the Platform Net per chain and
+ * together; `?chain=` answers one chain's totals and days. An asset is keyed by its chain and its address, since an EVM
+ * chain's native asset is the zero address on every one of them.
+ */
 revenueRoutes.get("/revenue", async (c) => {
   const db = c.get("db");
   const cfg = c.get("cfg");
-  const [totals, daily, creators] = await Promise.all([
+  const only = chainFilter(c);
+  const onChain = only ? sql`and ${ledgerEntries.chain} = ${only}` : sql``;
+  const [totals, daily, creators, nets] = await Promise.all([
     db
-      .select({ mint: ledgerEntries.assetMint, decimals: sql<number>`max(${ledgerEntries.assetDecimals})`, kind: ledgerEntries.kind, amount: sql<string>`sum(${ledgerEntries.amount})::text` })
+      .select({ chain: ledgerEntries.chain, mint: ledgerEntries.assetMint, decimals: sql<number>`max(${ledgerEntries.assetDecimals})`, kind: ledgerEntries.kind, amount: sql<string>`sum(${ledgerEntries.amount})::text` })
       .from(ledgerEntries)
-      .groupBy(ledgerEntries.assetMint, ledgerEntries.kind),
-    db.execute<{ day: string; mint: string; decimals: number; kind: string; amount: string }>(sql`
+      .where(only ? sql`${ledgerEntries.chain} = ${only}` : undefined)
+      .groupBy(ledgerEntries.chain, ledgerEntries.assetMint, ledgerEntries.kind),
+    db.execute<{ day: string; chain: string; mint: string; decimals: number; kind: string; amount: string }>(sql`
       with daily as (
-        select to_char(${ledgerEntries.blockTime} at time zone 'UTC', 'YYYY-MM-DD') as day, ${ledgerEntries.assetMint} as mint,
+        select to_char(${ledgerEntries.blockTime} at time zone 'UTC', 'YYYY-MM-DD') as day, ${ledgerEntries.chain} as chain, ${ledgerEntries.assetMint} as mint,
           max(${ledgerEntries.assetDecimals}) as decimals, ${ledgerEntries.kind} as kind, sum(${ledgerEntries.amount})::text as amount
         from ${ledgerEntries}
-        where ${ledgerEntries.kind} in ('platform_fee', 'pool_fee', 'fee_key')
-        group by 1, 2, 4
+        where ${ledgerEntries.kind} in ('platform_fee', 'pool_fee', 'fee_key') ${onChain}
+        group by 1, 2, 3, 5
       )
       select * from daily where day in (select distinct day from daily order by day desc limit ${REVENUE_DAYS})`),
     creatorMoney(db),
+    chainNets(db),
   ]);
   const asset = await revenueAssets(db, cfg.publicApiUrl, new Map([...totals, ...daily].map((r) => [r.mint, Number(r.decimals)])));
+  // One key for an asset on one chain; Solana's mints keep their own (a Creator's share is Solana's alone).
+  const keyOf = (chain: string, mint: string) => `${chain}|${mint}`;
+  const parts = (key: string) => {
+    const [chain, mint] = key.split("|") as [Chain, string];
+    return { chain, mint };
+  };
 
   const byAsset = new Map<string, StreamSums & { sweep?: bigint; graduation_fee?: bigint }>();
-  for (const r of totals) byAsset.set(r.mint, { ...byAsset.get(r.mint), [r.kind]: BigInt(r.amount) });
+  for (const r of totals) byAsset.set(keyOf(r.chain, r.mint), { ...byAsset.get(keyOf(r.chain, r.mint)), [r.kind]: BigInt(r.amount) });
   const collected = (s: StreamSums) => (s.platform_fee ?? 0n) + (s.pool_fee ?? 0n) + (s.fee_key ?? 0n);
-  // SOL first, then by ticker: amounts in different assets don't compare.
-  const label = (mint: string) => asset(mint).symbol ?? mint;
+  // Solana first and SOL first within it, then by chain and ticker: amounts in different assets don't compare.
+  const label = (key: string) => asset(parts(key).mint).symbol ?? parts(key).mint;
   const order = ([a]: [string, StreamSums], [b]: [string, StreamSums]) =>
-    Number(b === WSOL) - Number(a === WSOL) || label(a).localeCompare(label(b), "en", { sensitivity: "base" }) || a.localeCompare(b);
+    Number(parts(b).chain === "solana") - Number(parts(a).chain === "solana") || parts(a).chain.localeCompare(parts(b).chain) ||
+    Number(b === keyOf("solana", WSOL)) - Number(a === keyOf("solana", WSOL)) || label(a).localeCompare(label(b), "en", { sensitivity: "base" }) || a.localeCompare(b);
 
   const days = new Map<string, Map<string, StreamSums>>();
   for (const r of daily) {
     const day = days.get(r.day) ?? new Map<string, StreamSums>();
-    day.set(r.mint, { ...day.get(r.mint), [r.kind]: BigInt(r.amount) });
+    day.set(keyOf(r.chain, r.mint), { ...day.get(keyOf(r.chain, r.mint)), [r.kind]: BigInt(r.amount) });
     days.set(r.day, day);
   }
 
@@ -72,19 +90,33 @@ revenueRoutes.get("/revenue", async (c) => {
     totals: [...byAsset.entries()]
       .filter(([, s]) => collected(s) > 0n)
       .sort(order)
-      .map(([mint, s]) => ({
-        asset: asset(mint), ...streams(s), swept: (s.sweep ?? 0n).toString(),
-        creatorForwarded: (creators.get(mint)?.forwarded ?? 0n).toString(), creatorPending: unforwarded(creators, mint).toString(),
-        graduationFee: (s.graduation_fee ?? 0n).toString(),
-      })),
+      .map(([key, s]) => {
+        const { chain, mint } = parts(key);
+        // A Creator's share is collected and forwarded on Solana alone; on an EVM chain the hook credits it apart (ADR 0025).
+        const solana = chain === "solana";
+        return {
+          chain, asset: asset(mint), ...streams(s), swept: (s.sweep ?? 0n).toString(),
+          creatorForwarded: (solana ? (creators.get(mint)?.forwarded ?? 0n) : 0n).toString(), creatorPending: (solana ? unforwarded(creators, mint) : 0n).toString(),
+          graduationFee: (s.graduation_fee ?? 0n).toString(),
+        };
+      }),
     days: [...days.entries()]
       .sort(([a], [b]) => b.localeCompare(a))
-      .map(([day, assets]) => ({ day, assets: [...assets.entries()].sort(order).map(([mint, s]) => ({ asset: asset(mint), ...streams(s) })) })),
+      .map(([day, assets]) => ({ day, assets: [...assets.entries()].sort(order).map(([key, s]) => ({ chain: parts(key).chain, asset: asset(parts(key).mint), ...streams(s) })) })),
+    platformNet: { lamports: nets.together.toString(), chains: nets.chains.map((n) => ({ chain: n.chain as Chain, lamports: n.lamports.toString() })) },
   };
   return c.json(res);
 });
 
-revenueRoutes.get("/ledger", async (c) => {
+revenueRoutes.get("/ledger", (c) => ledgerPage(c, null));
+
+/**
+ * `GET /v1/launches/:coin/ledger`: one coin's entries on the Ledger (#254), on either chain: what its Creator's
+ * Credits, its Destination's work, its burns and its Support Liquidity moved, with the same paging as the Ledger.
+ */
+revenueRoutes.get("/launches/:mint/ledger", (c) => ledgerPage(c, c.req.param("mint")));
+
+async function ledgerPage(c: Context<AppEnv>, launch: string | null) {
   const q = LedgerQuery.safeParse(c.req.query());
   if (!q.success) return c.json({ error: "invalid ledger query", details: q.error.issues }, 400);
   const { limit, before, kind, chain } = q.data;
@@ -101,6 +133,7 @@ revenueRoutes.get("/ledger", async (c) => {
     .where(sql`true
       ${kind ? sql`and ${ledgerEntries.kind} = ${kind}` : sql``}
       ${chain ? sql`and ${ledgerEntries.chain} = ${chain}` : sql``}
+      ${launch ? sql`and lower(${ledgerEntries.launchMint}) = lower(${launch})` : sql``}
       ${before ? sql`and (${ledgerEntries.slot}, ${recordedMicros}, ${ledgerEntries.signature}, ${ledgerEntries.eventIndex}) < (${Number(slot)}, ${recorded}::bigint, ${signature}, ${Number(index)})` : sql``}`)
     .orderBy(desc(ledgerEntries.slot), desc(recordedMicros), desc(ledgerEntries.signature), desc(ledgerEntries.eventIndex))
     .limit(limit + 1);
@@ -124,7 +157,7 @@ revenueRoutes.get("/ledger", async (c) => {
     next: rows.length > limit && last ? `${last.e.slot}.${last.recordedMicros}.${last.e.signature}.${last.e.eventIndex}` : null,
   };
   return c.json(res);
-});
+}
 
 /** Operator: recent runs of the scheduled jobs, and any transaction a job sent that has not settled yet. */
 export const operatorJobRoutes = new Hono<AppEnv>();

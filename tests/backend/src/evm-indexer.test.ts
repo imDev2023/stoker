@@ -45,7 +45,8 @@ describe("Solana coins name their chain", () => {
   test("every list endpoint takes a chain filter, and refuses a chain it does not know", async () => {
     const ledger = (await api("/v1/ledger?chain=solana")) as { entries: { chain: string }[] };
     expect(ledger.entries.every((e) => e.chain === "solana")).toBe(true);
-    expect(((await api("/v1/ledger?chain=robinhood")) as { entries: unknown[] }).entries).toEqual([]);
+    // An EVM chain's entries (#254) are that chain's alone.
+    expect(((await api("/v1/ledger?chain=robinhood")) as { entries: { chain: string }[] }).entries.every((e) => e.chain === "robinhood")).toBe(true);
     const quotes = (await api("/v1/quotes?chain=solana")) as { quotes: { chain: string; multiplier: unknown }[] };
     expect(quotes.quotes.length).toBeGreaterThan(0);
     expect(quotes.quotes.every((q) => q.chain === "solana" && q.multiplier === null)).toBe(true);

@@ -318,7 +318,7 @@ export type PlatformInfo = z.infer<typeof PlatformInfo>;
 /** Something the operator must act on, such as a Launch whose curve sold out but that Raydium has not migrated. */
 export const OperatorAlert = z.object({
   /** `indexer_skipped`: an EVM chain's Indexer set aside a transaction it could not write (its hash is the subject), and went on (#252). */
-  kind: z.enum(["graduation_stuck", "reward_tax_unlocked", "job_failed", "reward_round_stalled", "indexer_skipped"]),
+  kind: z.enum(["graduation_stuck", "reward_tax_unlocked", "job_failed", "reward_round_stalled", "indexer_skipped", "indexer_behind", "keeper_low"]),
   /** What the alert is about: a Launch's mint, a job's name for `job_failed`, a round's id for `reward_round_stalled`. */
   subject: z.string(),
   message: z.string(),

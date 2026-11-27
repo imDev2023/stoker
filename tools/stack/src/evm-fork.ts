@@ -2,7 +2,7 @@
 // ROBINHOOD_RPC_URL in the environment (an archive endpoint). It listens on 8796 (docs/agents/run-and-test.md) and
 // prints the two variables the API takes; Ctrl-C stops it. The URL carries a key and is never printed.
 import { spawn } from "node:child_process";
-import { deployStoker, deploymentOf, forkArgs } from "./evm";
+import { deployStoker, deploymentOf, forkArgs, serverKeyVars } from "./evm";
 
 const PORT = Number(process.env.EVM_FORK_PORT ?? 8796);
 const forkUrl = process.env.ROBINHOOD_RPC_URL;
@@ -29,3 +29,5 @@ console.log(`Robinhood Chain fork on ${rpcUrl}, our contracts deployed (the Admi
 console.log("Give the dev API these, as --var NAME:value:");
 console.log(`EVM_DEPLOYMENTS=${JSON.stringify(deploymentOf(evm))}`);
 console.log(`ROBINHOOD_RPC_URL=${rpcUrl}`);
+// Anvil's well-known development keys, appointed on this fork alone: the Keeper and the ladder key (#254).
+for (const [name, value] of Object.entries(serverKeyVars(evm))) console.log(`${name}=${value}`);

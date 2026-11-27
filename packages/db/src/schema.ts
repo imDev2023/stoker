@@ -60,6 +60,17 @@ export const launches = pgTable(
      */
     earningsDestination: text("earnings_destination", { enum: ["wallet", "holders", "burn", "liquidity"] }).notNull().default("wallet"),
     /**
+     * On an EVM chain (#254): the address the hook credits the Creator's share of every Platform Fee to, fixed at launch
+     * (ADR 0025): the Creator's wallet, or one of the deployment's Creator Earnings Destinations. Null on Solana.
+     */
+    creatorDestination: text("creator_destination"),
+    /**
+     * On an EVM chain (#254, ADR 0027): the Quote Asset it takes, net of every fee, to carry the coin's price from its
+     * start to its Graduation Target through the Seed Position, raw units, from the launch's own figures; an Active Day
+     * is a day its pool trades a share of it. Null on Solana, whose Graduation Target is that amount already.
+     */
+    graduationQuote: numeric("graduation_quote", { precision: 78, scale: 0 }),
+    /**
      * A Creator Lock (ADR 0023, #186): the coins the launch kept back from its sale for the Creator, raw units, and its
      * schedule in seconds (nothing unlocks for the cliff after the curve sells out, then the coins unlock evenly over the
      * unlock time). Read from the launch transaction itself, so a coin launched without our API carries its own lock; the
@@ -195,6 +206,11 @@ export const trades = pgTable(
     shareFee: numeric("share_fee", { precision: 40, scale: 0 }).notNull().default("0"),
     /** The wallet the share fee went to; null on an unreferred trade. */
     referrer: text("referrer"),
+    /**
+     * On an EVM chain (#254): the part of the trade's Platform Fee the hook credited to the coin's Creator Earnings
+     * Destination, by the Creator Tier the coin held (ADR 0027). Null on Solana, whose Creator share is computed.
+     */
+    creatorCredit: numeric("creator_credit", { precision: 40, scale: 0 }),
     /** Price of one whole coin in whole Quote Asset units, just before and just after the trade. */
     priceBefore: doublePrecision("price_before").notNull(),
     priceAfter: doublePrecision("price_after").notNull(),
@@ -321,7 +337,7 @@ export const graduations = pgTable("graduations", {
 export const operatorAlerts = pgTable(
   "operator_alerts",
   {
-    kind: text("kind", { enum: ["graduation_stuck", "reward_tax_unlocked", "job_failed", "reward_round_stalled", "indexer_skipped"] }).notNull(),
+    kind: text("kind", { enum: ["graduation_stuck", "reward_tax_unlocked", "job_failed", "reward_round_stalled", "indexer_skipped", "indexer_behind", "keeper_low"] }).notNull(),
     /** What the alert is about, such as a Launch's mint, a job's name or a round's id. */
     subject: text("subject").notNull(),
     message: text("message").notNull(),
@@ -1110,6 +1126,12 @@ export const evmQuoteAssets = pgTable(
     /** `uiMultiplier()` in force at `multiplierAt`, 18 decimals; null for an asset that has none. */
     multiplier: numeric("multiplier", { precision: 78, scale: 0 }),
     multiplierAt: timestamp("multiplier_at", { withTimezone: true }),
+    /**
+     * The asset's price in SOL (#254), as Solana's Quote Registry keeps `quote_assets.price_sol`, so an EVM chain's
+     * revenue, rebates and budgets are valued as Solana's are; null while no source prices it reliably.
+     */
+    priceSol: numeric("price_sol"),
+    pricedAt: timestamp("priced_at", { withTimezone: true }),
     readAt: timestamp("read_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.chain, t.address] })],
@@ -1165,4 +1187,83 @@ export const chainCursors = pgTable(
   checkedAt: timestamp("checked_at", { withTimezone: true }),
   },
   (t) => [primaryKey({ columns: [t.chain, t.factory] })],
+).enableRLS();
+
+/**
+ * Every transaction a job sends on an EVM chain (#254), written with its hash and its signed bytes before it is sent,
+ * as Solana's `job_transactions` are: a run that dies after sending finds it here and settles it by its hash, and one
+ * that died before sending sends the same bytes again, so nothing a job pays is sent twice. `dropped` is a transaction
+ * whose nonce another transaction of the sender's took, which can therefore never land.
+ */
+export const evmJobTransactions = pgTable(
+  "evm_job_transactions",
+  {
+    chain: text("chain").notNull(),
+    hash: text("hash").notNull(),
+    job: text("job").notNull(),
+    /** What it does: a Payout Call, a Tax Vault call, a Destination's call, a tier raise, a rebate payment. */
+    purpose: text("purpose").notNull(),
+    /** What it acts on: an asset, a pool, a wallet. */
+    subject: text("subject").notNull(),
+    sender: text("sender").notNull(),
+    nonce: integer("nonce").notNull(),
+    /** The signed transaction, sent again as it is while its nonce is still free. */
+    raw: text("raw").notNull(),
+    status: text("status", { enum: ["pending", "landed", "failed", "dropped"] }).notNull().default("pending"),
+    error: text("error"),
+    /** The block it landed in, once it has. */
+    block: bigint("block", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.chain, t.hash] }), index("evm_job_transactions_status_idx").on(t.chain, t.status)],
+).enableRLS();
+
+/**
+ * Rebate Weeks on an EVM chain (#254, ADR 0021): as Solana's `rebate_weeks`, one row per chain and week settled, from
+ * that chain's trades and the `rebates` row's budget on that chain. The pot is valued in lamports as everything in the
+ * Budget Table is, and each rebate is paid in the chain's native asset at `price_sol`, the price at the settlement.
+ */
+export const evmRebateWeeks = pgTable(
+  "evm_rebate_weeks",
+  {
+    chain: text("chain").notNull(),
+    weekStart: timestamp("week_start", { withTimezone: true }).notNull(),
+    weekEnd: timestamp("week_end", { withTimezone: true }).notNull(),
+    capBps: integer("cap_bps").notNull(),
+    /** What the chain's `rebates` row had left at the settlement, less the rebates not yet paid, in lamports. */
+    budget: numeric("budget", { precision: 40, scale: 0 }).notNull(),
+    /** The Platform Fees the week's earning trades on the chain paid, in lamports' worth. */
+    fees: numeric("fees", { precision: 40, scale: 0 }).notNull(),
+    pot: numeric("pot", { precision: 40, scale: 0 }).notNull(),
+    /** The chain's native asset's price in SOL the pot was turned into it at. */
+    priceSol: numeric("price_sol").notNull(),
+    traders: integer("traders").notNull(),
+    /** What the rebates add up to, in the native asset's raw units. */
+    credited: numeric("credited", { precision: 78, scale: 0 }).notNull(),
+    settledAt: timestamp("settled_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.chain, t.weekStart] })],
+).enableRLS();
+
+/**
+ * One trader's Volume Rebate for one Rebate Week on an EVM chain (#254), paid on that chain in its native asset by the
+ * Keeper once the wallet's waiting rebates reach the minimum: marked `sending` with the transaction's hash before it
+ * goes out, `paid` once it has landed and is on the Ledger, and back to `waiting` if its transaction can never land.
+ */
+export const evmRebates = pgTable(
+  "evm_rebates",
+  {
+    chain: text("chain").notNull(),
+    weekStart: timestamp("week_start", { withTimezone: true }).notNull(),
+    wallet: text("wallet").notNull(),
+    /** The Platform Fees the wallet's trades paid in the week, in lamports' worth. */
+    fees: numeric("fees", { precision: 40, scale: 0 }).notNull(),
+    /** The rebate, in the chain's native asset's raw units. */
+    amount: numeric("amount", { precision: 78, scale: 0 }).notNull(),
+    status: text("status", { enum: ["waiting", "sending", "paid"] }).notNull().default("waiting"),
+    transaction: text("transaction"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.chain, t.weekStart, t.wallet] }), index("evm_rebates_status_idx").on(t.chain, t.status)],
 ).enableRLS();

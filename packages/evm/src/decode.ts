@@ -1,6 +1,6 @@
 import { decodeEventLog, isAddressEqual, type Address, type Hex, type Log } from "viem";
 import { checksum } from "./chains";
-import { iPoolManagerAbi, stokerFactoryAbi, stokerHookAbi, taxVaultAbi } from "./generated/abis";
+import { burnDestinationAbi, iPoolManagerAbi, stokerFactoryAbi, stokerHookAbi, taxVaultAbi } from "./generated/abis";
 import { protocolFeeOn } from "./math";
 
 /**
@@ -24,6 +24,10 @@ export type LaunchEvent = {
   creatorShareBps: number;
   referrerFeeCapBps: number;
   graduationMultiple: number;
+  /** The pool's opening sqrt price, from the PoolManager's `Initialize` in the launch transaction (#254). */
+  openSqrtPriceX96: bigint;
+  /** The Graduation Target as the pool's sqrt price, as the hook registered it (ADR 0024). */
+  graduationSqrtPriceX96: bigint;
   /** The tax terms the hook's `TaxTermsRegistered` wrote (#245): the launch type and its shares, fixed at launch. */
   launchType: "standard" | "reward" | "liquidity";
   taxBps: number;
@@ -68,7 +72,12 @@ export type TradeEvent = {
 
 type Decoded =
   | { kind: "launched"; logIndex: number; args: { poolId: Hex; coin: Address; creator: Address; quote: Address; creatorDestination: Address; startTick: number; seedLiquidity: bigint; firstBuy: bigint; firstBuyCoins: bigint } }
-  | { kind: "registered"; logIndex: number; args: { poolId: Hex; platformFeeBps: number; creatorShareBps: number; referrerFeeCapBps: number; quoteIsCurrency0: boolean; graduationMultiple: number } }
+  | { kind: "registered"; logIndex: number; args: { poolId: Hex; platformFeeBps: number; creatorShareBps: number; referrerFeeCapBps: number; quoteIsCurrency0: boolean; graduationMultiple: number; graduationSqrtPriceX96: bigint } }
+  | { kind: "initialized"; logIndex: number; poolId: Hex; sqrtPriceX96: bigint }
+  | { kind: "credit"; logIndex: number; paid: boolean; owner: Address; currency: Address; amount: bigint }
+  | { kind: "tierRaised"; logIndex: number; poolId: Hex; fromTier: number; toTier: number; creatorShareBps: number }
+  | { kind: "vault"; logIndex: number; poolId: Hex; work: VaultWork }
+  | { kind: "applied"; logIndex: number; poolId: Hex; destination: Address; asset: Address; amount: bigint }
   | { kind: "fee"; logIndex: number; poolId: Hex; fee: bigint; creatorCredit: bigint }
   | { kind: "referrer"; logIndex: number; poolId: Hex; referrer: Address; fee: bigint }
   | { kind: "tax"; logIndex: number; poolId: Hex; tax: bigint }
@@ -82,7 +91,24 @@ type Decoded =
 /** A receipt the decoder cannot read as our contracts log a swap: it can never be written, whatever the retries. */
 export class EvmDecodeError extends Error {}
 
-export type ChainContracts = { factory: Address; hook: Address; poolManager: Address; taxVault: Address };
+/**
+ * Our contracts on one chain the decoder reads; `destinations` are the deployment's Creator Earnings Destinations (#248),
+ * whose `EarningsApplied` is read from their own addresses alone (#254).
+ */
+export type ChainContracts = { factory: Address; hook: Address; poolManager: Address; taxVault: Address; destinations?: readonly Address[] };
+
+/**
+ * What one Tax Vault call did (#254), as its events say: Support Liquidity added (all of it, the part that was funded
+ * apart included), the funded part of it, a burn of a coin's Reward Burn share or of what was funded, and Quote Asset
+ * given to a coin's burn or Support Liquidity.
+ */
+export type VaultWork =
+  | { kind: "support"; quoteAdded: bigint }
+  | { kind: "fundedSupport"; quoteAdded: bigint }
+  | { kind: "rewardBurn"; quoteSpent: bigint; coinsBurned: bigint }
+  | { kind: "fundedBurn"; quoteSpent: bigint; coinsBurned: bigint }
+  | { kind: "burnFunded"; funder: Address; amount: bigint }
+  | { kind: "supportFunded"; funder: Address; amount: bigint };
 
 /** The events of ours in a receipt's logs, in log order. Another contract's log, or one of theirs we do not read, is passed over. */
 function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
@@ -97,7 +123,11 @@ function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
         else if (e.eventName === "Launched") out.push({ kind: "launched", logIndex, args: { ...e.args, coin: checksum(e.args.coin), creator: checksum(e.args.creator), quote: checksum(e.args.quote), creatorDestination: checksum(e.args.creatorDestination) } });
       } else if (isAddressEqual(log.address, c.hook)) {
         const e = decodeEventLog({ abi: stokerHookAbi, data: log.data, topics });
-        if (e.eventName === "Graduated") out.push({ kind: "graduated", logIndex, poolId: e.args.poolId, graduatedAt: e.args.graduatedAt });
+        if (e.eventName === "CreditPaid" || e.eventName === "CreditRefused") {
+          out.push({ kind: "credit", logIndex, paid: e.eventName === "CreditPaid", owner: checksum(e.args.owner), currency: checksum(e.args.currency), amount: e.args.amount });
+        } else if (e.eventName === "CreatorTierRaised") {
+          out.push({ kind: "tierRaised", logIndex, poolId: e.args.poolId, fromTier: e.args.fromTier, toTier: e.args.toTier, creatorShareBps: e.args.creatorShareBps });
+        } else if (e.eventName === "Graduated") out.push({ kind: "graduated", logIndex, poolId: e.args.poolId, graduatedAt: e.args.graduatedAt });
         else if (e.eventName === "LaunchRegistered") out.push({ kind: "registered", logIndex, args: e.args });
         else if (e.eventName === "FeeCredited") out.push({ kind: "fee", logIndex, poolId: e.args.poolId, fee: e.args.fee, creatorCredit: e.args.creatorCredit });
         else if (e.eventName === "OpeningFeeBooked") out.push({ kind: "opening", logIndex, poolId: e.args.poolId, fee: e.args.fee });
@@ -108,10 +138,24 @@ function decodeLogs(logs: readonly Log[], c: ChainContracts): Decoded[] {
         const e = decodeEventLog({ abi: taxVaultAbi, data: log.data, topics });
         // A burn's coins: the part the coin's own Reward Burn share bought, and the part someone funded (#248), each
         // logged for the one buy that made it.
-        if (e.eventName === "RewardBurned" || e.eventName === "FundedBurned") out.push({ kind: "burned", logIndex, poolId: e.args.poolId, coinsBurned: e.args.coinsBurned });
+        if (e.eventName === "RewardBurned" || e.eventName === "FundedBurned") {
+          out.push({ kind: "burned", logIndex, poolId: e.args.poolId, coinsBurned: e.args.coinsBurned });
+          const work = { quoteSpent: e.args.quoteSpent, coinsBurned: e.args.coinsBurned };
+          out.push({ kind: "vault", logIndex, poolId: e.args.poolId, work: e.eventName === "RewardBurned" ? { kind: "rewardBurn", ...work } : { kind: "fundedBurn", ...work } });
+        } else if (e.eventName === "SupportAdded") out.push({ kind: "vault", logIndex, poolId: e.args.poolId, work: { kind: "support", quoteAdded: e.args.quoteAdded } });
+        else if (e.eventName === "FundedSupportAdded") out.push({ kind: "vault", logIndex, poolId: e.args.poolId, work: { kind: "fundedSupport", quoteAdded: e.args.quoteAdded } });
+        else if (e.eventName === "BurnFunded") out.push({ kind: "vault", logIndex, poolId: e.args.poolId, work: { kind: "burnFunded", funder: checksum(e.args.funder), amount: e.args.amount } });
+        else if (e.eventName === "SupportFunded") out.push({ kind: "vault", logIndex, poolId: e.args.poolId, work: { kind: "supportFunded", funder: checksum(e.args.funder), amount: e.args.amount } });
+      } else if (c.destinations?.some((d) => isAddressEqual(log.address, d))) {
+        // Every Destination logs the same `EarningsApplied` from their common base (EarningsDestination.sol).
+        const e = decodeEventLog({ abi: burnDestinationAbi, data: log.data, topics });
+        if (e.eventName === "EarningsApplied") {
+          out.push({ kind: "applied", logIndex, poolId: e.args.poolId, destination: checksum(log.address), asset: checksum(e.args.asset), amount: e.args.amount });
+        }
       } else if (isAddressEqual(log.address, c.poolManager)) {
         const e = decodeEventLog({ abi: iPoolManagerAbi, data: log.data, topics });
-        if (e.eventName === "Swap") out.push({ kind: "swap", logIndex, poolId: e.args.id, sender: checksum(e.args.sender), amount0: e.args.amount0, amount1: e.args.amount1, sqrtPriceX96: e.args.sqrtPriceX96, feePips: e.args.fee });
+        if (e.eventName === "Initialize") out.push({ kind: "initialized", logIndex, poolId: e.args.id, sqrtPriceX96: e.args.sqrtPriceX96 });
+        else if (e.eventName === "Swap") out.push({ kind: "swap", logIndex, poolId: e.args.id, sender: checksum(e.args.sender), amount0: e.args.amount0, amount1: e.args.amount1, sqrtPriceX96: e.args.sqrtPriceX96, feePips: e.args.fee });
       }
     } catch {
       // An event of that contract this decoder does not read (its ABI has no entry for the topic).
@@ -130,14 +174,16 @@ export function decodeLaunches(logs: readonly Log[], c: ChainContracts): LaunchE
   const terms = new Map(events.flatMap((e) => (e.kind === "registered" ? [[e.args.poolId, e.args] as const] : [])));
   const taxes = new Map(events.flatMap((e) => (e.kind === "taxTerms" ? [[e.args.poolId, e.args] as const] : [])));
   const locks = new Map(events.flatMap((e) => (e.kind === "locked" ? [[e.poolId, e] as const] : [])));
+  const opened = new Map(events.flatMap((e) => (e.kind === "initialized" ? [[e.poolId, e.sqrtPriceX96] as const] : [])));
   return events.flatMap((e) => {
     if (e.kind !== "launched") return [];
     const t = terms.get(e.args.poolId);
     const x = taxes.get(e.args.poolId);
-    if (!t || !x) throw new EvmDecodeError(`launch of ${e.args.coin} has no LaunchRegistered and TaxTermsRegistered in its transaction`);
+    const open = opened.get(e.args.poolId);
+    if (!t || !x || open === undefined) throw new EvmDecodeError(`launch of ${e.args.coin} has no LaunchRegistered, TaxTermsRegistered and Initialize in its transaction`);
     return [{
       ...e.args, quoteIsCurrency0: t.quoteIsCurrency0, platformFeeBps: t.platformFeeBps, creatorShareBps: t.creatorShareBps, referrerFeeCapBps: t.referrerFeeCapBps,
-      graduationMultiple: t.graduationMultiple, launchType: LAUNCH_TYPES[x.launchType]!, taxBps: x.taxBps, burnShareBps: x.burnShareBps,
+      graduationMultiple: t.graduationMultiple, openSqrtPriceX96: open, graduationSqrtPriceX96: t.graduationSqrtPriceX96, launchType: LAUNCH_TYPES[x.launchType]!, taxBps: x.taxBps, burnShareBps: x.burnShareBps,
       liquidityShareBps: x.liquidityShareBps, payoutAsset: PAYOUT_ASSETS[x.payoutAsset]!, logIndex: e.logIndex,
       creatorLock: ((l) => (l ? { lock: l.lock, amount: l.amount, cliff: l.cliff, unlock: l.unlock } : null))(locks.get(e.args.poolId)),
     }];
@@ -246,6 +292,32 @@ export function decodeGraduations(logs: readonly Log[], c: ChainContracts): { po
  */
 export function poolsNamed(logs: readonly Log[], c: ChainContracts): Hex[] {
   const ids = new Set<Hex>();
-  for (const e of decodeLogs(logs, c)) ids.add("poolId" in e ? e.poolId : e.args.poolId);
+  for (const e of decodeLogs(logs, c)) {
+    if (e.kind === "credit") continue;
+    ids.add("poolId" in e ? e.poolId : e.args.poolId);
+  }
   return [...ids];
+}
+
+/** A Payout Call's outcome for one owner (ADR 0025): its Credit in one asset paid to it, or refused and still owed. */
+export type CreditEvent = { logIndex: number; paid: boolean; owner: Address; currency: Address; amount: bigint };
+
+/** Every Credit a receipt paid or that its asset refused, in log order (#254). */
+export function decodeCredits(logs: readonly Log[], c: ChainContracts): CreditEvent[] {
+  return decodeLogs(logs, c).flatMap((e) => (e.kind === "credit" ? [{ logIndex: e.logIndex, paid: e.paid, owner: e.owner, currency: e.currency, amount: e.amount }] : []));
+}
+
+/** The Creator Tiers a receipt raised (#248): the ladder key's `raiseTier`, once per coin and tier. */
+export function decodeTierRaises(logs: readonly Log[], c: ChainContracts) {
+  return decodeLogs(logs, c).flatMap((e) => (e.kind === "tierRaised" ? [{ logIndex: e.logIndex, poolId: e.poolId, fromTier: e.fromTier, toTier: e.toTier, creatorShareBps: e.creatorShareBps }] : []));
+}
+
+/** What the Tax Vault's calls in a receipt did, pool by pool (#254). */
+export function decodeVaultWork(logs: readonly Log[], c: ChainContracts) {
+  return decodeLogs(logs, c).flatMap((e) => (e.kind === "vault" ? [{ logIndex: e.logIndex, poolId: e.poolId, work: e.work }] : []));
+}
+
+/** The Creator earnings a receipt's Destinations applied (#248): which Destination, for which coin, how much. */
+export function decodeEarningsApplied(logs: readonly Log[], c: ChainContracts) {
+  return decodeLogs(logs, c).flatMap((e) => (e.kind === "applied" ? [{ logIndex: e.logIndex, poolId: e.poolId, destination: e.destination, asset: e.asset, amount: e.amount }] : []));
 }

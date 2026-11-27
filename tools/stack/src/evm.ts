@@ -8,9 +8,12 @@ import {
   type Address, type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { distributorAbi, NATIVE, quoteRegistryAbi, ROBINHOOD_CHAIN, stokerFactoryAbi, stokerKeysAbi, taxVaultAbi } from "@launchpad/evm";
 import {
-  distributorBytecode, quoteRegistryBytecode, stokerFactoryBytecode, stokerHookBytecode, stokerKeysBytecode, taxVaultBytecode,
+  burnDestinationAbi, distributorAbi, holdersDestinationAbi, liquidityDestinationAbi, NATIVE, quoteRegistryAbi, ROBINHOOD_CHAIN, stokerFactoryAbi, stokerKeysAbi, taxVaultAbi,
+} from "@launchpad/evm";
+import {
+  burnDestinationBytecode, distributorBytecode, holdersDestinationBytecode, liquidityDestinationBytecode, quoteRegistryBytecode, stokerFactoryBytecode, stokerHookBytecode,
+  stokerKeysBytecode, taxVaultBytecode,
 } from "@launchpad/evm/bytecode";
 
 /** L2 block 120,800,000 (2026-11-22): the contracts' fork tests' block, so the chain facts they prove hold here. */
@@ -53,6 +56,18 @@ const ALL_HOOK_MASK = (1n << 14n) - 1n;
 const BLOCK_HASH_HISTORY: Address = "0x0000F90827F1C53a10cb7A02335B175320002935";
 /** Anvil's first account, which every fork starts with ether in: the deployer and the Admin of the stack's contracts. */
 const ADMIN_KEY: Hex = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+/**
+ * The three server keys (ADR 0030, #254), anvil's next three accounts, each funded with ether by anvil: the round key,
+ * the ladder key and the Keeper, appointed by the Admin in StokerKeys' two steps. The API is given the ladder key and
+ * the Keeper as its secrets would carry them; the round key is #255's.
+ */
+const SERVER_KEYS = {
+  round: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+  ladder: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+  keeper: "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
+} as const satisfies Record<string, Hex>;
+/** `StokerKeys.Role`, in its declared order. */
+const ROLE = { round: 0, ladder: 1, keeper: 2 } as const;
 
 export type EvmStackEnv = {
   chain: "robinhood";
@@ -69,6 +84,10 @@ export type EvmStackEnv = {
   fromBlock: number;
   /** The Admin, which writes the Quote Registry: a test lists a Quote Asset with it. */
   admin: { address: Address; key: Hex };
+  /** The Creator Earnings Destinations (#248), which a Launch may name as the owner of its Creator's Credits. */
+  destinations: { holders: Address; burn: Address; liquidity: Address };
+  /** The three server keys as StokerKeys names them (#254). */
+  serverKeys: { round: { address: Address; key: Hex }; ladder: { address: Address; key: Hex }; keeper: { address: Address; key: Hex } };
 };
 
 /** The deployment as the API takes it in `EVM_DEPLOYMENTS`. */
@@ -77,8 +96,14 @@ export type EvmStackEnv = {
  * (2,000 blocks, a paid tier's size); a test behind a stricter RPC sees the range shrink.
  */
 export const deploymentOf = (e: EvmStackEnv) => [
-  { chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, taxVault: e.taxVault, distributor: e.distributor, fromBlock: e.fromBlock, logBlockRange: 2_000 },
+  {
+    chain: e.chain, factory: e.factory, hook: e.hook, registry: e.registry, keys: e.keys, taxVault: e.taxVault, distributor: e.distributor, destinations: e.destinations,
+    fromBlock: e.fromBlock, logBlockRange: 2_000,
+  },
 ];
+
+/** The API's secrets for the server keys it holds on the stack's chain (#254): the Keeper and the ladder key. */
+export const serverKeyVars = (e: EvmStackEnv) => ({ ROBINHOOD_KEEPER_KEY: e.serverKeys.keeper.key, ROBINHOOD_LADDER_KEY: e.serverKeys.ladder.key });
 
 /** Finds the salt that gives the hook, made by the factory at `factory`, an address carrying exactly its permission bits. */
 function mineHookSalt(factory: Address, poolManager: Address, keys: Address, taxVault: Address): Hex {
@@ -139,11 +164,28 @@ export async function deployStoker(rpcUrl: string, { setClock = true }: { setClo
   const hook = await pub.readContract({ address: factory, abi: stokerFactoryAbi, functionName: "hook" });
   const list = await wallet.writeContract({ address: registry, abi: quoteRegistryAbi, functionName: "list", args: [NATIVE, NATIVE_START_TICK, GRADUATION_MULTIPLE, REFERRER_FEE_CAP_BPS] });
   await pub.waitForTransactionReceipt({ hash: list });
+  // The Creator Earnings Destinations (#248), each made for the hook, as #251's order has them after the factory.
+  const destination = async (abi: typeof burnDestinationAbi | typeof holdersDestinationAbi | typeof liquidityDestinationAbi, bytecode: Hex) =>
+    getAddress((await deployed(await wallet.deployContract({ abi, bytecode, args: [hook] }))).contractAddress!);
+  const destinations = {
+    holders: await destination(holdersDestinationAbi, holdersDestinationBytecode),
+    burn: await destination(burnDestinationAbi, burnDestinationBytecode),
+    liquidity: await destination(liquidityDestinationAbi, liquidityDestinationBytecode),
+  };
+  // The three server keys, each proposed by the Admin and accepted by its holder (ADR 0030).
+  const serverKeys = {} as EvmStackEnv["serverKeys"];
+  for (const role of ["round", "ladder", "keeper"] as const) {
+    const holder = privateKeyToAccount(SERVER_KEYS[role]);
+    await pub.waitForTransactionReceipt({ hash: await wallet.writeContract({ address: keys, abi: stokerKeysAbi, functionName: "proposeKey", args: [ROLE[role], holder.address] }) });
+    const own = createWalletClient({ chain, transport: http(rpcUrl), account: holder });
+    await pub.waitForTransactionReceipt({ hash: await own.writeContract({ address: keys, abi: stokerKeysAbi, functionName: "acceptKey", args: [ROLE[role]] }) });
+    serverKeys[role] = { address: holder.address, key: SERVER_KEYS[role] };
+  }
   // A receipt names a new contract in lower case; the API stores and answers every EVM address checksummed.
   return {
     chain: "robinhood", rpcUrl, chainId: ROBINHOOD_CHAIN.chainId, poolManager, factory: getAddress(factory), hook: getAddress(hook), registry: getAddress(registry),
     keys: getAddress(keys), taxVault: getAddress(taxVault), distributor: getAddress(distributor), tickSpacing: TICK_SPACING,
-    fromBlock: Number(keysReceipt.blockNumber), admin: { address: admin.address, key: ADMIN_KEY },
+    fromBlock: Number(keysReceipt.blockNumber), admin: { address: admin.address, key: ADMIN_KEY }, destinations, serverKeys,
   };
 }
 

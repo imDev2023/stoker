@@ -40,8 +40,18 @@ export type EvmChainProfile = {
    */
   blockNumberIsL1Estimate: boolean;
   explorer: string;
-  /** The chain's native asset, a Quote Asset at the zero address (#242). */
-  native: { symbol: string; name: string; decimals: number };
+  /**
+   * The chain's native asset, a Quote Asset at the zero address (#242). `priceTwin` is a Solana mint of the same asset
+   * that Solana's price source prices (#254): the asset is valued in SOL through it, as everything in the Budget Table
+   * is, and an asset with no twin has no price, counting for nothing until it has one.
+   */
+  native: { symbol: string; name: string; decimals: number; priceTwin: string | null };
+  /**
+   * Whether a job that pays reads the chain at its `safe` block (#254): on an Arbitrum Orbit chain the block the
+   * sequencer has posted to its parent chain, which a misbehaving sequencer can no longer reorganize (the knowledge
+   * base's `14-transaction-finality.md`). Every Credit, waiting tax and Active Day a job acts on is read there.
+   */
+  paysAtSafe: boolean;
   /** Uniswap v4 and its periphery on the chain (the knowledge base's `uniswap/DEPLOYMENTS.md`, contracts/README.md). */
   uniswap: {
     poolManager: Address;
@@ -63,7 +73,9 @@ export const ROBINHOOD_CHAIN: EvmChainProfile = {
   logBlockRange: 10,
   blockNumberIsL1Estimate: true,
   explorer: "https://robinhoodchain.blockscout.com",
-  native: { symbol: "ETH", name: "Ether", decimals: 18 },
+  // Ether (Portal), Wormhole's ETH on Solana, which Jupiter prices.
+  native: { symbol: "ETH", name: "Ether", decimals: 18, priceTwin: "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs" },
+  paysAtSafe: true,
   uniswap: {
     poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
     stateView: "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
@@ -108,6 +120,21 @@ export type EvmDeployment = {
    */
   retryRuns?: number;
   retryRunsUnclear?: number;
+  /**
+   * The deployment's Creator Earnings Destinations (#248): the contracts a Launch may name as the owner of its
+   * Creator's Credits, whose earnings the Keeper applies (#254). A Launch that names none of them pays a wallet.
+   */
+  destinations?: { holders: Address; burn: Address; liquidity: Address };
+  /**
+   * How far behind its chain's head, in seconds, the Indexer may end a run before the chain's `indexer_behind` alert is
+   * raised (#254): ten minutes unless set. A run that ends within it resolves the alert.
+   */
+  behindAlertSeconds?: number;
+  /**
+   * The Keeper's native balance below which the chain's `keeper_low` alert is raised and no Volume Rebate is paid
+   * (#254), in raw units of the native asset: 0.01 of it unless set. Gas is paid whatever the balance.
+   */
+  keeperMinBalance?: bigint;
 };
 
 /** The native asset's address as a Quote Asset: the zero address, native ETH in the pool key (#242). */

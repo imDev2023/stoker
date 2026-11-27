@@ -3,12 +3,13 @@ import {
 } from "viem";
 import { and, count, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import {
-  checksum, decodeBurns, decodeGraduations, decodeLaunches, decodeTrades, EvmDecodeError, NATIVE, poolsNamed, priceFromSqrtX96, priceFromStartTick, type ChainContracts,
+  checksum, decodeBurns, decodeGraduations, decodeLaunches, decodeTrades, EvmDecodeError, graduationQuote, NATIVE, poolsNamed, priceFromSqrtX96, priceFromStartTick, type ChainContracts,
   type LaunchEvent, type PoolInfo,
 } from "@launchpad/evm";
 import type { IndexerReplay, ReplayIndexer } from "@launchpad/contract";
 import { chainCursors, evmQuoteAssets, graduations, indexerFailures, launches, launchMarkets, operatorAlerts, type Db } from "@launchpad/db";
 import { insertTrade, openMarket } from "../../market";
+import { writeBooks } from "./books";
 import { withoutRpcUrl, type EvmChainConfig } from "./config";
 
 /** ERC-8056's one required read (the knowledge base's `09-eip-8056.md`): a Stock Token's multiplier in force, 18 decimals. */
@@ -42,6 +43,10 @@ export type EvmIndexRun = {
   traded: number;
   burned: number;
   graduated: number;
+  /** Ledger entries written from our contracts' payments, burns and additions (#254). */
+  recorded: number;
+  /** How far behind the chain's head the run ended, in seconds, by the newest block it has written; null before its first. */
+  secondsBehind: number | null;
   /** Transactions set aside on this run, each with why: tried on its runs, counted by the chain's alert, and the run went on. */
   skipped: { hash: string; error: string }[];
   /** The transaction the run stopped on, to be read again by the next run; null when it stopped for no transaction. */
@@ -123,7 +128,7 @@ const isRangeRefused = (e: unknown) =>
   !isRateLimited(e) &&
   /blocks? range|range (is )?too (large|wide)|ranges? over [\d,]+ blocks|more than [\d,]+ (results|logs)|response size|limited to (a )?[\d,]+/i.test(nodeError(e)?.message ?? "");
 /** The node saying a call reverted: JSON-RPC code 3, or a revert's data with any code. Never `-32603` alone, which is the provider's own failure. */
-const nodeSaysRevert = (e: unknown) => {
+export const nodeSaysRevert = (e: unknown) => {
   const node = nodeError(e);
   return node !== null && node.code !== 429 && (node.code === 3 || isRevertData(node.data));
 };
@@ -178,7 +183,7 @@ type Session = {
   range: number;
   ceiling: number;
   clean: number;
-  counts: { launched: number; traded: number; burned: number; graduated: number };
+  counts: { launched: number; traded: number; burned: number; graduated: number; recorded: number };
   resolved: number;
 };
 
@@ -195,7 +200,7 @@ async function session(db: Db, c: EvmChainConfig): Promise<Session & { head: { n
   const open = await db.select().from(indexerFailures).where(and(eq(indexerFailures.chain, c.chain), eq(indexerFailures.factory, c.factory), isNull(indexerFailures.resolvedAt)));
   return {
     db, c, client, requests, started, head: { number: head.number, time: times.get(head.number)! }, cursor,
-    contracts: { factory: c.factory, hook: c.hook, poolManager: c.profile.uniswap.poolManager, taxVault: c.taxVault },
+    contracts: contractsOf(c),
     pools: new Map(), notOurs: new Set(),
     async timeOf(block) {
       let t = times.get(block);
@@ -204,9 +209,14 @@ async function session(db: Db, c: EvmChainConfig): Promise<Session & { head: { n
     },
     failures: new Map(open.map((f) => [f.transaction, f])),
     ranges: 0, blocks: 0, ceiling, range: remembered ? Math.min(ceiling, Math.max(1, remembered.logBlockRange ?? ceiling)) : ceiling, clean: remembered?.logCleanRanges ?? 0,
-    counts: { launched: 0, traded: 0, burned: 0, graduated: 0 }, resolved: 0,
+    counts: { launched: 0, traded: 0, burned: 0, graduated: 0, recorded: 0 }, resolved: 0,
   };
 }
+
+/** Our contracts on the deployment, as the decoder reads them: the Destinations' too, when the deployment names them (#254). */
+export const contractsOf = (c: EvmChainConfig): ChainContracts => ({
+  factory: c.factory, hook: c.hook, poolManager: c.profile.uniswap.poolManager, taxVault: c.taxVault, ...(c.destinations ? { destinations: Object.values(c.destinations) } : {}),
+});
 
 /** Whether a reading has spent its budget of seconds, requests or ranges. */
 const spent = (s: Session) =>
@@ -231,7 +241,7 @@ async function scan(
     const end = Math.min(to, start + s.range - 1);
     let logs;
     try {
-      logs = await s.client.getLogs({ address: [s.c.factory, s.c.hook, s.c.taxVault], fromBlock: BigInt(start), toBlock: BigInt(end) });
+      logs = await s.client.getLogs({ address: [s.c.factory, s.c.hook, s.c.taxVault, ...(s.contracts.destinations ?? [])], fromBlock: BigInt(start), toBlock: BigInt(end) });
     } catch (e) {
       if (isRateLimited(e)) return { through, stopped: "rate limit" };
       if (s.range > 1 && isRangeRefused(e)) {
@@ -273,7 +283,7 @@ const failureKey = (c: EvmChainConfig, hash: string) => and(eq(indexerFailures.c
 /** Writes one transaction and counts what it wrote; a failure of its own that it had before is closed. */
 async function writeCounted(s: Session, hash: Hex) {
   const written = await writeTransaction(s, hash);
-  for (const k of ["launched", "traded", "burned", "graduated"] as const) s.counts[k] += written[k];
+  for (const k of ["launched", "traded", "burned", "graduated", "recorded"] as const) s.counts[k] += written[k];
   if (s.failures.has(hash)) {
     await s.db.update(indexerFailures).set({ resolvedAt: sql`now()` }).where(failureKey(s.c, hash));
     s.failures.delete(hash);
@@ -305,7 +315,7 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig): Promise<EvmIndex
   const fresh = s.cursor?.headBlock == null ? unread : s.cursor.headBlock - c.profile.finalityDepth - c.profile.rereadBlocks + 1;
   const from = Math.max(c.fromBlock, Math.min(unread, Math.max(unread - c.profile.rereadBlocks, fresh)));
   const run: EvmIndexRun = {
-    chain: c.chain, from: unread <= target ? unread : null, to: null, head: Number(s.head.number), launched: 0, traded: 0, burned: 0, graduated: 0, skipped: [], failed: null,
+    chain: c.chain, from: unread <= target ? unread : null, to: null, head: Number(s.head.number), launched: 0, traded: 0, burned: 0, graduated: 0, recorded: 0, secondsBehind: null, skipped: [], failed: null,
     logBlockRange: s.range, leftForLater: false, rateLimited: false, requests: 0,
   };
   let indexed = unread - 1;
@@ -376,10 +386,13 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig): Promise<EvmIndex
     else if (s.cursor) await db.update(chainCursors).set(rangeState()).where(and(eq(chainCursors.chain, c.chain), eq(chainCursors.factory, c.factory)));
   }
   Object.assign(run, s.counts, { logBlockRange: s.range, to: indexed >= unread ? indexed : null });
+  const indexedTime = indexed >= unread && !run.rateLimited ? await s.timeOf(BigInt(indexed)) : (s.cursor?.indexedBlockTime ?? null);
   await saveCursor({
-    ...(indexed >= unread && !run.rateLimited ? { indexedBlockTime: await s.timeOf(BigInt(indexed)) } : {}),
+    ...(indexed >= unread && !run.rateLimited ? { indexedBlockTime: indexedTime } : {}),
     headBlock: Number(s.head.number), headBlockTime: s.head.time, checkedAt: new Date(), ...rangeState(),
   });
+  run.secondsBehind = indexedTime ? Math.max(0, (s.head.time.getTime() - indexedTime.getTime()) / 1000) : null;
+  await syncBehind(db, c, run.secondsBehind);
   if (!run.rateLimited) await refreshMultipliers(db, c, s.client).catch((e: unknown) => (isRateLimited(e) ? void (run.rateLimited = true) : Promise.reject(e)));
   if (hadFailures || run.skipped.length > 0) await syncAlert(db, c);
   run.requests = s.requests.made;
@@ -469,6 +482,37 @@ async function syncAlert(db: Db, c: EvmChainConfig) {
     });
 }
 
+/** Ten minutes: how far behind its head a chain's Indexer may end a run before its `indexer_behind` alert is raised. */
+const BEHIND_ALERT_SECONDS = 600;
+
+/**
+ * The chain's one alert for an Indexer that stays behind its head (#254): raised when a run ends further behind than
+ * the deployment's setting, by the newest block it has written, and resolved by a run that ends within it. It covers
+ * every stall that is not a failed run: a provider's rate limit that lasts (which ends each run as succeeded), a budget
+ * too small for the chain's pace, a gap left by runs that did not happen. A run with no block written yet says nothing.
+ */
+async function syncBehind(db: Db, c: EvmChainConfig, secondsBehind: number | null) {
+  if (secondsBehind === null) return;
+  const limit = c.behindAlertSeconds ?? BEHIND_ALERT_SECONDS;
+  const alert = and(eq(operatorAlerts.kind, "indexer_behind"), eq(operatorAlerts.subject, c.chain));
+  if (secondsBehind <= limit) return void (await db.update(operatorAlerts).set({ resolvedAt: sql`now()` }).where(and(alert, isNull(operatorAlerts.resolvedAt))));
+  const message =
+    `${c.profile.name}'s Indexer ended its run ${Math.round(secondsBehind)} seconds behind the chain's head, past the ${limit} it may be: ` +
+    `a rate limit that lasts, a budget too small for the chain's pace or runs that stopped. GET /v1/chains shows how far behind it is.`;
+  await db
+    .insert(operatorAlerts)
+    .values({ kind: "indexer_behind", subject: c.chain, message })
+    .onConflictDoUpdate({
+      target: [operatorAlerts.kind, operatorAlerts.subject],
+      set: {
+        message,
+        raisedAt: sql`case when ${operatorAlerts.resolvedAt} is null then ${operatorAlerts.raisedAt} else now() end`,
+        notifiedAt: sql`case when ${operatorAlerts.resolvedAt} is null then ${operatorAlerts.notifiedAt} else null end`,
+        resolvedAt: null,
+      },
+    });
+}
+
 /** The pools of this deployment among `ids`, read once a reading: what a receipt's trades need, with the price each last traded at. */
 async function knowPools(s: Session, ids: Hex[]) {
   const unknown = ids.filter((id) => !s.pools.has(id) && !s.notOurs.has(id));
@@ -492,7 +536,7 @@ async function knowPools(s: Session, ids: Hex[]) {
 /** Writes what one transaction did: its Launches, its trades and its Reward Burns. */
 async function writeTransaction(s: Session, hash: Hex) {
   const { db, c, client, contracts, pools } = s;
-  const written = { launched: 0, traded: 0, burned: 0, graduated: 0 };
+  const written = { launched: 0, traded: 0, burned: 0, graduated: 0, recorded: 0 };
   const receipt = await client.getTransactionReceipt({ hash });
   if (receipt.status !== "success") return written;
   const blockTime = await s.timeOf(receipt.blockNumber);
@@ -522,6 +566,9 @@ async function writeTransaction(s: Session, hash: Hex) {
       .returning({ mint: graduations.mint });
     written.graduated += inserted.length;
   }
+  // What the transaction paid, burned, added or handed on, and the tiers it raised, on the Ledger (#254).
+  const books = new Map([...pools].map(([id, p]) => [id, { coin: p.coin, quote: p.quote, decimals: p.coinDecimals }]));
+  written.recorded += await writeBooks(db, c, contracts, receipt, blockTime, books);
   return written;
 }
 
@@ -560,6 +607,11 @@ async function writeLaunch(db: Db, c: EvmChainConfig, client: PublicClient, e: L
       supply: supply.toString(),
       // The Seed Position holds the whole supply but a Creator Lock (#244): there is no curve to sell from.
       totalBaseSell: (supply - (e.creatorLock?.amount ?? 0n)).toString(),
+      // Where the hook credits the Creator's share (ADR 0025), and which of the deployment's Destinations that is (#254).
+      creatorDestination: e.creatorDestination,
+      earningsDestination: destinationKind(c, e.creatorDestination),
+      // The Quote Asset that carries the coin to its Graduation Target, which an Active Day is a share of (ADR 0027).
+      graduationQuote: graduationQuote(e.seedLiquidity, e.openSqrtPriceX96, e.graduationSqrtPriceX96, e.quoteIsCurrency0).toString(),
       // A Creator Lock as the factory held it out (ADR 0023, #244): the coins, and its cliff and unlock time from Graduation.
       ...(e.creatorLock ? { lockedAmount: e.creatorLock.amount.toString(), lockCliffSeconds: e.creatorLock.cliff, lockUnlockSeconds: e.creatorLock.unlock } : {}),
       // On an EVM chain the Graduation Target is a price (ADR 0024), written into the Launch's terms; Graduation is #244.
@@ -578,6 +630,12 @@ async function writeLaunch(db: Db, c: EvmChainConfig, client: PublicClient, e: L
     pools.set(e.poolId, { poolId: e.poolId, coin: e.coin, quote: e.quote, quoteIsCurrency0: e.quoteIsCurrency0, coinDecimals: decimals, quoteDecimals: quote.decimals, price: start });
   }
   return inserted.length;
+}
+
+/** Which Creator Earnings Destination a Launch names (ADR 0011, #248): one of the deployment's three contracts, or a wallet. */
+function destinationKind(c: EvmChainConfig, destination: Address): "wallet" | "holders" | "burn" | "liquidity" {
+  for (const kind of ["holders", "burn", "liquidity"] as const) if (c.destinations && isAddressEqual(c.destinations[kind], destination)) return kind;
+  return "wallet";
 }
 
 /** A coin's supply after the transaction that made it: what its `Transfer` events minted, less what they burned. */
@@ -624,6 +682,8 @@ async function writeTrades(db: Db, c: EvmChainConfig, receipt: TransactionReceip
       // The Creator's share is part of the Platform Fee, a Credit (ADR 0025): there is no Creator Fee on an EVM chain.
       creatorFee: "0",
       shareFee: t.referrerFee.toString(),
+      // The Creator's Credit from the trade's Platform Fee, at the tier the coin held (#254, ADR 0027).
+      creatorCredit: t.creatorCredit.toString(),
       referrer: t.referrer,
       priceBefore: pool.price,
       priceAfter,
