@@ -8,11 +8,13 @@ import {StokerHook} from "../../src/StokerHook.sol";
 import {StokerKeys} from "../../src/StokerKeys.sol";
 
 /// The ladder key treated as stolen (#248). It sits on a server (ADR 0030), so its worst case is what
-/// matters: a thief can raise every coin to the top tier, one call a coin, and can do nothing else. What
-/// that costs is the platform's part of the Platform Fee on the coins raised, from 50% of it to 30%, paid to
-/// those coins' Creators from then on; no trader pays more, no Credit already booked moves, and nothing
-/// reaches a pool. The Admin's revoke stops the key at once, so the loss is bounded to the coins that
-/// existed and were raised before it: a raise is never undone, by anyone.
+/// matters: a thief can raise every graduated coin to the top tier, one call a coin, and can do nothing
+/// else. What that costs is the platform's part of the Platform Fee on the coins raised, from 50% of it to
+/// 30%, paid to those coins' Creators from then on; no trader pays more, no Credit already booked moves, and
+/// nothing reaches a pool. A coin that has not graduated is out of its reach, and the Admin's revoke stops
+/// the key at once, so the loss is bounded to the graduated coins raised before it: a raise is never undone,
+/// by anyone.
+/// forge-config: default.isolate = true
 contract LadderHostileTest is LadderTestBase {
     function test_hostile_aStolenLadderKeyRaisesEveryCoin_andNothingElse_andTheRevokeBoundsIt() public {
         address thief = ladderKey; // the key itself, in the wrong hands
@@ -23,12 +25,20 @@ contract LadderHostileTest is LadderTestBase {
             keys_[i] = _coin(i % 3);
             _churn(keys_[i], 1);
         }
+        // A coin that trades and has not graduated, launched before the others are measured.
+        PoolKey memory young = _newCoin(0);
         // Once every coin has traded: Credits are booked by address and asset, across coins.
         for (uint256 i; i < coins; i++) {
             before[i] = _everythingButTheTier(keys_[i]);
         }
+        bytes32 youngBefore = _everythingButTheTier(young);
         uint256 thiefQuote = quote.balanceOf(thief);
         uint256 thiefNative = thief.balance;
+
+        // It is out of the key's reach, however it trades.
+        vm.prank(thief);
+        vm.expectRevert(StokerHook.NotGraduated.selector);
+        hook.raiseTier(young.toId(), 3);
 
         // All but the last two, raised to the top in one call each.
         for (uint256 i; i < coins - 2; i++) {
@@ -39,6 +49,7 @@ contract LadderHostileTest is LadderTestBase {
         for (uint256 i; i < coins; i++) {
             assertEq(_everythingButTheTier(keys_[i]), before[i], "only the tier");
         }
+        assertEq(_everythingButTheTier(young), youngBefore, "and nothing at all on the coin it could not raise");
         assertEq(quote.balanceOf(thief), thiefQuote, "the key reaches no funds");
         assertEq(thief.balance, thiefNative);
 
@@ -82,5 +93,33 @@ contract LadderHostileTest is LadderTestBase {
         vm.prank(fresh);
         hook.raiseTier(later.toId(), 2);
         assertEq(hook.creatorTierOf(later.toId()), 2);
+        assertEq(hook.creatorTierOf(young.toId()), 1, "the coin that has not graduated was never raised");
+    }
+
+    /// What a stolen key's raise costs in gas, measured for the README: one raise straight to the top on a
+    /// graduated coin, each a transaction of its own with every account cold. Under call isolation the figure
+    /// is the whole transaction's, its 21,000 intrinsic gas and its calldata included (an empty call to a
+    /// wallet reads as 21,000 exactly). There is no batch raise, so this is what each coin costs a thief, and
+    /// the cheapest of them bounds how many a 32,000,000-gas block holds.
+    function test_hostile_theGasOfARaise_andHowManyABlockHolds() public {
+        (bool empty,) = makeAddr("nobody").call("");
+        assertTrue(empty);
+        assertEq(vm.lastCallGas().gasTotalUsed, 21_000, "the figure is a transaction's, intrinsic gas included");
+
+        uint256 most;
+        uint256 least = type(uint256).max;
+        for (uint256 i; i < 6; i++) {
+            PoolKey memory key = _coin(i % 3);
+            vm.prank(ladderKey);
+            hook.raiseTier(key.toId(), 3);
+            uint256 used = vm.lastCallGas().gasTotalUsed;
+            if (used > most) most = used;
+            if (used < least) least = used;
+        }
+        emit log_named_uint("the most one raise took, as a transaction", most);
+        emit log_named_uint("the least one raise took, as a transaction", least);
+        emit log_named_uint("raises in a 32,000,000-gas block", 32_000_000 / least);
+        assertLt(most, 60_000, "a raise stays cheap for the Keeper, and is what a thief pays a coin");
+        assertGt(least, 40_000, "and a block holds fewer than 800 of them");
     }
 }

@@ -135,8 +135,11 @@ contract DestinationGuardsTest is DestinationsLocalBase {
                 hook.registerLaunch(key, forged);
 
                 // Every key's every call, the Payout Call, the Destination's work and the vault's calls.
-                _raise(key, 2);
-                _raise(key, 3);
+                // The ladder key's one call: refused here, since the coin has not graduated, and a raise
+                // that goes through moves the tier alone (`DestinationsGraduated.t.sol`, `Ladder.t.sol`).
+                vm.prank(ladderKey);
+                vm.expectRevert(StokerHook.NotGraduated.selector);
+                hook.raiseTier(id, 3);
                 vm.startPrank(platform);
                 keys.proposeKey(StokerKeys.Role.LadderKey, thief);
                 keys.revokeKey(StokerKeys.Role.Keeper);

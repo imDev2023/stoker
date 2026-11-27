@@ -8,9 +8,12 @@ import {StokerHook} from "../../src/StokerHook.sol";
 import {StokerKeys} from "../../src/StokerKeys.sol";
 
 /// The Creator Ladder's key on the real PoolManager, through the Universal Routers (#248's first
-/// criterion): after the ladder key raises a coin to the second tier, the next swap credits the Creator the
-/// second tier's share and the platform the rest, and the fee the trader pays is unchanged, to the wei
-/// against the chain's V4 Quoter. In a coin on either side of an NVDA pool and one paired with native ETH.
+/// criterion): after the ladder key raises a graduated coin to the second tier, the next swap credits the
+/// Creator the second tier's share and the platform the rest, and the fee the trader pays is unchanged, to
+/// the wei against the chain's V4 Quoter. In a coin on either side of an NVDA pool and one paired with
+/// native ETH. A raise needs Graduation, whose hold judges the price each transaction leaves, so every
+/// top-level call here is a transaction of its own.
+/// forge-config: default.isolate = true
 contract ForkLadderTest is ForkDestinationsBase {
     struct Seen {
         uint256 quoted; // the V4 Quoter's figure for the trade
@@ -53,6 +56,11 @@ contract ForkLadderTest is ForkDestinationsBase {
         _approveFor(router, trader, key);
         Trade memory open = Trade(true, true, 20 * _unit(key));
         _route(router, trader, key, open, _quoteTrade(key, open));
+        // No raise before Graduation, on the chain either.
+        vm.prank(ladderKey);
+        vm.expectRevert(StokerHook.NotGraduated.selector);
+        hook.raiseTier(key.toId(), 2);
+        _graduate(key);
         Trade[4] memory trades = _trades(key);
         for (uint256 i; i < trades.length; i++) {
             uint256 snap = vm.snapshotState();
@@ -106,6 +114,7 @@ contract ForkLadderTest is ForkDestinationsBase {
         for (uint256 kind; kind < 3; kind++) {
             PoolKey memory key = _launchTo(kind, address(0));
             _approveFor(UNIVERSAL_ROUTER, trader, key);
+            _graduate(key);
             vm.startPrank(ladderKey);
             hook.raiseTier(key.toId(), 3);
             vm.expectRevert(abi.encodeWithSelector(StokerHook.InvalidTier.selector, uint8(3), uint8(2)));

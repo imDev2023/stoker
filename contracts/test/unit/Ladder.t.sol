@@ -16,9 +16,11 @@ import {StokerKeys} from "../../src/StokerKeys.sol";
 import {TaxVault} from "../../src/TaxVault.sol";
 
 /// The Creator Ladder's key (#248, ADR 0027): a coin's Creator is credited the first Creator Tier's share
-/// with no key involved; the ladder key raises one coin's tier to the second or the top, which changes the
-/// Creator's part of every Platform Fee credited from then on and nothing else; and it can never lower a
-/// tier, raise past the top, or touch any other state.
+/// with no key involved; the ladder key raises one graduated coin's tier to the second or the top, which
+/// changes the Creator's part of every Platform Fee credited from then on and nothing else; and it can never
+/// lower a tier, raise past the top, raise a coin that has not graduated, or touch any other state. A raise
+/// needs Graduation, and the hold judges the price each transaction leaves, so the contracts over this base
+/// run with every top-level call a transaction of its own.
 abstract contract LadderTestBase is DestinationsLocalBase {
     using StateLibrary for IPoolManager;
 
@@ -54,8 +56,14 @@ abstract contract LadderTestBase is DestinationsLocalBase {
     }
 
     /// A standard Launch in the pool kind, the Creator's wallet as its Destination, with the trader holding
-    /// coins to sell.
+    /// coins to sell, and graduated, so the ladder key may raise it.
     function _coin(uint256 kind) internal returns (PoolKey memory key) {
+        key = _newCoin(kind);
+        _graduate(key);
+    }
+
+    /// The same coin before its Graduation.
+    function _newCoin(uint256 kind) internal returns (PoolKey memory key) {
         key = _launchTo(kind, address(0));
         _trade(key, trader, true, true, 20 * _unit(key));
     }
@@ -76,12 +84,15 @@ abstract contract LadderTestBase is DestinationsLocalBase {
                 hook.creditOf(platform, q),
                 hook.totalCredits(q),
                 _hookClaimsOf(key),
-                hook.taxBooked(id)
+                hook.taxBooked(id),
+                hook.graduationOf(id),
+                hook.openingFeeBooked(id)
             )
         );
     }
 }
 
+/// forge-config: default.isolate = true
 contract LadderTest is LadderTestBase {
     // ---------------------------------------------------------------- the first tier, with no key
 
@@ -222,6 +233,51 @@ contract LadderTest is LadderTestBase {
         assertEq(_credit(platform) - platform0, fee - fee * TOP_TIER_SHARE_BPS / 10_000);
     }
 
+    // ---------------------------------------------------------------- only a graduated coin
+
+    /// No raise before Graduation (the review of PR #278): Active Days are counted from Graduation, so a coin
+    /// that has not graduated cannot have reached a tier. A new coin, a coin trading above its target whose
+    /// hour has not run, and a coin whose hour has run but whose Graduation nobody has recorded are all
+    /// refused by name; once Graduation is recorded the same raise goes through.
+    function test_ladder_noRaiseBeforeGraduation() public {
+        for (uint256 kind; kind < 3; kind++) {
+            PoolKey memory key = _newCoin(kind);
+            PoolId id = key.toId();
+            for (uint8 tier = 2; tier <= 3; tier++) {
+                vm.prank(ladderKey);
+                vm.expectRevert(StokerHook.NotGraduated.selector);
+                hook.raiseTier(id, tier);
+            }
+
+            // Above its Graduation Target, the hold running and short of the hour.
+            address buyer = makeAddr("buyer");
+            uint256 crossing = _native(key) ? 7 ether : 100 ether;
+            if (_native(key)) vm.deal(buyer, crossing);
+            else deal(address(quote), buyer, crossing);
+            _trade(key, buyer, true, true, crossing);
+            vm.warp(vm.getBlockTimestamp() + 1 hours - 1);
+            vm.prank(ladderKey);
+            vm.expectRevert(StokerHook.NotGraduated.selector);
+            hook.raiseTier(id, 2);
+
+            // The hour has run, and no swap or call has recorded Graduation yet: still refused.
+            vm.warp(vm.getBlockTimestamp() + 1);
+            assertEq(hook.graduationOf(id).graduatedAt, 0, "not recorded yet");
+            vm.prank(ladderKey);
+            vm.expectRevert(StokerHook.NotGraduated.selector);
+            hook.raiseTier(id, 2);
+            assertEq(hook.creatorTierOf(id), 1);
+
+            // Recorded by the call anyone can make, and the raise goes through.
+            vm.prank(stranger);
+            hook.graduate(id);
+            _raise(key, 2);
+            assertEq(hook.creatorTierOf(id), 2);
+            Measured memory m = _measured(key, 0);
+            assertEq(m.creatorCredit, m.taken * SECOND_TIER_SHARE_BPS / 10_000);
+        }
+    }
+
     // ---------------------------------------------------------------- what the key cannot do
 
     function test_ladder_neverLowers_neverPastTheTop_neverTheSameTier() public {
@@ -249,6 +305,24 @@ contract LadderTest is LadderTestBase {
             hook.raiseTier(id, uint8(tier));
         }
         assertEq(hook.creatorTierOf(id), 3, "the top tier stays");
+    }
+
+    /// The Admin appoints the ladder key and never raises itself (the review of PR #278): an Admin that
+    /// proposed itself for the role and accepted is refused by name, as the Distributor refuses the Guard as
+    /// the round key, and a key it then appoints raises as usual.
+    function test_ladder_theAdminCannotRaise_evenAfterNamingItselfTheLadderKey() public {
+        PoolKey memory key = _coin(QUOTE_FIRST);
+        _setKey(StokerKeys.Role.LadderKey, platform);
+        assertEq(keys.holderOf(StokerKeys.Role.LadderKey), platform, "the Admin holds the ladder key");
+        for (uint8 tier = 2; tier <= 3; tier++) {
+            vm.prank(platform);
+            vm.expectRevert(StokerHook.AdminCannotRaise.selector);
+            hook.raiseTier(key.toId(), tier);
+        }
+        assertEq(hook.creatorTierOf(key.toId()), 1, "the Admin raised nothing");
+        _setKey(StokerKeys.Role.LadderKey, ladderKey);
+        _raise(key, 2);
+        assertEq(hook.creatorTierOf(key.toId()), 2);
     }
 
     function test_ladder_onlyTheLadderKey() public {
@@ -486,6 +560,7 @@ contract LadderDeployer {
 
 /// The shares are a Launch's terms, written from the factory's settings, never constants of the hook: a
 /// deployment with another ladder credits by its own.
+/// forge-config: default.isolate = true
 contract LadderOtherSharesTest is LadderTestBase {
     function _ladder() internal pure override returns (uint16, uint16, uint16) {
         return (4_000, 5_500, 10_000);

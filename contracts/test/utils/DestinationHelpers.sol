@@ -57,6 +57,21 @@ abstract contract DestinationHelpers is TaxHelpers, DistributorHelpers {
         keys.acceptKey(role);
     }
 
+    /// Buys the coin across its Graduation Target from a wallet of its own, waits the hour and records
+    /// Graduation (#244). The hold judges the price each transaction leaves, so a test that calls this runs
+    /// with every top-level call a transaction of its own (Foundry's isolate mode, set on the test contract).
+    function _graduate(PoolKey memory key) internal {
+        address graduator = makeAddr("graduator");
+        uint256 amount = _native(key) ? 7 ether : 100 ether;
+        if (_native(key)) vm.deal(graduator, graduator.balance + amount);
+        else deal(address(quote), graduator, quote.balanceOf(graduator) + amount);
+        _trade(key, graduator, true, true, amount);
+        vm.warp(vm.getBlockTimestamp() + 1 hours);
+        hook.graduate(key.toId());
+        assertGt(hook.graduationOf(key.toId()).graduatedAt, 0, "graduated");
+    }
+
+    /// A raise by the ladder key; the coin must have graduated (`_graduate`).
     function _raise(PoolKey memory key, uint8 tier) internal {
         vm.prank(ladderKey);
         hook.raiseTier(key.toId(), tier);

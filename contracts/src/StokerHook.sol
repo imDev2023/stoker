@@ -338,6 +338,12 @@ contract StokerHook is BaseHook, IUnlockCallback {
     error NotLadderKey();
     /// @notice A raise to the tier the coin holds or to one below it, or past the top.
     error InvalidTier(uint8 current, uint8 asked);
+    /// @notice A raise by the Admin, which appoints the ladder key and never raises itself: an Admin that
+    ///         named itself the ladder key still cannot.
+    error AdminCannotRaise();
+    /// @notice A raise for a coin whose Graduation is not recorded. Active Days are counted from Graduation
+    ///         (ADR 0027), so no coin can have reached a tier before it.
+    error NotGraduated();
     /// @notice The coin has graduated already; Graduation is recorded once.
     error AlreadyGraduated();
     /// @notice The price has not stood at or above the target for the hour; `holdSince` is zero when no hold
@@ -409,20 +415,30 @@ contract StokerHook is BaseHook, IUnlockCallback {
     // ------------------------------------------------------------------ the Creator Ladder's key (#248)
 
     /// @notice Raises one coin's Creator Tier to the second or the top, by the ladder key of the moment alone
-    ///         (`keys.holderOf(Role.LadderKey)`, so a replacement or a revoke takes effect at once). From this
-    ///         block the Creator's part of every Platform Fee the coin's swaps pay is the new tier's share,
-    ///         as written in the Launch's terms; what the trader pays does not change, and nothing already
-    ///         credited moves. This is the whole of the key's power: it cannot lower a tier, raise past the
-    ///         top, or touch a pool, a Seed Position, a Credit or a coin's terms.
+    ///         (`keys.holderOf(Role.LadderKey)`, so a replacement or a revoke takes effect at once), and only
+    ///         for a coin whose Graduation is recorded. From this block the Creator's part of every Platform
+    ///         Fee the coin's swaps pay is the new tier's share, as written in the Launch's terms; what the
+    ///         trader pays does not change, and nothing already credited moves. This is the whole of the key's
+    ///         power: it cannot lower a tier, raise past the top, raise a coin that has not graduated, or
+    ///         touch a pool, a Seed Position, a Credit or a coin's terms.
+    /// @dev The Admin appoints the ladder key and is refused by name, as the Distributor refuses the Guard
+    ///      as the round key: a cold key that could raise would be one more power on the hardware wallet, and
+    ///      an Admin that named itself the key would otherwise hold it. The Graduation read is the recorded
+    ///      one (`graduationOf(id).graduatedAt`), so a coin whose hold has run its hour is raised only after
+    ///      a swap or `graduate` has recorded it.
     /// @param tier The tier to raise the coin to: 2 or 3, above the one it holds.
     function raiseTier(PoolId id, uint8 tier) external {
         // A revoked key reads as nobody, which no caller is.
         if (msg.sender != keys.holderOf(StokerKeys.Role.LadderKey)) revert NotLadderKey();
+        if (msg.sender == keys.admin()) revert AdminCannotRaise();
         Terms memory t = _termsOf(id);
+        // Active Days are counted from Graduation, so a raise before it is never one the ladder asks for:
+        // refusing it bounds a stolen key to coins that have graduated.
+        if (_graduations[id].graduatedAt == 0) revert NotGraduated();
         uint8 current = FIRST_TIER + _creatorBooks[id].raised;
         if (tier <= current || tier > TOP_TIER) revert InvalidTier(current, tier);
         _creatorBooks[id].raised = tier - FIRST_TIER;
-        // The call before it is our own keys' view.
+        // The calls before it are our own keys' views.
         // forge-lint: disable-next-line(reentrancy-events)
         emit CreatorTierRaised(id, current, tier, _tierShareBps(t, tier - FIRST_TIER));
     }

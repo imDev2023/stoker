@@ -8,13 +8,17 @@ import {DestinationsLocalBase} from "../utils/DestinationsLocalBase.sol";
 import {OpeningFeeHelpers} from "../utils/OpeningFeeHelpers.sol";
 import {StokerTestBase} from "../utils/StokerTestBase.sol";
 import {IHoldersPart} from "../../src/interfaces/IHoldersPart.sol";
+import {StokerHook} from "../../src/StokerHook.sol";
 
-/// The Creator Ladder's key beside the Opening Fee (#248 with #246): a raise on a coin still inside its
-/// Opening Fee window changes the Creator's part of the Platform Fee and nothing of the Opening Fee. The buyer
-/// pays and receives the same, the Opening Fee booked for the coin's Support Liquidity is the same to the wei
-/// and is #246's own figure, the tax is the same, and the raise itself books nothing. In a standard coin, a
-/// Reward Launch and a Stoke Launch, in all three pool kinds, at the launch's own second, inside the window
-/// and in its last second, for a buy exact in and exact out and for a sell.
+/// The Creator Ladder's key beside the Opening Fee (#248 with #246). A raise needs Graduation, and a coin
+/// inside its Opening Fee window cannot have graduated (the hold alone is an hour), so the two never act on
+/// the same swap: a raise inside the window is refused by name, at its own second, mid-window and in its last
+/// second, and the buys there pay #246's own Opening Fee with the Creator on the first tier's share. A coin
+/// sniped in its window, later graduated and then raised credits its Creator the tier's share; the Opening
+/// Fee it booked is untouched by the raise, and no swap after the window pays one. In a standard coin, a
+/// Reward Launch and a Stoke Launch, in all three pool kinds; every top-level call is a transaction of its
+/// own, as the hold needs.
+/// forge-config: default.isolate = true
 contract LadderOpeningTest is DestinationsLocalBase, OpeningFeeHelpers {
     /// The real Distributor beside the real Tax Vault, as in the Destinations' fixture.
     function _deployHoldersPart(address taxVault_)
@@ -25,96 +29,79 @@ contract LadderOpeningTest is DestinationsLocalBase, OpeningFeeHelpers {
         return DestinationsLocalBase._deployHoldersPart(taxVault_);
     }
 
-    /// One buy at `elapsed` seconds after the launch on the given tier, and the coins it delivered; the state
-    /// is restored afterwards.
-    function _buyOnTier(PoolKey memory key, uint8 tier, uint256 elapsed, bool exactIn)
-        internal
-        returns (Seen memory s, uint256 coins, uint256 bookedByTheRaise)
-    {
-        uint256 snap = vm.snapshotState();
-        vm.warp(_launchedAt(key) + elapsed);
-        uint256 booked = hook.openingFeeBooked(key.toId());
-        if (tier > 1) _raise(key, tier);
-        bookedByTheRaise = hook.openingFeeBooked(key.toId()) - booked;
-        uint256 before = _coinOfKey(key).balanceOf(trader);
-        s = _tradeAndSee(key, true, exactIn, _buyAmount(key, exactIn), 0);
-        coins = _coinOfKey(key).balanceOf(trader) - before;
-        vm.revertToState(snap);
-    }
-
-    function _aRaiseInsideTheWindow(uint256 kind, uint256 launchType) internal {
+    function _aRaiseAndTheOpeningFee(uint256 kind, uint256 launchType) internal {
         PoolKey memory key = _launchOpen(kind, launchType, 0);
-        uint256 taxBps = _taxBpsOf(key);
-        uint256[3] memory seconds_ = [uint256(0), 7, OPENING_FEE_DURATION - 1];
-        uint16[3] memory shares = [CREATOR_SHARE_BPS, SECOND_TIER_SHARE_BPS, TOP_TIER_SHARE_BPS];
-        for (uint256 e; e < seconds_.length; e++) {
-            for (uint256 x; x < 2; x++) {
-                bool exactIn = x == 0;
-                (Seen memory first, uint256 firstCoins,) = _buyOnTier(key, 1, seconds_[e], exactIn);
-                uint256 fee = first.creatorCredit + first.platformCredit;
-                assertGt(first.opening, 0, "inside the window: an Opening Fee was paid");
-                assertGt(first.opening, fee, "and it dwarfs the Platform Fee");
-                assertEq(first.creatorCredit, fee * shares[0] / 10_000, "the first tier's share");
-                if (exactIn) {
-                    // #246's own figure for this second, from the rule kept in its tests.
-                    uint256 rate = _openingRateAt(seconds_[e], PLATFORM_FEE_BPS + taxBps);
-                    assertEq(first.opening, _feesOfGross(first.quoteIn, 0, taxBps, rate).opening, "#246's figure");
-                }
-                for (uint8 tier = 2; tier <= 3; tier++) {
-                    (Seen memory raised, uint256 coins, uint256 bookedByTheRaise) =
-                        _buyOnTier(key, tier, seconds_[e], exactIn);
-                    assertEq(bookedByTheRaise, 0, "a raise books no Opening Fee");
-                    // The Opening Fee is untouched, with everything else the buyer pays.
-                    assertEq(raised.opening, first.opening, "the Opening Fee is the same to the wei");
-                    assertEq(raised.tax, first.tax, "the tax is the same");
-                    assertEq(raised.vaultClaims, first.vaultClaims, "the vault was given the same");
-                    assertEq(raised.quoteIn, first.quoteIn, "the buyer pays the same");
-                    assertEq(coins, firstCoins, "the buyer receives the same");
-                    // The Creator's Credit follows the tier, and the platform has the rest of the same fee.
-                    assertEq(raised.creatorCredit + raised.platformCredit, fee, "the Platform Fee is the same");
-                    assertEq(raised.creatorCredit, fee * shares[tier - 1] / 10_000, "the tier's share");
-                    assertGt(raised.creatorCredit, first.creatorCredit);
-                }
-            }
-        }
-
-        // A sell inside the window pays no Opening Fee on any tier, and its Credit follows the tier too.
-        vm.warp(_launchedAt(key) + 3);
-        _tradeAndSee(key, true, true, _buyAmount(key, true) * 20, 0);
-        _raise(key, 2);
-        Seen memory sold = _tradeAndSee(key, false, true, _coinOfKey(key).balanceOf(trader) / 2, 0);
-        assertEq(sold.opening, 0, "a sell never pays it");
-        assertEq(
-            sold.creatorCredit,
-            (sold.creatorCredit + sold.platformCredit) * SECOND_TIER_SHARE_BPS / 10_000,
-            "the second tier's share of a sell's fee"
-        );
-        // The coin's own book of Creator Credits holds the Credits and nothing of the Opening Fee.
         PoolId id = key.toId();
+        uint256 taxBps = _taxBpsOf(key);
+        uint256 launchedAt = _launchedAt(key);
+
+        // Inside the window: no raise, and each buy pays #246's own figure on the first tier's share.
+        uint256[3] memory seconds_ = [uint256(0), 7, OPENING_FEE_DURATION - 1];
+        for (uint256 e; e < seconds_.length; e++) {
+            vm.warp(launchedAt + seconds_[e]);
+            for (uint8 tier = 2; tier <= 3; tier++) {
+                vm.prank(ladderKey);
+                vm.expectRevert(StokerHook.NotGraduated.selector);
+                hook.raiseTier(id, tier);
+            }
+            Seen memory snipe = _tradeAndSee(key, true, true, _buyAmount(key, true), 0);
+            uint256 rate = _openingRateAt(seconds_[e], PLATFORM_FEE_BPS + taxBps);
+            assertGt(snipe.opening, 0, "inside the window: an Opening Fee was paid");
+            assertEq(snipe.opening, _feesOfGross(snipe.quoteIn, 0, taxBps, rate).opening, "#246's figure");
+            assertEq(
+                snipe.creatorCredit,
+                (snipe.creatorCredit + snipe.platformCredit) * CREATOR_SHARE_BPS / 10_000,
+                "the first tier's share"
+            );
+        }
+        assertEq(hook.creatorTierOf(id), 1, "nothing raised it inside its window");
+
+        // After the window the coin graduates like any other, and only then is it raised.
+        vm.warp(launchedAt + OPENING_FEE_DURATION);
+        uint256 booked = hook.openingFeeBooked(id);
+        assertGt(booked, 0);
+        _graduate(key);
+        assertEq(hook.openingFeeBooked(id), booked, "no Opening Fee after the window, on the crossing buy either");
+        _raise(key, 2);
+        assertEq(hook.openingFeeBooked(id), booked, "a raise books no Opening Fee");
+
+        // Every swap type on the raised coin: the tier's share of the Platform Fee, and no Opening Fee.
+        for (uint256 swapType; swapType < 4; swapType++) {
+            bool buy = swapType < 2;
+            bool exactIn = swapType % 2 == 0;
+            uint256 amount = buy ? _buyAmount(key, exactIn) : (exactIn ? 1e9 ether : _buyAmount(key, true) / 20);
+            Seen memory s = _tradeAndSee(key, buy, exactIn, amount, 0);
+            uint256 fee = s.creatorCredit + s.platformCredit;
+            assertGt(fee, 0);
+            assertEq(s.opening, 0, "no Opening Fee after the window");
+            assertEq(s.creatorCredit, fee * SECOND_TIER_SHARE_BPS / 10_000, "the second tier's share");
+        }
+        assertEq(hook.openingFeeBooked(id), booked, "the Opening Fee booked is as the window left it");
+        // The coin's own book of Creator Credits holds the Credits and nothing of the Opening Fee.
         assertEq(hook.creatorCreditedOf(id), hook.creditOf(creator, _quoteOfKey(key)), "the book is the Credits");
-        assertEq(_vaultClaims(key), hook.taxBooked(id) + hook.openingFeeBooked(id), "the vault has the rest");
+        assertEq(_vaultClaims(key), hook.taxBooked(id) + booked, "the vault has the tax and the Opening Fee");
     }
 
-    function test_ladderInTheOpening_standard() public {
+    function test_ladderAndTheOpeningFee_standard() public {
         for (uint256 kind; kind < 3; kind++) {
             uint256 snap = vm.snapshotState();
-            _aRaiseInsideTheWindow(kind, 0);
+            _aRaiseAndTheOpeningFee(kind, 0);
             vm.revertToState(snap);
         }
     }
 
-    function test_ladderInTheOpening_aRewardLaunch() public {
+    function test_ladderAndTheOpeningFee_aRewardLaunch() public {
         for (uint256 kind; kind < 3; kind++) {
             uint256 snap = vm.snapshotState();
-            _aRaiseInsideTheWindow(kind, 1);
+            _aRaiseAndTheOpeningFee(kind, 1);
             vm.revertToState(snap);
         }
     }
 
-    function test_ladderInTheOpening_aStokeLaunch() public {
+    function test_ladderAndTheOpeningFee_aStokeLaunch() public {
         for (uint256 kind; kind < 3; kind++) {
             uint256 snap = vm.snapshotState();
-            _aRaiseInsideTheWindow(kind, 2);
+            _aRaiseAndTheOpeningFee(kind, 2);
             vm.revertToState(snap);
         }
     }

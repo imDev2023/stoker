@@ -15,12 +15,15 @@ interface ILadderWindow {
     function tierNow() external view returns (uint8);
     function shareNow() external view returns (uint16);
     function creditedNow() external view returns (uint256);
+    function graduated() external view returns (bool);
+    function crossingAmount() external view returns (uint256);
 }
 
 /// The books' handler with the Creator Ladder's key added (#248): beside every trade, Payout Call, refusal
-/// and privileged call of the books' campaigns, the ladder key of the moment raises the coin's tier (or asks
-/// for a tier it may not have), everyone else tries to, and trades are measured against the share of the
-/// tier the coin holds when they are made.
+/// and privileged call of the books' campaigns, a buy crosses the coin's Graduation Target and a later call
+/// records Graduation once the hour has run, the ladder key of the moment raises the coin's tier (or asks
+/// for a tier it may not have, or for any tier before Graduation), everyone else tries to, and trades are
+/// measured against the share of the tier the coin holds when they are made.
 contract LadderHandler is BooksHandler {
     ILadderWindow internal immutable w;
 
@@ -29,6 +32,8 @@ contract LadderHandler is BooksHandler {
     uint256 public tierFalls; // a tier seen lower than one seen before
     uint256 public unauthorizedRaises; // a raise by anyone but the ladder key of the moment
     uint256 public wrongRaises; // a raise the key should have been refused, or a refusal it should not
+    uint256 public raisesBeforeGraduation; // a tier that moved while the coin had not graduated
+    uint256 public graduations; // calls that recorded the coin's Graduation
     uint256 public creditedMoves; // a raise, tried or made, after which the coin's book of Creator Credits differed
     uint256 public tieredSwaps; // swaps measured against their tier's share
     uint256 public shareMismatches; // such a swap whose Creator's Credit was not the tier's share of the fee
@@ -38,16 +43,34 @@ contract LadderHandler is BooksHandler {
         w = ILadderWindow(address(t_));
     }
 
-    /// The ladder key of the moment asks for a tier from 0 to 4: one above the coin's goes through, any
-    /// other is refused. Counted with the privileged calls, which must move nothing but the tier.
+    /// A buy across the coin's Graduation Target, counted with the books' own trades. The hold then runs,
+    /// unless a later sell leaves the price under the target again.
+    function crossTarget(uint256 actorSeed) external {
+        _trade(actorSeed, true, true, w.crossingAmount(), 0, 0);
+    }
+
+    /// An hour on, the call anyone can make records Graduation if the price has stood. Each handler call is a
+    /// transaction of its own, as the hold needs: the crossing buy and this call are never one.
+    function recordGraduation() external {
+        vm.warp(vm.getBlockTimestamp() + 1 hours);
+        try StokerHook(payable(w.hookAddr())).graduate(w.poolId()) {
+            graduations++;
+        } catch {}
+    }
+
+    /// The ladder key of the moment asks for a tier from 0 to 4: one above the coin's goes through once the
+    /// coin has graduated, and any other, and every one before Graduation, is refused. Counted with the
+    /// privileged calls, which must move nothing but the tier.
     function raise(uint8 tier) external {
         address holder = t.holderOf(StokerKeys.Role.LadderKey);
         if (holder == address(0)) return;
         tier = uint8(bound(tier, 0, 4));
         uint8 before = w.tierNow();
         uint256 credited = w.creditedNow();
+        bool graduated = w.graduated();
         _privileged(holder, w.hookAddr(), abi.encodeCall(StokerHook.raiseTier, (w.poolId(), tier)));
-        bool allowed = tier > before && tier <= 3;
+        if (!graduated && w.tierNow() != before) raisesBeforeGraduation++;
+        bool allowed = graduated && holder != t.currentAdmin() && tier > before && tier <= 3;
         if (allowed ? w.tierNow() != tier : w.tierNow() != before) wrongRaises++;
         _note(before, credited);
     }
@@ -59,8 +82,10 @@ contract LadderHandler is BooksHandler {
         tier = uint8(bound(tier, 0, 4));
         uint8 before = w.tierNow();
         uint256 credited = w.creditedNow();
+        bool graduated = w.graduated();
         _privileged(who, w.hookAddr(), abi.encodeCall(StokerHook.raiseTier, (w.poolId(), tier)));
         if (w.tierNow() != before && !isKey) unauthorizedRaises++;
+        if (w.tierNow() != before && (!graduated || who == t.currentAdmin())) raisesBeforeGraduation++;
         _note(before, credited);
     }
 
@@ -96,7 +121,8 @@ contract LadderHandler is BooksHandler {
 }
 
 /// The ladder's invariants, over either of the books' campaigns (#248): a coin's tier never falls; nobody
-/// but the ladder key of the moment raises it, and it raises only upward and only to the top; the Credits of
+/// but the ladder key of the moment raises it, never the Admin and never before the coin has graduated, and
+/// it raises only upward and only to the top; the Credits of
 /// every swap still sum to the fee taken at every tier (the books' own invariant, now with raises among the
 /// calls), the Creator's part being the tier's share; and no raise, tried or made, touches a pool, a Seed
 /// Position, a Credit or the coin's terms (the books' own invariant, with the raise among the privileged
@@ -138,6 +164,16 @@ abstract contract LadderInvariants is BooksInvariantBase {
         return hook.creatorCreditedOf(key.toId());
     }
 
+    function graduated() external view returns (bool) {
+        return hook.graduationOf(key.toId()).graduatedAt != 0;
+    }
+
+    /// A buy that carries the coin across its Graduation Target with room to spare, under the handler's own
+    /// bound on a trade.
+    function crossingAmount() external view returns (uint256) {
+        return 120 * quoteUnit();
+    }
+
     function invariant_aCoinsTierNeverFalls() public view {
         assertEq(ladder.tierFalls(), 0, "a tier fell");
         uint8 tier = hook.creatorTierOf(key.toId());
@@ -148,6 +184,10 @@ abstract contract LadderInvariants is BooksInvariantBase {
 
     function invariant_onlyTheLadderKeyRaises_andOnlyUpward() public view {
         assertEq(ladder.unauthorizedRaises(), 0, "a raise by another caller");
+        assertEq(ladder.raisesBeforeGraduation(), 0, "a raise before Graduation, or by the Admin");
+        if (hook.graduationOf(key.toId()).graduatedAt == 0) {
+            assertEq(hook.creatorTierOf(key.toId()), 1, "a coin that has not graduated holds the first tier");
+        }
         assertEq(ladder.wrongRaises(), 0, "a raise the key may not make, or a refusal of one it may");
     }
 
@@ -169,10 +209,19 @@ contract LadderBooksInvariantTest is BooksInvariantTest, LadderInvariants {
         LadderInvariants.setUp();
     }
 
-    /// The handler does what the campaign relies on: driven by hand it raises, refuses, and measures swaps on
-    /// every tier, so the invariants above are not held by a handler that never reaches a raise.
+    /// The handler does what the campaign relies on: driven by hand it is refused before Graduation, crosses
+    /// the target, records Graduation, raises, refuses, and measures swaps on every tier, so the invariants
+    /// above are not held by a handler that never reaches a raise. Every call here is a transaction of its
+    /// own, as each handler call of a campaign is.
+    /// forge-config: default.isolate = true
     function test_ladderCampaign_theHandlerRaisesAndMeasuresAtEveryTier() public {
         ladder.tradeAtTier(0, true, true, 5 ether);
+        ladder.raise(2);
+        ladder.raise(3);
+        assertEq(ladder.raises(), 0, "no raise before Graduation");
+        ladder.crossTarget(1);
+        ladder.recordGraduation();
+        assertEq(ladder.graduations(), 1, "the hold ran and Graduation was recorded");
         ladder.othersRaise(0, 2);
         ladder.othersRaise(4, 3);
         assertEq(hook.creatorTierOf(key.toId()), 1, "nobody else raised it");
