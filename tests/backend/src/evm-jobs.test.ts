@@ -65,9 +65,12 @@ describe.skipIf(!hasEvm)("EVM chain: the Keeper's Payout Calls", () => {
     const platform = entries.filter((e) => e.kind === "platform_fee" && e.destination === evm()!.admin.address);
     expect(platform.length).toBeGreaterThan(0);
     expect(platform.every((e) => e.chain === "robinhood" && /^0x[0-9a-f]{64}$/.test(e.signature))).toBe(true);
-    // A run with nothing owed sends no Payout Call for it.
-    const again = await runKeeper();
-    expect(again.paid.filter((p) => p.asset === NATIVE)).toEqual([]);
+    // A second run pays nobody twice: the Creator, owed nothing now, gets nothing more and no second entry. (It may pay
+    // others: the first run's Tax Vault buys pay the Platform Fee like any buy, crediting their coins' Creators.)
+    const after = await balanceOf(NATIVE, creator.address);
+    await runKeeper();
+    expect(await balanceOf(NATIVE, creator.address)).toBe(after);
+    expect((await ledgerOf("chain=robinhood&kind=creator_credit")).filter((e) => e.destination === creator.address)).toHaveLength(1);
   }, 240_000);
 
   test("a Creator the asset refuses is skipped and stays owed, and the run pays everyone else", async () => {
