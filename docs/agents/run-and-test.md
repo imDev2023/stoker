@@ -19,6 +19,7 @@ The text is the original's, one sentence a line.
   The lint also runs four checks of its own: the web's type scale and contrast (`apps/web/scripts`), `CLAUDE.md`'s size, and Row-Level Security on every table of the latest migration snapshot (`scripts/row-security.mjs`, #201).
   Without docker, `STACK_DATABASE_URL=postgres://user:pass@host:port/postgres` makes the stack create a throwaway database on that server instead (the user a superuser, since the stack gives each database to a plain owner role, `launchpad_stack`, that the migrations and the API use, #201; the Hyperdrive binding refuses a URL without a password); `STACK_LOG_DIR` keeps each process's log.
   The backend suite takes about eight minutes on Surfpool.
+  `UNITS_REPORT=<file> pnpm test:backend` also writes, as the suite ends, what every kind of transaction used of its compute-unit limit (`tests/backend/src/units.ts`, #282): run it after Raydium upgrades a program or a builder gains an instruction, and read `docs/agents/traps/chain.md` before sizing a limit from it.
   The UI suite needs TradingView's library (ADR 0017): its stack fetches it with `GITHUB_TOKEN`, `GH_TOKEN` or the signed-in `gh`, so a session without access to the private `tradingview/charting_library` can run lint, typecheck and the backend suite but not the UI suite or a web build.
 - Never edit `apps/api`, `packages/*` or `tools/*` sources while a backend run is in progress: `wrangler dev` hot-reloads the API mid-run and the results are meaningless.
   Tests, web and docs are safe to edit meanwhile.
