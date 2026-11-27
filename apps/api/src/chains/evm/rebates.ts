@@ -7,7 +7,7 @@
 import { and, desc, eq, gte, inArray, lt, notInArray, or, sql } from "drizzle-orm";
 import type { Address, Hex } from "viem";
 import { BUDGET_TOTAL_BPS } from "@launchpad/contract";
-import { NATIVE } from "@launchpad/evm";
+import { NATIVE, stokerKeysAbi } from "@launchpad/evm";
 import { evmJobTransactions, evmRebates, evmRebateWeeks, launches, ledgerEntries, trades, type Db } from "@launchpad/db";
 import type { Bindings, Config } from "../../env";
 import { budgets, budgetVersions, split } from "../../fees/budget";
@@ -47,7 +47,9 @@ async function rebateChain(db: Db, cfg: Config, c: EvmChainConfig, now: Date): P
   const spans = earningSpans(split(await budgetVersions(db), clock).inEffect);
   const [latest] = await db.select({ start: evmRebateWeeks.weekStart }).from(evmRebateWeeks).where(eq(evmRebateWeeks.chain, c.chain)).orderBy(desc(evmRebateWeeks.weekStart)).limit(1);
   const due = dueWeeks(spans, latest ? weekIndex(latest.start.getTime(), weekMs) : null, clock.getTime(), weekMs, WEEKS_PER_RUN);
-  const excluded = [...ourAddresses(c), ...(sender ? [sender.address.toLowerCase()] : [])];
+  // The platform's own wallets earn nothing, as on Solana: our contracts, the Admin and the Keeper.
+  const admin = await client.readContract({ address: c.keys, abi: stokerKeysAbi, functionName: "admin" });
+  const excluded = [...ourAddresses(c), admin.toLowerCase(), ...(sender ? [sender.address.toLowerCase()] : [])];
   for (const index of due) {
     const prices = await allPrices(db);
     const native = prices.get(priceKey(c.chain, NATIVE));

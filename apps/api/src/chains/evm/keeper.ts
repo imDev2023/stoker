@@ -92,8 +92,10 @@ async function keepChain(db: Db, c: EvmChainConfig): Promise<KeeperRun> {
   const balance = await client.getBalance({ address: sender.address });
   run.balance = balance.toString();
   await syncKeeperLow(db, c, sender.address, balance);
-  // What a job pays is decided on the chain's `safe` block where its profile says so (#254).
-  const blockTag = c.profile.paysAtSafe ? "safe" : "latest";
+  // Every call here pays out of our contracts, never out of a wallet of ours, and is simulated on the chain as it stands:
+  // it reads the latest block, so a Destination's funding is spent in the same run. What the Keeper pays from its own
+  // balance, the Volume Rebates, waits for the chain's `safe` block (`rebates.ts`).
+  const blockTag = "latest" as const;
   const tickSpacing = await client.readContract({ address: c.registry, abi: quoteRegistryAbi, functionName: "tickSpacing" });
 
   /** Simulates and sends one call, recording what became of it under `list`. */
