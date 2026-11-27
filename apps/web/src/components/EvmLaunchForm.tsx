@@ -38,7 +38,8 @@ type Step =
   | { kind: "editing" }
   | { kind: "preparing"; retrying: Failed | null }
   | { kind: "signing"; prepared: PreparedEvmLaunch; ask: Ask; asks: 1 | 2 }
-  | { kind: "confirming"; prepared: PreparedEvmLaunch; ask: "approve" | "launch"; hash: string }
+  // `reading`: the launch has landed and the API has not read it within the first minute.
+  | { kind: "confirming"; prepared: PreparedEvmLaunch; ask: "approve" | "launch"; hash: string; reading?: boolean }
   | Failed;
 
 /** The wallet is on another network than the launch's: nothing is asked of it until it has switched. */
@@ -85,8 +86,7 @@ export function EvmLaunchForm({
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   /** What a prepare refused by the chain's own rules, shown under each field until the Creator edits the form. */
   const [refused, setRefused] = useState<FieldRefusals>({});
-  // A launch that has landed but that the API has not read within the first minute, and whether this form is still shown.
-  const [reading, setReading] = useState(false);
+  // Whether this form is still shown: a launch that has landed is reported until the API has read it.
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -148,7 +148,7 @@ export function EvmLaunchForm({
    */
   async function landed(hash: string, coin: string) {
     if (!(await reportEvmTransaction(options.chain, hash))) {
-      setReading(true);
+      setStep((s) => (s.kind === "confirming" ? { ...s, reading: true } : s));
       while (alive.current && !(await reportEvmTransaction(options.chain, hash, { attempts: 12, waitMs: 5_000 }))) {
         // Asked again: the coin is on the chain, and the API reads it on its Indexer's next run at the latest.
       }
@@ -560,7 +560,7 @@ function Summary({ options, o, ticker, symbol, preview, step, failed, error, exp
           <div className={styles.status} role="status">
             <span className={styles.statusDot} aria-hidden />
             <span className={styles.statusText}>
-              {reading ? `${symbol} has launched, and its page opens as soon as the site has read the chain` : step.ask === "approve" ? "Approving your first buy" : `Launching ${symbol}`}, <span className="mono">{elapsed}s</span>
+              {step.reading ? `${symbol} has launched, and its page opens as soon as the site has read the chain` : step.ask === "approve" ? "Approving your first buy" : `Launching ${symbol}`}, <span className="mono">{elapsed}s</span>
             </span>
             <Address value={step.hash} kind="tx" platform={explorer} className={styles.statusLink} />
           </div>
