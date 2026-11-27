@@ -20,7 +20,9 @@ const hasEvm = inject("harness").evm !== null;
 const CRWD: Address = "0xea72Ecca2d0f6bFA1394DBBCff85b52CD4233931";
 /** Two Stock Tokens only this file lists, for a Referrer Fee cap of their own: the registry's most (5.00%), and none. */
 const SGOV: Address = "0x92FD66527192E3e61d4DDd13322Aa222DE86F9B5";
-const AAPL: Address = "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9";
+// A Stock Token no other file lists (the knowledge base's `16-token-contracts.md`): its Listing here has no Referrer Fee.
+// `evm-robustness.test.ts` needs its own Stock Token unread by any API until its own test, so this file takes another.
+const MSFT: Address = "0xe93237C50D904957Cf27E7B1133b510C669c2e74";
 const STOCK_START_TICK = -244_200;
 const { universalRouter: ROUTER, permit2: PERMIT2 } = ROBINHOOD_CHAIN.uniswap;
 const permit2Abi = parseAbi(["function allowance(address user, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)"]);
@@ -57,13 +59,13 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork is quote
   beforeAll(async () => {
     await listQuote(CRWD, STOCK_START_TICK);
     await listQuoteWithCap(SGOV, STOCK_START_TICK, 500);
-    await listQuoteWithCap(AAPL, STOCK_START_TICK, 0);
+    await listQuoteWithCap(MSFT, STOCK_START_TICK, 0);
     const creator = await evmWallet();
     standard = await launchCoin(creator);
     reward = await launchCoin(creator, { reward: { taxBps: 300, burnShareBps: 1000, liquidityShareBps: 0 } });
     stock = await launchCoin(creator, { quote: CRWD });
     protocolFeeCoin = await launchCoin(creator);
-    noReferrer = await launchCoin(creator, { quote: AAPL });
+    noReferrer = await launchCoin(creator, { quote: MSFT });
     await runIndexer();
     await afterOpeningFee([standard, reward, stock, protocolFeeCoin, noReferrer]);
   });
