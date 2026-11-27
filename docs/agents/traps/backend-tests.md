@@ -36,6 +36,12 @@ The text is the original's, one sentence a line.
 - Requests are counted per UTC minute (`minuteOf` in `apps/api/src/apiKeys.ts`), so a burst that must meet a limit may not straddle two minutes: `api-keys.test.ts` started one at 02:50:59Z in CI on 2026-11-16 and no request was refused.
   `rate-limits.test.ts` waits for a fresh minute (`nextMinute`), and `api-keys.test.ts` waits only when the minute is nearly over (`clearOfMinuteEnd`).
 
+- The backend stack quotes a seventh Quote Asset, the unlucky one (#282, `unluckyQuote` on `startStack`, `env().unluckyQuote`, ticker `UNLUCKY`, 6 decimals, 1 USD): an SPL Token mint found when the stack starts, whose account for that stack's operations wallet has an address of at least 14 tries, with the local admin key as its mint and freeze authority.
+  Only `fee-collector.test.ts` launches against it: its first claim there must be the one that opens the operations wallet's account, so no other file may launch a coin paired with it, mint it to the operations wallet or open that account.
+  It is in no lookup table, so a coin paired with it has no First Buy and is never migrated, and the UI stack does not have it (its pages list every Quote Asset).
+  The same file freezes that account for one run to see a claim fail and the other collections go on, so one `fee-collector` run of every backend run is failed on purpose with `platform_fee <the asset's vault>: failed` (beside `operator.test.ts`'s simulated one), and a file that reads the job's runs must allow for both.
+  A test that needs an unlucky address of its own makes one with `mintWithUnluckyAccount` (`client.ts`): the search doubles with every try, about three seconds at 13 and six at 14.
+
 ## The EVM side (#252)
 
 - A fork carries on from its block's time (2026-11-22 for L2 block 120,800,000), so its trades would fall outside every "last 24 hours" figure; the stack sets the fork's clock to now before it deploys (`deployStoker` in `tools/stack/src/evm.ts`), and a test that moves the fork's clock must leave it no earlier; moving it forward dates every later EVM coin in the future, on top of the shared board, where a Solana test reads its own coin first (`launch.test.ts` failed that way once), so no test moves it; a deadline is still the fork's latest block's time plus a margin (`deadline` in `tests/backend/src/evm.ts`).

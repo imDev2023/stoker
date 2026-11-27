@@ -17,9 +17,10 @@ import {
 import {
   CreatorLockStatus, FirstBuyQuote, HolderList, LaunchTrust, PreparedCreatorLockClaim, PreparedLaunch, RewardRoundDetail, WalletHolding,
 } from "@launchpad/contract";
-import { migrateCurve, send } from "@launchpad/localnet";
+import { accountAddressTries, migrateCurve, send } from "@launchpad/localnet";
 import {
-  SOL, connection, deliverWebhook, env, fundedWallet, getLaunch, listQuotes, prepare, rawTransaction, refreshQuoteRegistry, signAndSend, tokenBalance, trade,
+  SOL, connection, deliverWebhook, env, fundedWallet, getLaunch, listQuotes, mintWithUnluckyAccount, prepare, rawTransaction, refreshQuoteRegistry,
+  signAndSend, tokenBalance, trade,
 } from "./client";
 
 const programs = programsFor("localnet");
@@ -48,7 +49,11 @@ const blockTimeOf = async (signature: string) => (await rawTransaction(signature
  */
 const stampedAt = (stamped: number | null, blockTime: number, offset = 0) => stamped !== null && stamped - offset >= blockTime - 1 && stamped - offset <= blockTime;
 
-type Direct = { lock: CreatorLock | null; rewardTaxBps?: number; totalBaseSell?: BN };
+type Direct = {
+  lock: CreatorLock | null; rewardTaxBps?: number; totalBaseSell?: BN;
+  /** Gives the coin a mint whose account for the Creator has an address of at least this many tries (`mintWithUnluckyAccount`). */
+  creatorAccountTries?: number;
+};
 
 /**
  * A launch sent straight to the chain with our builders, the lock's coins given to the Creator in the same transaction,
@@ -56,7 +61,9 @@ type Direct = { lock: CreatorLock | null; rewardTaxBps?: number; totalBaseSell?:
  */
 async function launchDirectly(d: Direct) {
   const creator = await fundedWallet(10);
-  const mint = Keypair.generate();
+  const mint = d.creatorAccountTries
+    ? mintWithUnluckyAccount(creator.publicKey, d.creatorAccountTries, d.rewardTaxBps ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID)
+    : Keypair.generate();
   const pool = pdas().pool(mint.publicKey, WSOL_MINT);
   const params: InitializeParams = {
     program: program(), payer: creator.publicKey, creator: creator.publicKey, globalConfig: solConfig(), platformConfig: platformConfig(),
@@ -330,6 +337,23 @@ describe("claiming a Creator Lock", () => {
     // A wallet with no share cannot claim a coin.
     const stranger = await fundedWallet();
     await expect(claim(coin, stranger)).rejects.toThrow(/AccountNotInitialized|0xbc4/);
+  });
+
+  it("pays a Creator whose account for the coin has an unlucky address, opening the account in the claim", { timeout: 180_000 }, async () => {
+    // A Creator who never bought their own coin has no account for it, so the claim opens one, and LaunchLab and the
+    // program that opens it search for its address on-chain three times between them, at 1,500 compute units a try.
+    // Half of all accounts take one try; one in 4,000 takes 13, which costs 54,000 units more than the 50,000 of most,
+    // and under the claim's old limit of 100,000 that Creator could never claim (#282).
+    const coin = await launchDirectly({ lock: { ...lock, cliffSeconds: 2, unlockSeconds: 0 }, creatorAccountTries: 13 });
+    const creator = coin.creator.publicKey;
+    expect(accountAddressTries(creator, coin.mint)).toBeGreaterThanOrEqual(13);
+    await sellOut(coin);
+    await migrateCurve(connection(), coin.pool);
+    await chainTimeReaches((await lockOf(coin)).unlockStartsAt! + 1);
+    expect(await connection().getAccountInfo(getAssociatedTokenAddressSync(coin.mint, creator))).toBeNull();
+    await claim(coin);
+    expect((await heldBy(coin, creator)).amount).toBe(BigInt(lock.lockedAmount.toString()));
+    expect(await tokenBalance(pdas().vault(coin.pool, coin.mint))).toBe(0n);
   });
 
   it("withholds a Reward Launch's Reward Tax on what the Creator claims, like any transfer of the coin", { timeout: 180_000 }, async () => {

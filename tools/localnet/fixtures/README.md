@@ -14,6 +14,7 @@ Dumped from devnet on 2026-09-27 with `solana program dump` and `solana account 
 
 Raydium's admin creates GlobalConfigs, so the local chain plants its own: at startup it copies the SOL GlobalConfig into a GlobalConfig for every quote mint of the set it runs, at that mint's PDA under the devnet program, with only the quote mint (and the referral allowance) changed.
 The tests' chain runs the cases in `quotes/`; adding a quote mint there is all it takes to make it a Quote Asset in the tests.
+The backend suite's chain also plants a Quote Asset that is no fixture, the unlucky one (#282, `unluckyQuoteMint` in `src/index.ts`): its mint depends on the checkout's own operations key, so the chain searches for it at start and writes its mint, its Metaplex metadata and its GlobalConfig beside the generated accounts.
 The development chain (`pnpm localnet`) runs mainnet's whole set from `mainnet/` beside the cases, so the site quotes what mainnet quotes, and the Jupiter stand-in in `tools/stack` (`pnpm stand-ins`) serves `market.json` to the API as Jupiter would.
 The local chain makes the local admin key the mint authority of the cases' mints, so tests can hand wallets USDC or a stock to trade with (`mintLocalQuote`); mainnet's other mints keep their real authorities, which the Quote Registry reads an asset's kind from (ADR 0010).
 The lookup tables list the cases and the snapshot's forty deepest markets, as mainnet's Platform Lookup Table will list SOL and the busiest Quote Assets: a coin paired with any other asset still launches, but not with a First Buy.
