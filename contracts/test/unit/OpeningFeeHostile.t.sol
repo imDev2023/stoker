@@ -123,7 +123,16 @@ contract OpeningFeeHostileTest is TaxLocalBase, OpeningFeeHelpers {
                 abi.encodePacked(
                     type(StokerFactory).creationCode,
                     abi.encode(
-                        pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, bytes32(0), fitting, starts[i], durations[i]
+                        pm,
+                        registry,
+                        PLATFORM_FEE_BPS,
+                        CREATOR_SHARE_BPS,
+                        SECOND_TIER_SHARE_BPS,
+                        TOP_TIER_SHARE_BPS,
+                        bytes32(0),
+                        fitting,
+                        starts[i],
+                        durations[i]
                     )
                 )
             );
@@ -149,8 +158,18 @@ contract OpeningFeeHostileTest is TaxLocalBase, OpeningFeeHelpers {
                 break;
             }
         }
-        StokerFactory edge =
-            new StokerFactory(pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, salt, vault, 9_900, 600);
+        StokerFactory edge = new StokerFactory(
+            pm,
+            registry,
+            PLATFORM_FEE_BPS,
+            CREATOR_SHARE_BPS,
+            SECOND_TIER_SHARE_BPS,
+            TOP_TIER_SHARE_BPS,
+            salt,
+            vault,
+            9_900,
+            600
+        );
         assertEq(address(edge), next, "the factory the vault was made for");
         assertEq(edge.openingFeeStartBps(), 9_900);
         assertEq(edge.openingFeeDuration(), 600);

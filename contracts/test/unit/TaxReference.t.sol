@@ -99,14 +99,24 @@ contract TaxReferenceTest is TaxLocalBase {
         }
     }
 
-    /// A standard coin keeps no reference and its swaps pay nothing for one: it answers its own tick.
-    function test_reference_aStandardCoinKeepsNone() public {
+    /// A standard coin keeps a reference like any other (#248): anyone may fund its burn or its Support
+    /// Liquidity in the Tax Vault, a Creator Earnings Destination among them, so the vault must never spend
+    /// for it at a price only just reached either. A lift a moment ago leaves the reference where the price
+    /// stood, and a quiet day brings it to the price.
+    function test_reference_aStandardCoinKeepsOneToo() public {
         (, PoolKey memory key) = _launch(true, 1 ether);
-        _trade(key, trader, true, true, 10 ether);
-        assertEq(_ref(key), _tickOf(key), "standard: its own tick");
         (, PoolKey memory native) = _launchNative(0.1 ether, address(0));
-        _trade(native, trader, true, true, 1 ether);
-        assertEq(_ref(native), _tickOf(native), "standard native: its own tick");
+        PoolKey[2] memory coins = [key, native];
+        for (uint256 i; i < coins.length; i++) {
+            assertEq(hook.termsOf(coins[i].toId()).taxBps, 0, "a standard coin");
+            _quiet(1 days);
+            int24 stood = _tickOf(coins[i]);
+            _trade(coins[i], trader, true, true, i == 0 ? 10 ether : 1 ether);
+            assertGt(_above(coins[i], _tickOf(coins[i]), stood), 0, "the buy lifted the price");
+            assertEq(_ref(coins[i]), stood, "the reference stands where the price stood");
+            _quiet(30 days);
+            assertEq(_ref(coins[i]), _tickOf(coins[i]), "after a quiet month: the price that stood");
+        }
     }
 
     // ---------------------------------------------------------------- inside one block

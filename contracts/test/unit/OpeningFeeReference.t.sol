@@ -70,19 +70,25 @@ contract OpeningFeeReferenceTest is TaxLocalBase, OpeningFeeHelpers {
         }
     }
 
-    /// A standard coin whose window passed with no Opening Fee booked stops following: its swaps leave no
-    /// reference behind, and the vault never has anything of it to spend, however it trades later. Its first
-    /// swap after the window starts nothing; the reference reads the pool's own price.
-    function test_opening_aStandardCoinWithNoOpeningFeeStopsFollowingAndGivesTheVaultNothing() public {
+    /// A standard coin whose window passed with no Opening Fee booked keeps following all the same (#248).
+    /// Until #248 it stopped, since the vault could never have anything of it to spend; now anyone may fund
+    /// any coin's burn or Support Liquidity at any time, and a reference that had stopped would, when next
+    /// read, be the price of that moment. So after the window, and after a quiet month in which a reference
+    /// left alone would have had time to catch up with any price, a lift still leaves the reference where
+    /// the price stood before it; and the vault holds nothing of the coin until someone funds it.
+    function test_opening_aStandardCoinWithNoOpeningFeeKeepsFollowingToo() public {
         for (uint256 kind; kind < 3; kind++) {
             uint256 snap = vm.snapshotState();
             PoolKey memory key = _launchOpen(kind, 0, kind == 2 ? 0.1 ether : 1 ether);
-            assertFalse(hook.termsOf(key.toId()).openingFeeTaken, "the First Buy took none");
-            vm.warp(_launchedAt(key) + OPENING_FEE_DURATION);
+            vm.warp(_launchedAt(key) + OPENING_FEE_DURATION + 30 days);
             for (uint256 i; i < 6; i++) {
+                int24 stood = _tickOf(key);
                 _tradeAndSee(key, true, i % 2 == 0, _buyAmount(key, i % 2 == 0), 0);
-                vm.warp(vm.getBlockTimestamp() + 1 hours);
-                assertEq(hook.referenceTick(key.toId()), _tickOf(key), "no reference kept: the pool's own price");
+                assertTrue(_tickOf(key) != stood, "the buy lifted the price");
+                assertEq(hook.referenceTick(key.toId()), stood, "the reference is the price that stood");
+                vm.warp(vm.getBlockTimestamp() + PIECE_INTERVAL);
+                assertTrue(hook.referenceTick(key.toId()) != _tickOf(key), "a minute on, it still lags the lift");
+                vm.warp(vm.getBlockTimestamp() + 30 days);
             }
             assertEq(hook.openingFeeBooked(key.toId()), 0, "nothing booked");
             assertEq(_vaultClaims(key), 0, "the vault holds nothing of it");
@@ -92,20 +98,18 @@ contract OpeningFeeReferenceTest is TaxLocalBase, OpeningFeeHelpers {
         }
     }
 
-    /// A standard coin that took an Opening Fee keeps following after the window: the mark is set by the first
-    /// Opening Fee and never cleared.
+    /// A standard coin that took an Opening Fee keeps following after the window, as every pool does.
     function test_opening_aStandardCoinThatTookAnOpeningFeeKeepsFollowing() public {
         for (uint256 kind; kind < 3; kind++) {
             uint256 snap = vm.snapshotState();
             PoolKey memory key = _launchOpen(kind, 0, 0);
             vm.warp(_launchedAt(key) + 19);
             _tradeAndSee(key, true, true, _buyAmount(key, true), 0);
-            assertTrue(hook.termsOf(key.toId()).openingFeeTaken, "marked by its first Opening Fee");
+            assertGt(hook.openingFeeBooked(key.toId()), 0, "it took an Opening Fee");
             vm.warp(_launchedAt(key) + 1 days);
             _tradeAndSee(key, true, true, _buyAmount(key, true) * 5, 0);
             vm.warp(vm.getBlockTimestamp() + PIECE_INTERVAL);
             assertTrue(hook.referenceTick(key.toId()) != _tickOf(key), "the reference lags a lift a day later");
-            assertTrue(hook.termsOf(key.toId()).openingFeeTaken, "never cleared");
             vm.revertToState(snap);
         }
     }
@@ -146,8 +150,9 @@ contract OpeningFeeReferenceTest is TaxLocalBase, OpeningFeeHelpers {
         }
     }
 
-    /// The same standard coin with and without an Opening Fee taken: following its reference costs a swap in a
-    /// new second about what it costs a taxed swap (#271), and a coin that took none pays nothing for it.
+    /// The same standard coin with and without an Opening Fee taken. Until #248 the one that took none stopped
+    /// following and paid nothing for a reference; since #248 every pool follows for life, so the two cost a
+    /// swap in a new second the same, well inside the bound that following once added.
     function test_opening_gas_followingAStandardCoinsReference() public {
         uint256 worst;
         for (uint256 kind; kind < 3; kind++) {
@@ -157,7 +162,7 @@ contract OpeningFeeReferenceTest is TaxLocalBase, OpeningFeeHelpers {
             vm.revertToState(snap);
             PoolKey memory sniped = _launchOpen(kind, 0, kind == 2 ? 0.1 ether : 1 ether);
             _trade(sniped, trader, true, true, _native(sniped) ? 0.01 ether : 1 ether);
-            assertTrue(hook.termsOf(sniped.toId()).openingFeeTaken, "took an Opening Fee");
+            assertGt(hook.openingFeeBooked(sniped.toId()), 0, "took an Opening Fee");
             uint256[4] memory with = _gasOfFour(sniped);
             vm.revertToState(snap);
             emit log_named_uint("kind", kind);

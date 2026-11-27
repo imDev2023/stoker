@@ -40,7 +40,7 @@ interface IStokerLaunches {
 ///         - `passHoldersPart` hands the holders' part to the Distributor.
 ///
 ///         The vault never spends a coin's tax at a price that was only just reached (#271): the hook keeps a
-///         Reference Price for every taxed pool that follows the pool's price by how long each price has
+///         Reference Price for every pool that follows the pool's price by how long each price has
 ///         stood, rising slowly and falling faster. Support Liquidity is placed below the lower of the two,
 ///         a piece is capped at the lower of the two, and a buy waits while the coin's price is above the
 ///         reference by more than `buyBandTicks`.
@@ -59,6 +59,12 @@ interface IStokerLaunches {
 ///         Liquidity part, whatever the Launch's type: a standard coin's only income is its Opening Fee, which
 ///         `addSupport` places as it places a Stoke Launch's tax. While a Launch's Opening Fee runs, this vault
 ///         makes no buy in its pool, so neither the burn's nor the holders' part pays it.
+///
+///         Anyone may also fund a coin's burn or its Support Liquidity with that coin's Quote Asset
+///         (`fundBurn`, `fundSupport`, #248): a Creator Earnings Destination of the burn or of the liquidity
+///         does so with its coin's earnings. What was funded joins what `burn` and `addSupport` spend, under
+///         the same cap, the same interval and the same buy and the same addition, and is kept in books of
+///         its own per pool, so funded Quote Asset and a coin's tax are never counted as each other.
 /// @dev No owner, no setter, no proxy, no pause; the settings are fixed at deployment. It holds every
 ///      Support Liquidity position and has no code that removes liquidity; the hook refuses every removal in
 ///      any case. It reads time only, never `block.number`.
@@ -99,6 +105,10 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
     /// @param lastSupportAt When this vault last added Support Liquidity to the pool.
     /// @param lastHoldersBuyAt When this vault last bought in the pool for the holders (#271: a clock of its
     ///        own, so a caller who always chooses the burn cannot hold off the holders' buys).
+    /// @param burnFunded What anyone has funded this coin's burn with (#248), apart from its tax.
+    /// @param burnFundedSpent What the burn's buys have spent of it.
+    /// @param supportFunded What anyone has funded this coin's Support Liquidity with, apart from its tax.
+    /// @param supportFundedSpent What has been added to the pool of it.
     struct Books {
         uint256 burnSpent;
         uint256 supportSpent;
@@ -107,6 +117,10 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         uint64 lastBuyAt;
         uint64 lastSupportAt;
         uint64 lastHoldersBuyAt;
+        uint256 burnFunded;
+        uint256 burnFundedSpent;
+        uint256 supportFunded;
+        uint256 supportFundedSpent;
     }
 
     mapping(PoolId => Books) internal _books;
@@ -135,13 +149,23 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
     enum Action {
         Buy,
         Support,
-        Take
+        Take,
+        Fund
     }
 
     event SupportAdded(PoolId indexed poolId, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 quoteAdded);
     event RewardBurned(PoolId indexed poolId, uint256 quoteSpent, uint256 coinsBurned);
     event BoughtForHolders(PoolId indexed poolId, uint256 quoteSpent, uint256 coinsBought);
     event HoldersPartPassed(PoolId indexed poolId, address indexed coin, Currency asset, uint256 amount);
+    /// @notice `funder` gave `amount` of the coin's Quote Asset to its burn (#248).
+    event BurnFunded(PoolId indexed poolId, address indexed funder, uint256 amount);
+    /// @notice `funder` gave `amount` of the coin's Quote Asset to its Support Liquidity (#248).
+    event SupportFunded(PoolId indexed poolId, address indexed funder, uint256 amount);
+    /// @notice The part of one `burn` that spent funded Quote Asset: `RewardBurned` reports the tax's part of
+    ///         the same buy, and the two together are what it spent and burned.
+    event FundedBurned(PoolId indexed poolId, uint256 quoteSpent, uint256 coinsBurned);
+    /// @notice The part of one `SupportAdded` that was funded Quote Asset; the rest of it was the coin's tax.
+    event FundedSupportAdded(PoolId indexed poolId, uint256 quoteAdded);
 
     error InvalidSettings();
     error NotPoolManager();
@@ -158,6 +182,11 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
     error AboveReference(int24 tick, int24 referenceTick);
     /// @notice The Distributor took other than exactly the amount deposited.
     error DepositShort();
+    /// @notice A funding call was sent value other than its amount in the native asset, or any value with an
+    ///         ERC-20 Quote Asset.
+    error ValueMismatch(uint256 expected, uint256 sent);
+    /// @notice The Quote Asset delivered other than exactly the amount funded.
+    error FundingShort();
 
     /// @param factory_ The factory's address, which it checks against itself at its deployment.
     /// @param referenceRiseTicksPerMinute_ The Reference Price's rise rate; the hook reads it at deployment.
@@ -223,7 +252,10 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         Books storage b = _books[p.id];
         _checkInterval(b.lastSupportAt);
         Prices memory px = _prices(p);
-        uint256 amount = _min(_supportPart(p) - b.supportSpent, _pieceCap(p, px));
+        // The coin's own part first (its tax's share and every Opening Fee, #246), then what was funded for
+        // it (#248): one piece, one position, one cap.
+        uint256 taxWaiting = _supportPart(p) - b.supportSpent;
+        uint256 amount = _min(taxWaiting + (b.supportFunded - b.supportFundedSpent), _pieceCap(p, px));
         if (amount == 0) revert NothingToSpend();
 
         (int24 lower, int24 upper) = _supportRange(key, px.spendTick, p.terms.quoteIsCurrency0);
@@ -241,9 +273,13 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
             abi.encode(Action.Support, abi.encode(key, p.terms.quoteIsCurrency0, lower, upper, liquidity, amount))
         );
         added = abi.decode(result, (uint256));
-        b.supportSpent += added;
+        uint256 fromFunded = added > taxWaiting ? added - taxWaiting : 0;
+        b.supportSpent += added - fromFunded;
+        b.supportFundedSpent += fromFunded;
         // forge-lint: disable-next-line(reentrancy-events)
         emit SupportAdded(p.id, lower, upper, liquidity, added);
+        // forge-lint: disable-next-line(reentrancy-events)
+        if (fromFunded > 0) emit FundedSupportAdded(p.id, fromFunded);
     }
 
     /// @notice Spends one piece of the coin's Reward Burn share on a buy of the coin, outside any trader's
@@ -257,16 +293,24 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         Books storage b = _books[p.id];
         _checkInterval(b.lastBuyAt);
         Prices memory px = _prices(p);
-        spent = _min(_part(p.booked, p.terms.burnShareBps) - b.burnSpent, _pieceCap(p, px));
+        // The coin's tax first, then what was funded for it (#248): one piece, one buy, one cap.
+        uint256 taxWaiting = _part(p.booked, p.terms.burnShareBps) - b.burnSpent;
+        spent = _min(taxWaiting + (b.burnFunded - b.burnFundedSpent), _pieceCap(p, px));
         if (spent == 0) revert NothingToSpend();
         _checkNearReference(p, px);
-        b.burnSpent += spent;
+        uint256 fromFunded = spent > taxWaiting ? spent - taxWaiting : 0;
+        b.burnSpent += spent - fromFunded;
+        b.burnFundedSpent += fromFunded;
         b.lastBuyAt = OZSafeCast.toUint64(block.timestamp);
         burned = _buy(key, p, spent);
         // Our own coin: a plain ERC-20 whose `burn` takes the caller's own coins.
         StokerCoin(Currency.unwrap(p.coin)).burn(burned);
+        // The coins of one buy, shared by what each source spent on it, the funded part rounded down.
+        uint256 fundedCoins = FullMath.mulDiv(burned, fromFunded, spent);
         // forge-lint: disable-next-line(reentrancy-events)
-        emit RewardBurned(p.id, spent, burned);
+        if (spent > fromFunded) emit RewardBurned(p.id, spent - fromFunded, burned - fundedCoins);
+        // forge-lint: disable-next-line(reentrancy-events)
+        if (fromFunded > 0) emit FundedBurned(p.id, fromFunded, fundedCoins);
     }
 
     /// @notice When a Reward Launch's Payout Asset is the coin, spends one piece of the holders' part on a buy
@@ -316,6 +360,45 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         emit HoldersPartPassed(p.id, coin, asset, amount);
     }
 
+    // ------------------------------------------------------------------ funding a coin (#248)
+
+    /// @notice Gives `amount` of a coin's Quote Asset to its burn: `burn` spends it after the coin's own Reward
+    ///         Burn share, in the same capped pieces, and burns what it buys. Anyone may fund any coin of
+    ///         ours; a Creator Earnings Destination of the burn does so with its coin's earnings. The native
+    ///         asset is the call's value, exactly `amount`; an ERC-20 is pulled from the caller's allowance.
+    function fundBurn(PoolKey calldata key, uint256 amount) external payable nonReentrant {
+        PoolId id = _fund(key, amount);
+        _books[id].burnFunded += amount;
+        // The calls before it are the PoolManager's and the listed Quote Asset's, under the guard.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit BurnFunded(id, msg.sender, amount);
+    }
+
+    /// @notice Gives `amount` of a coin's Quote Asset to its Support Liquidity: `addSupport` places it after
+    ///         the coin's own liquidity share, in the same capped pieces, with no coin bought. Anyone may fund
+    ///         any coin of ours; a Creator Earnings Destination of the liquidity does so with its coin's
+    ///         earnings. The native asset is the call's value, exactly `amount`; an ERC-20 is pulled from the
+    ///         caller's allowance.
+    function fundSupport(PoolKey calldata key, uint256 amount) external payable nonReentrant {
+        PoolId id = _fund(key, amount);
+        _books[id].supportFunded += amount;
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit SupportFunded(id, msg.sender, amount);
+    }
+
+    /// @dev Takes `amount` of the pool's Quote Asset from the caller into the PoolManager, as this vault's
+    ///      claims, in an unlock of its own: so it cannot run inside another unlock, a trader's swap among
+    ///      them, and the vault's claims stay exactly what its books say waits.
+    function _fund(PoolKey calldata key, uint256 amount) internal returns (PoolId) {
+        Pool memory p = _load(key);
+        if (amount == 0) revert NothingToSpend();
+        uint256 expected = p.quote.isAddressZero() ? amount : 0;
+        if (msg.value != expected) revert ValueMismatch(expected, msg.value);
+        // forge-lint: disable-next-line(unused-return, reentrancy-no-eth)
+        poolManager.unlock(abi.encode(Action.Fund, abi.encode(p.quote, msg.sender, amount)));
+        return p.id;
+    }
+
     // ------------------------------------------------------------------ inside the vault's own unlocks
 
     /// @dev Runs inside this vault's own unlocks alone: the PoolManager calls back the contract that unlocked it.
@@ -331,10 +414,35 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
                 abi.decode(args, (PoolKey, bool, int24, int24, uint128, uint256));
             return abi.encode(_addLiquidity(key, quoteIsCurrency0, lower, upper, liquidity, amount));
         }
+        if (action == Action.Fund) {
+            (Currency asset, address funder, uint256 amount) = abi.decode(args, (Currency, address, uint256));
+            _takeFunding(asset, funder, amount);
+            return "";
+        }
         (Currency currency, uint256 total) = abi.decode(args, (Currency, uint256));
         poolManager.burn(address(this), currency.toId(), total);
         poolManager.take(currency, address(this), total);
         return "";
+    }
+
+    /// @dev Settles `amount` of `asset` into the PoolManager from the funder (the value this vault was sent, or
+    ///      the funder's allowance) and mints it to this vault as claims. Refused unless exactly `amount`
+    ///      arrived, so the books never count more than the claims hold.
+    function _takeFunding(Currency asset, address funder, uint256 amount) internal {
+        poolManager.sync(asset);
+        uint256 paid;
+        if (asset.isAddressZero()) {
+            paid = poolManager.settle{value: amount}();
+        } else {
+            // `funder` is the funding call's own caller: the data comes from this vault's own unlock.
+            // forge-lint: disable-next-line(arbitrary-send-erc20)
+            IERC20(Currency.unwrap(asset)).safeTransferFrom(funder, address(poolManager), amount);
+            paid = poolManager.settle();
+        }
+        // Exactly the amount, on purpose: a transfer fee must not leave the books ahead of the claims.
+        // forge-lint: disable-next-line(incorrect-strict-equality)
+        if (paid != amount) revert FundingShort();
+        poolManager.mint(address(this), asset.toId(), amount);
     }
 
     /// @dev An exact-in buy of `amount` of the Quote Asset, settled by burning this vault's claims; the coins
@@ -575,6 +683,14 @@ contract TaxVault is IUnlockCallback, IReferenceSettings {
         supportPart = _supportPart(p) - b.supportSpent;
         holdersPart = _part(p.booked, _holdersShare(p.terms)) - b.holdersSpent;
         holdersCoins = b.holdersCoins;
+    }
+
+    /// @notice What was funded for a coin's burn and for its Support Liquidity (#248) and still waits, apart
+    ///         from its tax: `burn` and `addSupport` spend each after the tax's own part.
+    function fundedWaiting(PoolKey calldata key) external view returns (uint256 burnFunded, uint256 supportFunded) {
+        Books storage b = _books[_load(key).id];
+        burnFunded = b.burnFunded - b.burnFundedSpent;
+        supportFunded = b.supportFunded - b.supportFundedSpent;
     }
 
     /// @notice What each path has spent of one coin's tax.

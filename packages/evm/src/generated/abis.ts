@@ -25,6 +25,16 @@ export const stokerFactoryAbi = [
         "internalType": "uint16"
       },
       {
+        "name": "secondTierShareBps_",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "topTierShareBps_",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
         "name": "hookSalt",
         "type": "bytes32",
         "internalType": "bytes32"
@@ -140,6 +150,19 @@ export const stokerFactoryAbi = [
         "name": "",
         "type": "uint16",
         "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "distributor",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -489,6 +512,19 @@ export const stokerFactoryAbi = [
   },
   {
     "type": "function",
+    "name": "secondTierShareBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "seedRange",
     "inputs": [
       {
@@ -513,6 +549,19 @@ export const stokerFactoryAbi = [
   },
   {
     "type": "function",
+    "name": "taxVault",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "tickSpacing",
     "inputs": [],
     "outputs": [
@@ -520,6 +569,19 @@ export const stokerFactoryAbi = [
         "name": "",
         "type": "int24",
         "internalType": "int24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "topTierShareBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
       }
     ],
     "stateMutability": "view"
@@ -697,6 +759,17 @@ export const stokerFactoryAbi = [
   },
   {
     "type": "error",
+    "name": "InvalidDestination",
+    "inputs": [
+      {
+        "name": "destination",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidGraduationMultiple",
     "inputs": [
       {
@@ -838,6 +911,19 @@ export const stokerHookAbi = [
   },
   {
     "type": "function",
+    "name": "FIRST_TIER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "GRADUATION_HOLD",
     "inputs": [],
     "outputs": [
@@ -858,6 +944,19 @@ export const stokerHookAbi = [
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "TOP_TIER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "stateMutability": "view"
@@ -1651,6 +1750,63 @@ export const stokerHookAbi = [
   },
   {
     "type": "function",
+    "name": "creatorCreditedOf",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "creatorShareOf",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "creatorTierOf",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "creditOf",
     "inputs": [
       {
@@ -1669,6 +1825,19 @@ export const stokerHookAbi = [
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "distributor",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -1934,6 +2103,24 @@ export const stokerHookAbi = [
   },
   {
     "type": "function",
+    "name": "raiseTier",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "PoolId"
+      },
+      {
+        "name": "tier",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "referenceTick",
     "inputs": [
       {
@@ -2078,9 +2265,14 @@ export const stokerHookAbi = [
             "internalType": "uint32"
           },
           {
-            "name": "openingFeeTaken",
-            "type": "bool",
-            "internalType": "bool"
+            "name": "secondTierShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "topTierShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -2222,9 +2414,14 @@ export const stokerHookAbi = [
             "internalType": "uint32"
           },
           {
-            "name": "openingFeeTaken",
-            "type": "bool",
-            "internalType": "bool"
+            "name": "secondTierShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "topTierShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -2268,6 +2465,68 @@ export const stokerHookAbi = [
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "CreatorLadderRegistered",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "firstTierShareBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "secondTierShareBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "topTierShareBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "CreatorTierRaised",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "fromTier",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "toTier",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "creatorShareBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -2643,6 +2902,11 @@ export const stokerHookAbi = [
   },
   {
     "type": "error",
+    "name": "AdminCannotRaise",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "AlreadyGraduated",
     "inputs": []
   },
@@ -2685,7 +2949,33 @@ export const stokerHookAbi = [
   },
   {
     "type": "error",
+    "name": "InvalidTier",
+    "inputs": [
+      {
+        "name": "current",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "asked",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "MalformedHookData",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotGraduated",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotLadderKey",
     "inputs": []
   },
   {
@@ -4172,6 +4462,26 @@ export const taxVaultAbi = [
             "name": "lastHoldersBuyAt",
             "type": "uint64",
             "internalType": "uint64"
+          },
+          {
+            "name": "burnFunded",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "burnFundedSpent",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "supportFunded",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "supportFundedSpent",
+            "type": "uint256",
+            "internalType": "uint256"
           }
         ]
       }
@@ -4315,6 +4625,147 @@ export const taxVaultAbi = [
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "fundBurn",
+    "inputs": [
+      {
+        "name": "key",
+        "type": "tuple",
+        "internalType": "struct PoolKey",
+        "components": [
+          {
+            "name": "currency0",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "currency1",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "tickSpacing",
+            "type": "int24",
+            "internalType": "int24"
+          },
+          {
+            "name": "hooks",
+            "type": "address",
+            "internalType": "contract IHooks"
+          }
+        ]
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "fundSupport",
+    "inputs": [
+      {
+        "name": "key",
+        "type": "tuple",
+        "internalType": "struct PoolKey",
+        "components": [
+          {
+            "name": "currency0",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "currency1",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "tickSpacing",
+            "type": "int24",
+            "internalType": "int24"
+          },
+          {
+            "name": "hooks",
+            "type": "address",
+            "internalType": "contract IHooks"
+          }
+        ]
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "fundedWaiting",
+    "inputs": [
+      {
+        "name": "key",
+        "type": "tuple",
+        "internalType": "struct PoolKey",
+        "components": [
+          {
+            "name": "currency0",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "currency1",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "tickSpacing",
+            "type": "int24",
+            "internalType": "int24"
+          },
+          {
+            "name": "hooks",
+            "type": "address",
+            "internalType": "contract IHooks"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "burnFunded",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "supportFunded",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -4601,6 +5052,75 @@ export const taxVaultAbi = [
   },
   {
     "type": "event",
+    "name": "BurnFunded",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "funder",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "FundedBurned",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "quoteSpent",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "coinsBurned",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "FundedSupportAdded",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "quoteAdded",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "HoldersPartPassed",
     "inputs": [
       {
@@ -4693,6 +5213,31 @@ export const taxVaultAbi = [
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "SupportFunded",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "funder",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "AboveReference",
     "inputs": [
@@ -4738,6 +5283,11 @@ export const taxVaultAbi = [
   {
     "type": "error",
     "name": "FailedInnerCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FundingShort",
     "inputs": []
   },
   {
@@ -4830,6 +5380,22 @@ export const taxVaultAbi = [
     "inputs": [
       {
         "name": "nextAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ValueMismatch",
+    "inputs": [
+      {
+        "name": "expected",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "sent",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -5001,6 +5567,123 @@ export const distributorAbi = [
   },
   {
     "type": "function",
+    "name": "depositEarnings",
+    "inputs": [
+      {
+        "name": "key",
+        "type": "tuple",
+        "internalType": "struct PoolKey",
+        "components": [
+          {
+            "name": "currency0",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "currency1",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "tickSpacing",
+            "type": "int24",
+            "internalType": "int24"
+          },
+          {
+            "name": "hooks",
+            "type": "address",
+            "internalType": "contract IHooks"
+          }
+        ]
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "earningsAvailableOf",
+    "inputs": [
+      {
+        "name": "coin",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "internalType": "Currency"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "earningsPotOf",
+    "inputs": [
+      {
+        "name": "coin",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "internalType": "Currency"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "earningsReservedOf",
+    "inputs": [
+      {
+        "name": "coin",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "internalType": "Currency"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "isClaimed",
     "inputs": [
       {
@@ -5069,6 +5752,39 @@ export const distributorAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "postEarningsRoot",
+    "inputs": [
+      {
+        "name": "round",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "coin",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "internalType": "Currency"
+      },
+      {
+        "name": "root",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "total",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -5196,6 +5912,11 @@ export const distributorAbi = [
             "internalType": "bool"
           },
           {
+            "name": "source",
+            "type": "uint8",
+            "internalType": "enum Distributor.Source"
+          },
+          {
             "name": "asset",
             "type": "address",
             "internalType": "Currency"
@@ -5316,6 +6037,56 @@ export const distributorAbi = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "EarningsDeposited",
+    "inputs": [
+      {
+        "name": "coin",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "indexed": true,
+        "internalType": "Currency"
+      },
+      {
+        "name": "destination",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "EarningsRootPosted",
+    "inputs": [
+      {
+        "name": "round",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "coin",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -5490,6 +6261,11 @@ export const distributorAbi = [
   {
     "type": "error",
     "name": "NotTaxVault",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotTheCoinsDestination",
     "inputs": []
   },
   {

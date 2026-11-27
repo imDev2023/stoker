@@ -7,8 +7,20 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
+import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+
 import {StokerKeys} from "./StokerKeys.sol";
+import {StokerHook} from "./StokerHook.sol";
 import {IHoldersPart} from "./interfaces/IHoldersPart.sol";
+
+/// @notice What the Distributor reads to find a Launch's terms: the Tax Vault's factory, and its hook.
+interface IVaultFactory {
+    function factory() external view returns (address);
+}
+
+interface IFactoryHook {
+    function hook() external view returns (StokerHook);
+}
 
 /// @title Distributor
 /// @notice Pays Holder Rewards on an EVM chain (ADR 0029, #247).
@@ -27,6 +39,11 @@ import {IHoldersPart} from "./interfaces/IHoldersPart.sol";
 ///         stopping the others. A holder's claims for several rounds in a row are paid as one payment.
 ///
 ///         A pot rises only by a deposit and falls only by a payment.
+///
+///         A coin whose Creator Earnings Destination is its holders has a second pot here (#248): the
+///         Destination hands the Creator's Credits over through `depositEarnings`, and the round key posts
+///         Round Roots of their own for them (`postEarningsRoot`), paid as Holder Dividends. A round names
+///         the pot it pays from, so a coin's earnings and its Reward Tax are never paid from each other.
 /// @dev No owner, no setter, no proxy, no pause. The round key and the Guard are read from `StokerKeys`
 ///      at the moment of each call, so a replacement or a revoke takes effect at once. The clocks read
 ///      `block.timestamp` alone.
@@ -52,7 +69,15 @@ contract Distributor is IHoldersPart {
     /// @notice The only address that may deposit: the Tax Vault (#245), fixed at deployment.
     address public immutable taxVault;
 
+    /// @notice Where a pot's funds came from, and so which pot a round pays from (#248): the Reward Tax's
+    ///         holders' part, or a Creator's earnings (Holder Dividends).
+    enum Source {
+        Tax,
+        Earnings
+    }
+
     /// @notice A posted Round Root.
+    /// @param source Which of the coin's pots it reserved from and pays from.
     /// @param coin The coin whose holders the round pays, and whose pot it pays from.
     /// @param postedAt When it was posted; it pays from `postedAt + ROUND_DELAY`.
     /// @param cancelled Whether the Guard cancelled it; a cancelled root never pays.
@@ -64,6 +89,7 @@ contract Distributor is IHoldersPart {
         address coin;
         uint40 postedAt;
         bool cancelled;
+        Source source;
         Currency asset;
         bytes32 root;
         uint128 total;
@@ -78,13 +104,15 @@ contract Distributor is IHoldersPart {
         bytes32[] proof;
     }
 
-    /// @notice What this contract holds for each coin's holders, by asset: raised by a deposit, lowered by
-    ///         a payment, and by nothing else.
-    mapping(address coin => mapping(Currency asset => uint256)) public potOf;
-    /// @dev What a new root for the coin may owe: its pot less what its live roots still owe. Kept rather
-    ///      than what is reserved, so a payment, which lowers the pot and what is reserved alike, writes the
-    ///      pot alone.
-    mapping(address coin => mapping(Currency asset => uint256)) internal _available;
+    /// @dev What this contract holds for each coin's holders, by the pot's source and by asset: raised by a
+    ///      deposit of that source, lowered by a payment of a round of that source, and by nothing else.
+    ///      Nothing ever moves between a coin's Reward Tax pot and its earnings pot (#248). Read through
+    ///      `potOf` and `earningsPotOf`.
+    mapping(Source source => mapping(address coin => mapping(Currency asset => uint256))) internal _pots;
+    /// @dev What a new root of a source may owe for the coin: that pot less what its live roots still owe.
+    ///      Kept rather than what is reserved, so a payment, which lowers the pot and what is reserved alike,
+    ///      writes the pot alone.
+    mapping(Source source => mapping(address coin => mapping(Currency asset => uint256))) internal _available;
     /// @notice The number of roots ever posted; rounds are numbered from 1.
     uint256 public roundCount;
     mapping(uint256 round => Round) internal _rounds;
@@ -92,6 +120,11 @@ contract Distributor is IHoldersPart {
     mapping(uint256 round => mapping(address holder => bool)) public isClaimed;
 
     event Deposited(address indexed coin, Currency indexed asset, uint256 amount);
+    /// @notice A coin's Creator Earnings Destination handed `amount` of its earnings to the coin's holders.
+    event EarningsDeposited(address indexed coin, Currency indexed asset, address indexed destination, uint256 amount);
+    /// @notice The round is a round of source `earnings`: it pays Holder Dividends from the coin's earnings
+    ///         pot. Emitted beside its `RootPosted`.
+    event EarningsRootPosted(uint256 indexed round, address indexed coin);
     event RootPosted(
         uint256 indexed round, address indexed coin, Currency asset, bytes32 root, uint256 total, uint256 payableAt
     );
@@ -104,6 +137,9 @@ contract Distributor is IHoldersPart {
 
     error ZeroAddress();
     error NotTaxVault();
+    /// @notice An earnings deposit by anyone but the coin's own Creator Earnings Destination, as its Launch's
+    ///         terms name it, or for a pool that is not ours.
+    error NotTheCoinsDestination();
     error NotRoundKey();
     error GuardCannotPost();
     error NotGuard();
@@ -140,26 +176,50 @@ contract Distributor is IHoldersPart {
     /// @notice Takes a coin's holders' part from the Tax Vault into that coin's pot in `asset`
     ///         (`IHoldersPart`, #245): the native asset as the call's value, exactly `amount`; an ERC-20
     ///         pulled from the Tax Vault, which approved exactly `amount`, with no value.
-    /// @dev A round of source `earnings` (a Creator Earnings Destination of the holders, #248) will raise
-    ///      the same pot through an entry point of its own, admitted for that coin's Destination alone, by
-    ///      `_addToPot`, which raises what a root may reserve with it.
+    /// @dev A coin's Creator earnings arrive through `depositEarnings`, into a pot of their own (#248).
     function deposit(address coin, Currency asset, uint256 amount) external payable {
         if (msg.sender != taxVault) revert NotTaxVault();
-        if (asset.isAddressZero()) {
-            if (msg.value != amount) revert ValueMismatch(amount, msg.value);
-        } else {
-            if (msg.value != 0) revert ValueMismatch(0, msg.value);
-            IERC20 token = IERC20(Currency.unwrap(asset));
-            uint256 before = token.balanceOf(address(this));
-            token.safeTransferFrom(msg.sender, address(this), amount);
-            // Exactly the amount, on purpose: a pot must never count more than arrived (a transfer fee).
-            // forge-lint: disable-next-line(incorrect-strict-equality)
-            if (token.balanceOf(address(this)) - before != amount) revert DepositShort();
-        }
-        _addToPot(coin, asset, amount);
+        _pull(asset, amount);
+        _addToPot(Source.Tax, coin, asset, amount);
         // The only call before it is to the asset the Tax Vault named, and our own Tax Vault is the caller.
         // forge-lint: disable-next-line(reentrancy-events)
         emit Deposited(coin, asset, amount);
+    }
+
+    /// @notice Takes `amount` of a coin's Creator earnings, in its Quote Asset, into that coin's earnings pot
+    ///         (#248), from the coin's own Creator Earnings Destination alone: the address its Launch's terms
+    ///         name, read from the hook, never a list a key keeps. The native asset is the call's value,
+    ///         exactly `amount`; an ERC-20 is pulled from the caller's allowance. It raises the pot and what
+    ///         an earnings root may reserve together.
+    /// @param key The coin's pool: it names the coin and the Quote Asset.
+    function depositEarnings(PoolKey calldata key, uint256 amount) external payable {
+        StokerHook.Terms memory t = IFactoryHook(IVaultFactory(taxVault).factory()).hook().termsOf(key.toId());
+        // The pool id hashes every field of the key, so only a pool our factory opened has terms at all: any
+        // other key names nobody, whom no caller is.
+        if (msg.sender != t.creatorDestination) revert NotTheCoinsDestination();
+        (Currency asset, Currency coin) =
+            t.quoteIsCurrency0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
+        _pull(asset, amount);
+        _addToPot(Source.Earnings, Currency.unwrap(coin), asset, amount);
+        // The calls before it are our own contracts' views and the coin's listed Quote Asset.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit EarningsDeposited(Currency.unwrap(coin), asset, msg.sender, amount);
+    }
+
+    /// @dev Takes exactly `amount` of `asset` from the caller: the native asset as the call's value, an ERC-20
+    ///      from the caller's allowance with no value.
+    function _pull(Currency asset, uint256 amount) internal {
+        if (asset.isAddressZero()) {
+            if (msg.value != amount) revert ValueMismatch(amount, msg.value);
+            return;
+        }
+        if (msg.value != 0) revert ValueMismatch(0, msg.value);
+        IERC20 token = IERC20(Currency.unwrap(asset));
+        uint256 before = token.balanceOf(address(this));
+        token.safeTransferFrom(msg.sender, address(this), amount);
+        // Exactly the amount, on purpose: a pot must never count more than arrived (a transfer fee).
+        // forge-lint: disable-next-line(incorrect-strict-equality)
+        if (token.balanceOf(address(this)) - before != amount) revert DepositShort();
     }
 
     // ------------------------------------------------------------------ Round Roots
@@ -169,6 +229,20 @@ contract Distributor is IHoldersPart {
     ///         and refuses a root that owes more. It pays from `ROUND_DELAY` after now.
     /// @param round The round's number, which must be the next one: the leaves carry it.
     function postRoot(uint256 round, address coin, Currency asset, bytes32 root, uint256 total) external {
+        _post(Source.Tax, round, coin, asset, root, total);
+    }
+
+    /// @notice Posts the Round Root of a round of source `earnings` (#248): `coin`'s next round of Holder
+    ///         Dividends, paying `total` in `asset` from that coin's earnings pot and from nothing else. In
+    ///         every other way it is `postRoot`: the round key alone, the next round number, the Round Delay,
+    ///         the Guard's cancel, and the same claims.
+    function postEarningsRoot(uint256 round, address coin, Currency asset, bytes32 root, uint256 total) external {
+        _post(Source.Earnings, round, coin, asset, root, total);
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit EarningsRootPosted(round, coin);
+    }
+
+    function _post(Source source, uint256 round, address coin, Currency asset, bytes32 root, uint256 total) internal {
         address roundKey = keys.holderOf(StokerKeys.Role.RoundKey);
         // A revoked key reads as nobody, which no caller is.
         if (msg.sender != roundKey) revert NotRoundKey();
@@ -177,17 +251,18 @@ contract Distributor is IHoldersPart {
         uint256 next = roundCount + 1;
         if (round != next) revert WrongRound(round, next);
         if (coin == address(0) || root == bytes32(0) || total == 0) revert InvalidRoot();
-        uint256 available = _available[coin][asset];
+        uint256 available = _available[source][coin][asset];
         if (total > available) revert RootExceedsPot(total, available);
 
         roundCount = round;
-        _available[coin][asset] = available - total;
+        _available[source][coin][asset] = available - total;
         _rounds[round] = Round({
             coin: coin,
             // Timestamps fit a uint40 until the year 36812.
             // forge-lint: disable-next-line(unsafe-typecast)
             postedAt: uint40(block.timestamp),
             cancelled: false,
+            source: source,
             asset: asset,
             root: root,
             total: SafeCast.toUint128(total),
@@ -235,7 +310,7 @@ contract Distributor is IHoldersPart {
     function _cancel(uint256 round, Round storage r) internal {
         r.cancelled = true;
         uint256 released = r.total - r.paid;
-        _available[r.coin][r.asset] += released;
+        _available[r.source][r.coin][r.asset] += released;
         // The call before it is our own keys' view.
         // forge-lint: disable-next-line(reentrancy-events)
         emit RootCancelled(round, released);
@@ -283,7 +358,7 @@ contract Distributor is IHoldersPart {
                 // forge-lint: disable-next-line(unsafe-typecast)
                 r.paid = uint128(paid);
                 // What it reserved is paid: the pot falls, and what a new root may owe stays as it was.
-                potOf[r.coin][asset] -= c.amount;
+                _pots[r.source][r.coin][asset] -= c.amount;
                 sum += c.amount;
                 took[end] = true;
             }
@@ -304,11 +379,11 @@ contract Distributor is IHoldersPart {
         _setClaimLock(false);
     }
 
-    /// @dev Raises a coin's pot and what a new root may owe from it, together, so every unit deposited can
-    ///      be reserved by a root. A round of source `earnings` (#248) raises the pot through here too.
-    function _addToPot(address coin, Currency asset, uint256 amount) internal {
-        potOf[coin][asset] += amount;
-        _available[coin][asset] += amount;
+    /// @dev Raises one of a coin's pots and what a new root of that source may owe from it, together, so every
+    ///      unit deposited can be reserved by a root.
+    function _addToPot(Source source, address coin, Currency asset, uint256 amount) internal {
+        _pots[source][coin][asset] += amount;
+        _available[source][coin][asset] += amount;
     }
 
     /// @dev Puts a refused claim back as it was: owed to the same holder, by the same round, from the same
@@ -319,7 +394,7 @@ contract Distributor is IHoldersPart {
         // It was added by this call's own claim, so it fits.
         // forge-lint: disable-next-line(unsafe-typecast)
         r.paid -= uint128(amount);
-        potOf[r.coin][asset] += amount;
+        _pots[r.source][r.coin][asset] += amount;
         // forge-lint: disable-next-line(reentrancy-events)
         emit ClaimRefused(round, holder, asset, amount);
     }
@@ -402,13 +477,36 @@ contract Distributor is IHoldersPart {
         return _rounds[round];
     }
 
+    /// @notice What this contract holds of `coin`'s Reward Tax for its holders, in `asset`: raised by the Tax
+    ///         Vault's deposit, lowered by a payment of a Reward Round, and by nothing else.
+    function potOf(address coin, Currency asset) external view returns (uint256) {
+        return _pots[Source.Tax][coin][asset];
+    }
+
+    /// @notice What this contract holds of `coin`'s Creator earnings for its holders, in `asset` (#248):
+    ///         raised by its Destination's deposit, lowered by a payment of a round of source `earnings`, and
+    ///         by nothing else. Apart from `potOf`, the Reward Tax's.
+    function earningsPotOf(address coin, Currency asset) external view returns (uint256) {
+        return _pots[Source.Earnings][coin][asset];
+    }
+
     /// @notice What a new root for `coin` in `asset` may owe at most: its pot less what its live roots owe.
     function availableOf(address coin, Currency asset) external view returns (uint256) {
-        return _available[coin][asset];
+        return _available[Source.Tax][coin][asset];
+    }
+
+    /// @notice What a new earnings root for `coin` in `asset` may owe at most (#248).
+    function earningsAvailableOf(address coin, Currency asset) external view returns (uint256) {
+        return _available[Source.Earnings][coin][asset];
     }
 
     /// @notice What `coin`'s live roots still owe from its pot in `asset`: never more than the pot.
     function reservedOf(address coin, Currency asset) external view returns (uint256) {
-        return potOf[coin][asset] - _available[coin][asset];
+        return _pots[Source.Tax][coin][asset] - _available[Source.Tax][coin][asset];
+    }
+
+    /// @notice What `coin`'s live earnings roots still owe from its earnings pot in `asset`.
+    function earningsReservedOf(address coin, Currency asset) external view returns (uint256) {
+        return _pots[Source.Earnings][coin][asset] - _available[Source.Earnings][coin][asset];
     }
 }
