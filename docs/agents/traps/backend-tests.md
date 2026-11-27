@@ -47,6 +47,10 @@ The text is the original's, one sentence a line.
   `GET /v1/chains/:chain/launch-options` is kept five seconds, so a test that lists or delists an asset polls for it (`optionsListing`).
 - An EVM launch through the API sends the suite's 1x1 PNG unless told otherwise, which Copy Protection never compares; a picture that is compared must differ, by the API's own hash, from every other file's (`evm-copies.test.ts` measured its three against `copies.test.ts`'s).
 - vitest prints nothing a passing test logs when its output is not a terminal: a figure a test must report (a gas measurement) goes to a file.
+- A fork's time is its latest block's, and no block is made while nothing is sent: a quote asked after a wait still reads the old second, so a test that waits out an Opening Fee mines one empty block afterwards (`afterOpeningFee` in `tests/backend/src/evm-trade-helpers.ts`), which moves no clock.
+- A launch on the fork executes for two or three seconds after its block took its timestamp, reading dozens of the PoolManager's storage words from the remote chain, so a test that must act in a Launch's first two seconds simulates the same call first (`launchWithoutDelay` in the same file); the first run without it was late four Launches in a row (#253).
+- A process listing shows every running fork's anvil command line, and with it the RPC URL and its key: count suites with `ps -axo command | /usr/bin/grep -c '[v]itest'` and never print a `ps` line that matches anvil (it happened once in a session's own output, 2026-11-27).
+- The provider's free tier answers HTTP 429 when several lanes start a fork at once ("EVM fork did not become ready", `failed to create genesis`): nothing ran, so wait a minute and run again.
 
 ## What a test must set up
 
