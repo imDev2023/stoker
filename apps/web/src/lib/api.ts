@@ -3,7 +3,7 @@ import {
   HolderList, LaunchTrust, IssuedApiKey, MarkList, LaunchList, LaunchQuoteList, LaunchSummary, LedgerPage, OperatorAlertList, OperatorOverview, PlatformInfo, PlatformStats, PreparedAirdrop,
   PreparedFeeChange, PreparedLaunch, PreparedTrade, QuoteAsset, QuoteAssetList, Revenue, RewardRoundDetail, RewardRulesPage, TradeList,
   RebatesPage, Region, RegionGatesView, TradeQuote, WalletHolding, WalletRebates, WalletRewards,
-  EvmLaunchOptions, EvmLaunchQuote, EvmTradeQuote, EvmTransactionReport, EvmWalletBalances, LaunchRefusal, PreparedEvmLaunch, PreparedEvmTrade,
+  ChainList, EvmLaunchOptions, EvmLaunchQuote, EvmTradeQuote, EvmTransactionReport, EvmWalletBalances, LaunchRefusal, PreparedEvmLaunch, PreparedEvmTrade,
   type AnnounceFeeChange, type CandleInterval, type Chain, type EvmChain, type MarkQuery, type CreateApiKey, type CurveStatus, type LaunchField, type LaunchSort,
   type PrepareEvmTradeRequest, type PrepareTradeRequest, type QuoteCategory, type QuoteIssuer, type RegionGates, type TaxKind, type TradeQuoteQuery, type TradeSide,
 } from "@launchpad/contract";
@@ -327,6 +327,11 @@ export class LaunchRefusedError extends ApiRequestError {
   constructor(message: string, status: number, readonly refusals: LaunchRefusal[]) {
     super(message, status);
   }
+}
+
+/** The chains this deployment of the API reads, each with its name in full and its block explorer. */
+export async function listChains() {
+  return read(await apiFetch(`${API_URL}/v1/chains`, { cache: "no-store" }), ChainList);
 }
 
 /** Everything an EVM chain offers a Launch, read from the chain's contracts: its Quote Assets, launch types, limits and addresses. */

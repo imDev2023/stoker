@@ -1,5 +1,6 @@
-import { LaunchSort, QuoteCategory, QuoteIssuer, type MarketValue, type QuoteRef } from "@launchpad/contract";
+import { LaunchSort, QuoteCategory, QuoteIssuer, type Chain, type MarketValue, type QuoteRef } from "@launchpad/contract";
 import type { BoardQuery } from "./api";
+import { STOCK_KIND } from "./chains";
 import { quoteTicker } from "./format";
 
 export const SORT_LABELS: Record<LaunchSort, string> = {
@@ -42,7 +43,7 @@ export const CATEGORY_LABELS: Record<QuoteCategory, string> = {
   collectible: "Collectibles",
   meme: "Memes",
   community: "Community",
-  native: "Native coins",
+  native: "Native assets",
 };
 
 /** The categories in the order the site lists them: the money first, then what it buys, the long tail last. */
@@ -151,9 +152,11 @@ const KIND_WORDS: Record<QuoteCategory, string> = {
   collectible: "Collectible",
   meme: "Meme coin",
   community: "Community coin",
-  native: "Native coin",
+  native: "Native asset",
 };
-export const kindOf = (q: Pick<QuoteRef, "category" | "issuer">) => (q.issuer ? `${ISSUER_LABELS[q.issuer]} stock` : KIND_WORDS[q.category]);
+/** A chain with a name of its own for its tokenized stocks (a Stock Token on Robinhood Chain, ADR 0028) is given that name alone. */
+export const kindOf = (q: Pick<QuoteRef, "category" | "issuer"> & { chain?: Chain }) =>
+  q.issuer ? `${ISSUER_LABELS[q.issuer]} stock` : ((q.category === "tokenized_stock" && q.chain && STOCK_KIND[q.chain]) || KIND_WORDS[q.category]);
 
 export const isDefaultBoard = (q: BoardQuery) => !q.category && !q.issuer && !q.quote && !q.q && q.sort === DEFAULT_BOARD.sort;
 

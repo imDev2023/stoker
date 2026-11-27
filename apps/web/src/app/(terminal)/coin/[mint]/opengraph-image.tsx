@@ -1,5 +1,6 @@
 import { ImageResponse } from "next/og";
 import { getLaunch } from "@/lib/api";
+import { PUBLIC_CHAINS, evmChainsOf } from "@/lib/chains";
 import { lockShare, lockTime } from "@/lib/creatorLock";
 import { quoteTicker } from "@/lib/format";
 import { liquidityShareLine } from "@/lib/liquidityLaunch";
@@ -35,8 +36,9 @@ async function picture(url: string | null): Promise<string | null> {
 
 export default async function Image({ params }: { params: Promise<{ mint: string }> }) {
   const { mint } = await params;
-  const launch = await getLaunch(mint);
-  if (!launch) return new Response("No coin at this address", { status: 404 });
+  // A share image is read with no visitor's cookie, so it shows a coin on a chain every visitor sees and no other (#253).
+  const launch = /^0x/.test(mint) && evmChainsOf(PUBLIC_CHAINS).length === 0 ? null : await getLaunch(mint);
+  if (!launch || !PUBLIC_CHAINS.includes(launch.chain)) return new Response("No coin at this address", { status: 404 });
   const quote = quoteTicker(launch.quote);
   const pair = `${launch.symbol} / ${quote}`;
   const image = await picture(launch.image);
