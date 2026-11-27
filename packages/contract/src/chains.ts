@@ -91,3 +91,58 @@ export type ChainInfo = z.infer<typeof ChainInfo>;
 
 export const ChainList = z.object({ chains: z.array(ChainInfo) });
 export type ChainList = z.infer<typeof ChainList>;
+
+/**
+ * A transaction an EVM chain's Indexer could not write (#279). While `setAsideAt` is null the Indexer stops on it and
+ * tries it again on its next run; after its runs it is set aside, the Indexer goes on without it, and the chain's
+ * `indexer_skipped` alert counts it until a replay writes it.
+ */
+export const IndexerFailure = z.object({
+  chain: Chain,
+  transaction: z.string(),
+  block: z.number().int(),
+  /** How many runs have failed on it. */
+  attempts: z.number().int(),
+  /** Why the last one failed, with the RPC's URL taken out. */
+  error: z.string(),
+  firstFailedAt: z.iso.datetime(),
+  lastFailedAt: z.iso.datetime(),
+  setAsideAt: z.iso.datetime().nullable(),
+});
+export type IndexerFailure = z.infer<typeof IndexerFailure>;
+
+export const IndexerFailureList = z.object({ failures: z.array(IndexerFailure) });
+export type IndexerFailureList = z.infer<typeof IndexerFailureList>;
+
+/**
+ * Operator: reads part of an EVM chain again and writes what is missing (#279); every write is idempotent. Either one
+ * transaction (its own block, and when it launched a coin every block after it up to where the Indexer has read, so
+ * the coin's later trades are found), or a range of blocks, which ends where the Indexer has read unless `toBlock` says.
+ */
+export const ReplayIndexer = z
+  .object({
+    chain: Chain,
+    transaction: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
+    fromBlock: z.number().int().min(0).optional(),
+    toBlock: z.number().int().min(0).optional(),
+  })
+  .refine((r) => (r.transaction === undefined) !== (r.fromBlock === undefined), { message: "name a transaction or a fromBlock, not both" })
+  .refine((r) => r.toBlock === undefined || (r.fromBlock !== undefined && r.toBlock >= r.fromBlock), { message: "toBlock goes with a fromBlock at or before it" });
+export type ReplayIndexer = z.infer<typeof ReplayIndexer>;
+
+export const IndexerReplay = z.object({
+  chain: Chain,
+  from: z.number().int(),
+  to: z.number().int(),
+  /** The block to replay from next when this call's budget ended before `to`; null when it read everything. */
+  next: z.number().int().nullable(),
+  launched: z.number().int(),
+  traded: z.number().int(),
+  burned: z.number().int(),
+  graduated: z.number().int(),
+  /** Failures this replay wrote at last, and so closed. */
+  resolved: z.number().int(),
+  /** Transactions in the range that still cannot be written, each with why. */
+  failed: z.array(z.object({ hash: z.string(), error: z.string() })),
+});
+export type IndexerReplay = z.infer<typeof IndexerReplay>;

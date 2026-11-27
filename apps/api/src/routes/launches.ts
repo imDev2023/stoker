@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { Connection, PublicKey, type ParsedAccountData } from "@solana/web3.js";
 import { alias } from "drizzle-orm/pg-core";
-import { and, asc, count, desc, eq, ilike, inArray, like, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, like, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { cpmmPdas, launchlabPdas, programsFor } from "@launchpad/chain";
 import {
   Chain as Chains, ChainsParam, LaunchListQuery, LINK_KINDS, SPARKLINE_POINTS, type CoinCreatorTier, type Holder, type HolderKind, type HolderList, type LaunchLinks, type LaunchList, type LaunchQuoteList,
@@ -27,10 +27,18 @@ type Filters = Omit<LaunchListQuery, "limit" | "offset" | "sort" | "chains"> & {
 /** A LIKE pattern that matches the text itself: its `%`, `_` and `\` are escaped, so "100%" finds a coin called that. */
 const likeText = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
-/** The name or ticker contains the search (any case), or the mint address starts with it (addresses are case-sensitive). */
+/**
+ * The name or ticker contains the search (any case), or the coin's address starts with it: as written on Solana, whose
+ * addresses are case-sensitive, and in any case on an EVM chain, whose addresses are stored checksummed while a wallet
+ * or an explorer writes them in lower case (#279).
+ */
 function searchClause(q: string) {
   const contains = `%${likeText(q)}%`;
-  return or(ilike(launches.name, contains), ilike(launches.symbol, contains), like(launches.mint, `${likeText(q)}%`));
+  const starts = `${likeText(q)}%`;
+  return or(
+    ilike(launches.name, contains), ilike(launches.symbol, contains), like(launches.mint, starts),
+    /^0x[0-9a-fA-F]{1,40}$/.test(q) ? and(ne(launches.chain, "solana"), ilike(launches.mint, starts)) : undefined,
+  );
 }
 
 /**

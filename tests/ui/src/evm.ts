@@ -6,7 +6,7 @@
 import type { BrowserContext, Page } from "@playwright/test";
 import { createPublicClient, createTestClient, createWalletClient, erc20Abi, http, parseAbi, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { EvmLaunchOptions, EvmTradeQuote, EvmTransactionReport, LaunchSummary, PreparedEvmLaunch } from "@launchpad/contract";
+import { ChainList, EvmLaunchOptions, EvmTradeQuote, EvmTransactionReport, LaunchSummary, PreparedEvmLaunch } from "@launchpad/contract";
 import { QUOTE_CANDIDATES, type EvmStackEnv } from "@launchpad/stack";
 import { coinImage, stackEnv } from "./fixtures";
 import { installEvmTestWallet, type EvmTestWallet, type EvmTestWalletOptions } from "./evmWallet";
@@ -33,8 +33,6 @@ export const NATIVE: Address = "0x0000000000000000000000000000000000000000";
 export const STOCK = { symbol: "CRWD", address: QUOTE_CANDIDATES.CRWD as Address, startTick: -244_200, decimals: 18 } as const;
 /** Every coin of an EVM chain's Launch Shape has 18 decimals. */
 export const COIN_DECIMALS = 18;
-/** How far behind the head the API's Indexer stops on Robinhood Chain: a transaction this deep is final to it. */
-const FINALITY_DEPTH = 5;
 
 const registryAbi = parseAbi([
   "struct Listing { bool listed; int24 startTick; uint16 graduationMultiple; uint16 referrerFeeCapBps; }",
@@ -62,6 +60,20 @@ function clients() {
     anvil: createTestClient({ chain, transport, mode: "anvil" }),
     wallet: (key: Hex) => createWalletClient({ chain, transport, account: privateKeyToAccount(key) }),
   };
+}
+
+/**
+ * How far behind the head the API's Indexer stops on the fork's chain, as the API itself says it (`GET /v1/chains`): a
+ * transaction this deep is final to it. Asked once; the figure is the chain profile's, and it has changed before (#279).
+ */
+let depth: Promise<number> | null = null;
+function finalityDepth() {
+  depth ??= api("/v1/chains").then((body) => {
+    const chain = ChainList.parse(body).chains.find((c) => c.chain === evmStack().chain);
+    if (!chain) throw new Error(`the API does not read ${evmStack().chain}`);
+    return chain.indexer.finalityDepth;
+  });
+  return depth;
 }
 
 async function api(path: string, init?: RequestInit) {
@@ -150,9 +162,9 @@ export async function showPreviewChains(context: BrowserContext, baseURL: string
 }
 
 /** Installs the EVM test wallet for `owner` on the fork's chain; call before the first navigation. */
-export function installEvmWallet(page: Page, owner: EvmKey, options: Partial<Pick<EvmTestWalletOptions, "startChainId" | "unknownChain">> = {}): Promise<EvmTestWallet> {
+export async function installEvmWallet(page: Page, owner: EvmKey, options: Partial<Pick<EvmTestWalletOptions, "startChainId" | "unknownChain">> = {}): Promise<EvmTestWallet> {
   const e = evmStack();
-  return installEvmTestWallet(page, { key: owner.key, rpcUrl: e.rpcUrl, chainId: e.chainId, finalityDepth: FINALITY_DEPTH, ...options });
+  return installEvmTestWallet(page, { key: owner.key, rpcUrl: e.rpcUrl, chainId: e.chainId, finalityDepth: await finalityDepth(), ...options });
 }
 
 export type EvmCoin = { coin: Address; pool: Hex; hash: Hex; symbol: string; name: string; quote: Address; launchedAt: bigint };
@@ -203,11 +215,14 @@ export async function launchEvmViaApi(creator: EvmKey, fields: { name: string; s
   if (receipt.status !== "success") throw new Error(`the launch of ${fields.symbol} reverted: ${hash}`);
   const launchedAt = (await pub.getBlock({ blockNumber: receipt.blockNumber })).timestamp;
 
-  if (fields.atSecond === undefined) await anvil.mine({ blocks: FINALITY_DEPTH });
+  if (fields.atSecond === undefined) await anvil.mine({ blocks: await finalityDepth() });
   else {
-    if (fields.atSecond < FINALITY_DEPTH) throw new Error(`a launch is final ${FINALITY_DEPTH} blocks on, so the fork cannot stand at second ${fields.atSecond}`);
+    // One empty block at a time moves the fork's clock a second each; the finality depth mined in one call after them
+    // leaves the clock where it stands (docs/agents/traps/backend-tests.md), so the launch is final to the Indexer at
+    // the very second the test asked for.
     const target = launchedAt + BigInt(fields.atSecond);
     for (let now = launchedAt; now < target; now = await forkTime()) await anvil.mine({ blocks: 1 });
+    await anvil.mine({ blocks: await finalityDepth() });
     const stands = (await forkTime()) - launchedAt;
     if (stands !== BigInt(fields.atSecond)) throw new Error(`the fork stands ${stands} seconds past the launch of ${fields.symbol}, not ${fields.atSecond}: the Mac was too slow for the blocks to stay a second apart`);
   }

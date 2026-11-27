@@ -1,7 +1,7 @@
 // The operator view and fee-change announcements (#22).
 import { Hono } from "hono";
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
-import { count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import BN from "bn.js";
 import { cpmmCoder, launchlabCoder, listGlobalConfigs, RATE_DENOMINATOR, updatePlatformConfigIx, WSOL_MINT, type PlatformConfigInfo } from "@launchpad/chain";
 import {
@@ -11,6 +11,7 @@ import {
   curves, feeAnnouncements, graduations, jobRuns, launches, ledgerEntries, operatorAlerts, platformSettings, quoteAssets, rewardRounds, type Db,
 } from "@launchpad/db";
 import type { AppEnv, Config } from "../env";
+import { chainFilter } from "../chains/filter";
 import { toJobRun } from "../jobs";
 import { uploadCounts } from "../metadata";
 
@@ -27,10 +28,16 @@ export const FEE_SETTINGS = {
 
 export const operatorViewRoutes = new Hono<AppEnv>();
 
-/** Everything at a glance, for support: Launches by status, rounds, burns, the latest run of each job, open alerts. */
+/**
+ * Everything at a glance, for support: Launches by status, rounds, burns, the latest run of each job, open alerts. The
+ * counts are one chain's (#279), Solana's unless `?chain=` names another: a status is a chain's own notion (only
+ * Solana's curve is ever "graduating"), and an EVM coin counted as a live Solana one misleads. The jobs, the alerts,
+ * the fees and the uploads are the deployment's.
+ */
 operatorViewRoutes.get("/overview", async (c) => {
   const db = c.get("db");
   const cfg = c.get("cfg");
+  const chain = chainFilter(c) ?? "solana";
   const status = sql<string>`case when ${graduations.mint} is not null then 'graduated' else coalesce(${curves.status}, 'live') end`;
   const [byStatus, rewardCount, rounds, burns, latestRuns, openAlerts, fees, metadataUploads] = await Promise.all([
     db
@@ -38,10 +45,11 @@ operatorViewRoutes.get("/overview", async (c) => {
       .from(launches)
       .leftJoin(curves, eq(curves.mint, launches.mint))
       .leftJoin(graduations, eq(graduations.mint, launches.mint))
+      .where(eq(launches.chain, chain))
       .groupBy(status),
-    db.select({ n: count() }).from(launches).where(eq(launches.taxKind, "reward")),
-    db.select({ status: rewardRounds.status, n: count() }).from(rewardRounds).groupBy(rewardRounds.status),
-    db.select({ n: sql<number>`count(distinct ${ledgerEntries.signature})::int` }).from(ledgerEntries).where(sql`${ledgerEntries.kind} in ('burn', 'flywheel')`),
+    db.select({ n: count() }).from(launches).where(and(eq(launches.chain, chain), eq(launches.taxKind, "reward"))),
+    db.select({ status: rewardRounds.status, n: count() }).from(rewardRounds).where(eq(rewardRounds.chain, chain)).groupBy(rewardRounds.status),
+    db.select({ n: sql<number>`count(distinct ${ledgerEntries.signature})::int` }).from(ledgerEntries).where(and(eq(ledgerEntries.chain, chain), sql`${ledgerEntries.kind} in ('burn', 'flywheel')`)),
     db.selectDistinctOn([jobRuns.job]).from(jobRuns).orderBy(jobRuns.job, desc(jobRuns.startedAt)),
     db.select({ n: count() }).from(operatorAlerts).where(isNull(operatorAlerts.resolvedAt)),
     platformFees(db, cfg),

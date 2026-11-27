@@ -20,6 +20,7 @@ import { deployStoker, deploymentOf, forkArgs, type EvmStackEnv } from "./evm";
 
 export type { EvmStackEnv } from "./evm";
 export { deployStoker, deploymentOf, forkArgs, QUOTE_CANDIDATES } from "./evm";
+export { startRpcStandIn, type RpcBehaviour, type RpcFault, type RpcRule, type RpcStandIn } from "./rpc";
 export { runMigrations } from "@launchpad/db/migrate";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");

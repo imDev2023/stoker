@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { ChainIndexer, ChainInfo } from "@launchpad/contract";
 import { chainCursors, type Db } from "@launchpad/db";
 import type { Bindings, Config } from "../env";
+import { JobFailure } from "../jobs";
 import { evmChains, withoutRpcUrl, type EvmChainConfig } from "./evm/config";
 import { evmClient, indexEvmChain, type EvmIndexRun } from "./evm/indexer";
 
@@ -99,7 +100,11 @@ function evmIndexer(c: EvmChainConfig): Indexer {
   };
 }
 
-/** Runs every polled chain's Indexer once, each even if another fails; the failures are thrown together after. */
+/**
+ * Runs every polled chain's Indexer once, each even if another fails; the failures are thrown together after, with what
+ * every chain did. A run that stopped on a transaction it could not write is a failure too (#279): it wrote everything
+ * before that transaction, and the next run reads it again.
+ */
 export async function runIndexers(env: Bindings, cfg: Config, db: Db) {
   const runs: EvmIndexRun[] = [];
   const failures: Error[] = [];
@@ -108,11 +113,13 @@ export async function runIndexers(env: Bindings, cfg: Config, db: Db) {
   for (const ix of all) {
     if (!ix.run) continue;
     try {
-      runs.push(await ix.run(db));
+      const run = await ix.run(db);
+      runs.push(run);
+      if (run.failed) failures.push(new Error(`${ix.info.chain}: stopped on transaction ${run.failed.hash} to read it again (run ${run.failed.attempts} on it): ${run.failed.error}`));
     } catch (e) {
       failures.push(new Error(`${ix.info.chain}: ${(e as Error).message}`));
     }
   }
-  if (failures.length) throw new AggregateError(failures, failures.map((f) => f.message).join("; "));
+  if (failures.length) throw new JobFailure(failures.map((f) => f.message).join("; "), { chains: runs });
   return { chains: runs };
 }

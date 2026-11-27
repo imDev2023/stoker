@@ -56,8 +56,8 @@ export type EvmTestWalletOptions = {
    * chain (`wallet_addEthereumChain`). False when left out.
    */
   unknownChain?: boolean;
-  /** Blocks mined after each transaction, so the API's Indexer, which stops this far behind the head, can read it. Robinhood Chain's 5 when left out. */
-  finalityDepth?: number;
+  /** Blocks mined after each transaction, so the API's Indexer, which stops this far behind the head, can read it: the chain's finality depth, as `GET /v1/chains` gives it. */
+  finalityDepth: number;
 };
 
 type InitArgs = { name: string; icon: string; rdns: string; uuid: string };
@@ -103,7 +103,7 @@ export async function connectEvmTestWallet(page: Page, button: Locator) {
 }
 
 /** Installs the wallet into a page; call before the first navigation. */
-export async function installEvmTestWallet(page: Page, { key, rpcUrl, chainId, startChainId, unknownChain = false, finalityDepth = 5 }: EvmTestWalletOptions): Promise<EvmTestWallet> {
+export async function installEvmTestWallet(page: Page, { key, rpcUrl, chainId, startChainId, unknownChain = false, finalityDepth }: EvmTestWalletOptions): Promise<EvmTestWallet> {
   const account = privateKeyToAccount(key);
   const chain = defineChain({ id: chainId, name: "Fork", nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
   const transport = http(rpcUrl);

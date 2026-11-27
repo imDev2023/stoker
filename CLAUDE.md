@@ -4,7 +4,7 @@ An "open + trustless" asset-paired Solana launchpad on Raydium LaunchLab named S
 No custom on-chain program: our own LaunchLab `PlatformConfig` plus a Cloudflare backend and a Next.js app.
 Since 2026-11-04 the site's rebuild runs in `/Volumes/Farhan/Work Folder/Dev/AI/kiln` (`imDev2023/kiln`, a copy of this repository at `12dbc10` with its history; Multica project `e5972df9`): the whole website from scratch in the Playground's design, with programs of our own allowed, its map is issue #1 there, and the relay runs it as the project `kiln`.
 This repository is the fallback: it still deploys the live mainnet API and the devnet rehearsal, and site work (phase 6, #137; Advanced Charts, #126) belongs in kiln unless the owner says otherwise.
-Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `stonk-fun-solana`) and its repository (was `imDev2023/Stoker-Markets`), and the rebuild is `kiln` (was `new-stoker`); GitHub redirects both old addresses, and the private `imDev2023/Stoker-Markets-research` keeps its name.
+Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `stonk-fun-solana`) and its repository (was `imDev2023/Stoker-Markets`), and the rebuild is `kiln` (was `new-stoker`); the private `imDev2023/Stoker-Markets-research` keeps its name.
 
 ## Read first
 
@@ -20,8 +20,8 @@ Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `ston
 
 ### The frontier (2026-11-27)
 
-- **Running:** relay lanes on #251, #279 (PR #281, merging `main` in), #253 and #282 (Solana), side by side (owner, 2026-11-24).
-  The main session's unit: review each lane's PR on the head its lane calls final, land it, start what it unblocks.
+- **Running:** relay lanes on #251 (PR #285) and #253, side by side (owner, 2026-11-24).
+  The main session's unit: review #281 (#279, final at 6e77243), then #284 (#282, Solana, at c9a4a21), each on the head its lane calls final; land it, start what it unblocks.
 - **Next unit:** Stoker on EVM chains, built here and not in kiln (owner, 2026-11-22): the PRD is #231, grilled with the owner in #235 (ADRs 0024 to 0030).
   #241 to #249, #271 (`contracts/README.md` first) and #252 have landed; #251, the gate, is the last contract slice.
   The EVM Indexer stays off (`EVM_DEPLOYMENTS` unset) until #279 closes; #254 and #255 follow it, #256 follows #253.
@@ -34,7 +34,7 @@ Renamed on 2026-11-18 (owner): this project is `stoker` on its folder (was `ston
   Go-live is #23: the checklist is `docs/runbooks/mainnet.md` section 12, and #23's latest comment says which item is open.
 - **The owner still owes:** the name Stoke Launch, theirs to overrule; the calls each lane left to overrule on #183, #184, #186, #211, #214, #215 and #221 to #224 (each issue's last comments, and the bodies of PRs #213, #217, #219, #225, #226, #228 and #229); on #23, item 9 (Always Use HTTPS), step 5b's backup disk, Helius Developer, then items 8, 10 and 12 at go-live; a Budget Table version with a share for `rebates` before the rebates pay anything (runbook section 17); the Reward Rounds' version 2 before the first Reward Launch (runbook section 6), and with it or after it the first Holding Weights (section 18); answers on #159; closing #128 and #129; three calls each on #193, #198 and #199 that are theirs to overrule (`docs/agents/settled.md`); and on #201, Supabase's advisor read again on both projects now that devnet has `0030` (mainnet's tables by the block on the issue, or at go-live).
   On EVM: #250 (the question to Robinhood), a hardware wallet address for the Admin (#251), the agent's calls in #231's Further Notes, the calls in PRs #260 to #278, the RPC tier for the EVM Indexer (#279), and pushing the knowledge bases' local commits.
-- **Open PRs on 2026-11-27:** #281 (the lane's), #168 (`sign-in`) and #132 (`design-research`: merge its `docs/design/research/` or close it).
+- **Open PRs on 2026-11-27:** #281, #284 and #285 (the lanes'), #168 (`sign-in`) and #132 (`design-research`: merge its `docs/design/research/` or close it).
   Check `gh pr list` before starting work, since cloud sessions also push here, and push every working branch.
 - **Site work** (phase 6, #137, and anything in the Playground's design) belongs in kiln unless the owner says otherwise.
 
