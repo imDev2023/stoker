@@ -37,6 +37,8 @@ abstract contract StokerTestBase is Test {
     int24 internal constant TICK_SPACING = 200;
     uint16 internal constant PLATFORM_FEE_BPS = 100; // 1.00% (ADR 0027)
     uint16 internal constant CREATOR_SHARE_BPS = 5_000; // the Creator Ladder's first tier (ADR 0020, ADR 0027)
+    uint16 internal constant SECOND_TIER_SHARE_BPS = 6_000; // its second tier, after 15 Active Days (#248)
+    uint16 internal constant TOP_TIER_SHARE_BPS = 7_000; // its top tier, after 30
     /// The Listing's Graduation multiple (ADR 0024: 20 at first) and its Referrer Fee cap (1.00%, as
     /// Solana's referral cap on SOL, #21; the owner sets each Listing's own, ADR 0027).
     uint16 internal constant GRADUATION_MULTIPLE = 20;
@@ -125,8 +127,9 @@ abstract contract StokerTestBase is Test {
                 break;
             }
         }
+        (uint16 first, uint16 second, uint16 top) = _ladder();
         factory = new StokerFactory(
-            pm, registry, PLATFORM_FEE_BPS, CREATOR_SHARE_BPS, salt, taxVault, openingFeeStartBps, OPENING_FEE_DURATION
+            pm, registry, PLATFORM_FEE_BPS, first, second, top, salt, taxVault, openingFeeStartBps, OPENING_FEE_DURATION
         );
         assertEq(address(factory), factoryAddr, "factory address");
         hook = factory.hook();
@@ -136,6 +139,12 @@ abstract contract StokerTestBase is Test {
         registry.list(address(quote), START_TICK, GRADUATION_MULTIPLE, REFERRER_FEE_CAP_BPS);
 
         swapRouter = new PoolSwapTest(pm);
+    }
+
+    /// The Creator Ladder's three shares the factory is deployed with (#248); a test that proves the hook
+    /// reads them from a Launch's terms deploys with others.
+    function _ladder() internal view virtual returns (uint16 first, uint16 second, uint16 top) {
+        return (CREATOR_SHARE_BPS, SECOND_TIER_SHARE_BPS, TOP_TIER_SHARE_BPS);
     }
 
     /// Deploys `initCode` from this contract through an external call, so `vm.expectRevert` sees the
