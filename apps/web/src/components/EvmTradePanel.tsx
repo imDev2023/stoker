@@ -448,14 +448,14 @@ export function EvmTradePanel({
                 </dd>
               </div>
               {feeLines.map((line, i) => (
-                <div key={line.name} className={i === 0 ? styles.group : undefined} data-fee={line.name}>
+                <div key={line.name} className={i === 0 ? `${styles.named} ${styles.group}` : styles.named} data-fee={line.name}>
                   <dt>{`${line.name}, ${line.what}`}</dt>
                   <dd>
                     <span className="mono">{formatUnits(line.raw, line.decimals, 6)}</span> {line.symbol}
                   </dd>
                 </div>
               ))}
-              <div className={styles.fee}>
+              <div className={`${styles.fee} ${styles.feeNote}`}>
                 <dt>Every fee is already taken out of what you get</dt>
                 <dd><Link href="/fees" className={styles.feeLink}>Every fee, explained</Link></dd>
               </div>
@@ -483,10 +483,11 @@ export function EvmTradePanel({
 
         {r ? (
           <div className={styles.review} role="region" aria-label="Review your trade">
+            {/* An amount and its ticker are joined by a no-break space, so a line never ends between the two. */}
             <p>
               {r.quote.side === "buy"
-                ? `Your wallet pays ${formatUnits(r.quote.amountIn, quoteDecimals, quoteDecimals)} ${quoteSymbol}, and the network fee in ${options.native.symbol}.`
-                : `Your wallet pays ${formatUnits(r.quote.amountIn, coinDecimals, coinDecimals)} ${launch.symbol} and the network fee in ${options.native.symbol}, and receives about ${formatUnits(r.quote.amountOut, quoteDecimals, 6)} ${quoteSymbol}.`}{" "}
+                ? `Your wallet pays ${formatUnits(r.quote.amountIn, quoteDecimals, quoteDecimals)}\u00a0${quoteSymbol}, and the network fee in ${options.native.symbol}.`
+                : `Your wallet pays ${formatUnits(r.quote.amountIn, coinDecimals, coinDecimals)}\u00a0${launch.symbol} and the network fee in ${options.native.symbol}, and receives about ${formatUnits(r.quote.amountOut, quoteDecimals, 6)}\u00a0${quoteSymbol}.`}{" "}
               {askWords(r.step, paySymbol)}{" "}
               {`If the price moves more than ${r.quote.slippageBps / 100}% first, the chain refuses the trade and nothing is traded.`}
             </p>
