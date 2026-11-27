@@ -23,7 +23,11 @@ describe.skipIf(!hasFork)("EVM chain: Volume Rebates and the Creator Ladder, on 
   const weekMs = () => own.env.rebateWeekSeconds * 1000;
   const weekOf = (ms: number) => Math.floor((ms - ANCHOR) / weekMs());
   const solanaTime = async () => ((await connection().getBlockTime(await connection().getSlot("confirmed"))) ?? Math.floor(Date.now() / 1000)) * 1000;
-  const evmTime = async () => Number((await clients().public.getBlock({ blockTag: "latest" })).timestamp) * 1000;
+  // The fork's clock moves only when it mines a block, as a real chain makes one ten times a second.
+  const evmTime = async () => {
+    await clients().test.mine({ blocks: 1 });
+    return Number((await clients().public.getBlock({ blockTag: "latest" })).timestamp) * 1000;
+  };
   const clock = async () => Math.max(Date.now(), await solanaTime(), await evmTime());
 
   beforeAll(async () => {

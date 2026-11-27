@@ -45,7 +45,10 @@ export type EvmIndexRun = {
   graduated: number;
   /** Ledger entries written from our contracts' payments, burns and additions (#254). */
   recorded: number;
-  /** How far behind the chain's head the run ended, in seconds, by the newest block it has written; null before its first. */
+  /**
+   * How far behind the run ended, in seconds: from the newest block it has written to the block it aimed for (the head
+   * less the finality depth), 0 when it reached it; null before its first block.
+   */
   secondsBehind: number | null;
   /** Transactions set aside on this run, each with why: tried on its runs, counted by the chain's alert, and the run went on. */
   skipped: { hash: string; error: string }[];
@@ -391,7 +394,10 @@ export async function indexEvmChain(db: Db, c: EvmChainConfig): Promise<EvmIndex
     ...(indexed >= unread && !run.rateLimited ? { indexedBlockTime: indexedTime } : {}),
     headBlock: Number(s.head.number), headBlockTime: s.head.time, checkedAt: new Date(), ...rangeState(),
   });
-  run.secondsBehind = indexedTime ? Math.max(0, (s.head.time.getTime() - indexedTime.getTime()) / 1000) : null;
+  // Behind is measured from the block the run aims for, the head less the finality depth: a run that reached it is not
+  // behind at all, whatever time those depth blocks took to come (a quiet chain makes them slowly).
+  const aimTime = indexed >= target ? null : await s.timeOf(BigInt(target)).catch(() => s.head.time);
+  run.secondsBehind = indexed >= target ? 0 : indexedTime && aimTime ? Math.max(0, (aimTime.getTime() - indexedTime.getTime()) / 1000) : null;
   await syncBehind(db, c, run.secondsBehind);
   if (!run.rateLimited) await refreshMultipliers(db, c, s.client).catch((e: unknown) => (isRateLimited(e) ? void (run.rateLimited = true) : Promise.reject(e)));
   if (hadFailures || run.skipped.length > 0) await syncAlert(db, c);
@@ -487,7 +493,8 @@ const BEHIND_ALERT_SECONDS = 600;
 
 /**
  * The chain's one alert for an Indexer that stays behind its head (#254): raised when a run ends further behind than
- * the deployment's setting, by the newest block it has written, and resolved by a run that ends within it. It covers
+ * the deployment's setting, from the newest block it has written to the block it aimed for (the head less the
+ * finality depth), and resolved by a run that ends within it. It covers
  * every stall that is not a failed run: a provider's rate limit that lasts (which ends each run as succeeded), a budget
  * too small for the chain's pace, a gap left by runs that did not happen. A run with no block written yet says nothing.
  */

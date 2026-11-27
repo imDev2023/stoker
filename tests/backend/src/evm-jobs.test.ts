@@ -243,6 +243,7 @@ describe.skipIf(!hasEvm)("EVM chain: an Indexer that stays behind its head", () 
     expect(await open()).toBeUndefined();
     // Seconds pass on the chain, and the provider refuses every log: each run ends rate-limited, as succeeded.
     await sleep(3_500);
+    await clients().test.mine({ blocks: 1 });
     const limit = rpc.fail({ method: "eth_getLogs", fault: { http: 429 } });
     const run = (await runIndexer(behind.url)) as { status: string; summary: { chains: { rateLimited: boolean; secondsBehind: number }[] } };
     expect(run.status).toBe("succeeded");
