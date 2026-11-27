@@ -77,7 +77,9 @@ jobs:
   # ROBINHOOD_RPC_URL secret exists (an archive endpoint; the URL carries a key and is never printed).
   contracts:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45 since #251: the job's time follows the runner it lands on. On 2026-11-27 the same sources took
+    # 15 to 20 minutes on `main` and, with #251's tests and the gate, 19 to 27, too near a limit of 30.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: contracts
@@ -95,11 +97,19 @@ jobs:
           key: contracts-lib-${{ hashFiles('contracts/script/deps.sh') }}
       - run: ./script/deps.sh
       - run: forge fmt --check
-      - run: forge build --sizes
+      # In parts (#251): one compiler process building everything at once reached 11 GB and took this runner down.
+      - run: ./script/build.sh
       # The EVM package's ABIs and bytecode must be what this build gives (#252): rerun the script after a contract change.
       - run: node ../packages/evm/scripts/artifacts.mjs --check
       - run: forge lint src
       - run: forge test --no-match-path 'test/fork/**'
+      # The security gate (#251, ADR 0030: what stands in an audit's place): solhint's errors, Slither against the
+      # triaged set in slither.db.json, then the security standards' pre-deployment gate with Robinhood Chain's
+      # profile, strict, so one item left failing or unanswered fails the push. The campaigns have just passed above.
+      - run: pipx install slither-analyzer==0.11.3
+      - run: python3 -c 'import yaml' || pip install --user --break-system-packages pyyaml
+      - name: The security gate
+        run: INVARIANTS_PASSED=1 ./script/gate.sh
       - uses: actions/cache@v6
         if: env.ROBINHOOD_RPC_URL != ''
         with:

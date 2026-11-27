@@ -1,0 +1,542 @@
+[
+ {
+  "id": "a987551c467f2d97f2cbd5df2c720753fed8b99191f62fb96854bad5b15601d4",
+  "check": "arbitrary-send-erc20",
+  "impact": "High",
+  "first_markdown_element": "src/TaxVault.sol#L431-L446"
+ },
+ {
+  "id": "176198866ed4fb7f9214599ba0ac3165d1d31df30e85401372ba8615fcd0e9bd",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L1130-L1134"
+ },
+ {
+  "id": "17a769396827a4d17ed0ab662ef614b19d0dd9a14e865a7731ac9260e0a63345",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/Distributor.sol#L403-L434"
+ },
+ {
+  "id": "41e76bcd75d60f85e2c8da25a68d0f9ddabdad68600de6b70a8587eb4fae87ec",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L849-L862"
+ },
+ {
+  "id": "44fa308a58694aea381cb38906f9d0a948b034b23b6dcf25b1bc26fbaf0da0e5",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L649-L670"
+ },
+ {
+  "id": "4f642643e6de63b97543502ccdb3af55833debe86acedf3e119c030e3a038a7b",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/Distributor.sol#L459-L463"
+ },
+ {
+  "id": "6d73fead0f6ac6c7021399efbda66a3ad1a31dbf11663a0dad7ff338e09708ac",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/Distributor.sol#L453-L457"
+ },
+ {
+  "id": "a7182337bc186a0ae2cc23297dcf37b855d4f319fdc7d00cc99ce3527450bbd0",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/destinations/EarningsDestination.sol#L139-L143"
+ },
+ {
+  "id": "b8e348ce59486d96b6eef417c51068e705d61c63736c663c60967bdb181332cf",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L1014-L1068"
+ },
+ {
+  "id": "bc9746740c00a8690236766cf24a3d84bb9991f343f83be248a4ebf1b5dbb435",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/destinations/EarningsDestination.sol#L128-L137"
+ },
+ {
+  "id": "bfb68f2f163888ebeab8f807037930e9d4f90db88c9653248ba9e82efe3edf47",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L907-L912"
+ },
+ {
+  "id": "c82838745dc4381ca5ce630672c479b46a08f381efae2c3e8bc3e0438073635e",
+  "check": "assembly",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L1124-L1128"
+ },
+ {
+  "id": "5c3b210ac40852812c1f71ba63329d1f0036244d7b7b7658264516036dbae457",
+  "check": "calls-loop",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L1097-L1118"
+ },
+ {
+  "id": "e76bb9e3faf458d2a0c58fe6b4f50b5a632966dcc2ae10266161cbe0fc714849",
+  "check": "calls-loop",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L1097-L1118"
+ },
+ {
+  "id": "946fa69a43404c3da2961f2ef3004fc9bb4759e3bd8c5d966c06d4e842096c5e",
+  "check": "cyclomatic-complexity",
+  "impact": "Informational",
+  "first_markdown_element": "src/Distributor.sol#L333-L380"
+ },
+ {
+  "id": "00d0b492c278d6d13d1a8737d39ebb307a5138f128207910306a91bc8bfb8016",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L614-L642"
+ },
+ {
+  "id": "0fda946216abd8755cbcf293c04e8eab5276ea3319bca3266a51c26a3bc658f5",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/TaxVault.sol#L593-L599"
+ },
+ {
+  "id": "24c86e2adbd6507f42bc16199df8ab8f8b8039ca5ccd77b3b5e78879bbbed37b",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/TaxVault.sol#L608-L633"
+ },
+ {
+  "id": "2b87c7fc9272d72190bea5bfabd5e9754c67a876d7d05df5e796b8562cff7a29",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L809-L811"
+ },
+ {
+  "id": "2c6118c7b55c2c8f4d12bbbc02b3ab95bde3192688245fe4dc00fdf74672347b",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/TaxVault.sol#L548-L554"
+ },
+ {
+  "id": "3301b24564e3cd8cb45fa68b30a6e90d7f7feebc7a5f017fa88dd79f1bf8b5c4",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L750-L752"
+ },
+ {
+  "id": "35f8194b963f64e50038481368e12887c5494962cc62e442b81366a020500b90",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/TaxVault.sol#L655-L657"
+ },
+ {
+  "id": "3af4aa2c9c2202db48d23e742ba5902405aa7c017d648f68fdbf4e24ecbf01fa",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L734-L746"
+ },
+ {
+  "id": "3d6c2c108874b9466270f1503ecba0cf65d555395b640f6b47f6e8dbe90f45d9",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L716-L727"
+ },
+ {
+  "id": "4aafa0d0695641ba3aabccdbf3f27a6680181770e9640c38e4becb416db2c3f8",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L931-L941"
+ },
+ {
+  "id": "5f37ac8abc3cce7fafb86b1a988243fed6913e6566de5657433b80136a41c2f4",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/TaxVault.sol#L530-L534"
+ },
+ {
+  "id": "6307608e0ae706bfac1978ce21d1deb5bd701358959cbc0ef6219ef4670b1173",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L783-L793"
+ },
+ {
+  "id": "68143f42f81c0ad71aaa73dd3369e4047f64310cc548f81930f2ccf6cb674b23",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L947-L958"
+ },
+ {
+  "id": "68fde1ab7dff59f009ef8d431ab0d7cd68638da108560ddd6a7f00184b8236fd",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/TaxVault.sol#L568-L574"
+ },
+ {
+  "id": "6c57663b5417fd1fd769af1067a6d13032b36bd5338e9798ac8e2a8cdd4d103c",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L675-L683"
+ },
+ {
+  "id": "7720d85da5c3d21fbc6800502db2ff1a123f706cc22969a4f39f97796ee663d0",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L763-L775"
+ },
+ {
+  "id": "9dea1bf48a089d21bfe86b6d078f5f448be41afc362b0b10f304f52a2460018b",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L689-L691"
+ },
+ {
+  "id": "9e0f17071da86fc33683d8ea7266a56e04b88586481f0198f3a3ffa01310f3dd",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L798-L806"
+ },
+ {
+  "id": "a04e76951724d2a212918f159180c44d411842b143d31d18561f4d49169eef20",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L849-L862"
+ },
+ {
+  "id": "ae42b0414ae5f886b373b56e8d519912326e0b2a2bc15f41894ae297df83e960",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L649-L670"
+ },
+ {
+  "id": "d1142ae1891ce76f57115605dfa10354dc6d42173dc348faf1c37d55491e240a",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L816-L818"
+ },
+ {
+  "id": "fbfa5aa24f87e922675f1358b5014d10217fbb011c2c01a92937dd39e13826d7",
+  "check": "dead-code",
+  "impact": "Informational",
+  "first_markdown_element": "src/StokerHook.sol#L696-L707"
+ },
+ {
+  "id": "0381b584170b427388bc9a2096c76fcff63c87d9b3d750c78e7e250778faf8b4",
+  "check": "divide-before-multiply",
+  "impact": "Medium",
+  "first_markdown_element": "src/TaxVault.sol#L608-L633"
+ },
+ {
+  "id": "74a93fd7013c041995618a5698fd00468801015833dc41afbca968eba09ecb21",
+  "check": "incorrect-equality",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerCreatorLock.sol#L71-L79"
+ },
+ {
+  "id": "3be48855e37bc4b4c4adcfb79e1daea3175d9f8d94b4abe79a92c126d100ae10",
+  "check": "missing-zero-check",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerKeys.sol#L63"
+ },
+ {
+  "id": "8bc0052c6218f29e9bbfe8e895711235ea91c248f47a52bc25873c57e31b17e5",
+  "check": "missing-zero-check",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerCreatorLock.sol#L56"
+ },
+ {
+  "id": "03f7aeb9168c6d1e4b9268216f3dfe0e14e89e696a13cf02e67b62255962acbe",
+  "check": "reentrancy-benign",
+  "impact": "Low",
+  "first_markdown_element": "src/destinations/EarningsDestination.sol#L69-L89"
+ },
+ {
+  "id": "343e66e21a2f65dc27515357789b1784eba8211938499a2fd388accfc67ec516",
+  "check": "reentrancy-benign",
+  "impact": "Low",
+  "first_markdown_element": "src/TaxVault.sol#L382-L387"
+ },
+ {
+  "id": "6c73ba6e77917fd792cc3c7307a8e870b79a4ca7ff2dcb3ee78c9f42918091e3",
+  "check": "reentrancy-benign",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L675-L683"
+ },
+ {
+  "id": "90d94ffa5ab4c19d5be7ea1d21a24deeaa6ee356c9936666be42356ca14be53f",
+  "check": "reentrancy-benign",
+  "impact": "Low",
+  "first_markdown_element": "src/TaxVault.sol#L369-L375"
+ },
+ {
+  "id": "b6d56509aad8e0a28e27a4f9f3c89ecb5e5a23c4de0493f7395f5dacb49a9e00",
+  "check": "reentrancy-benign",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L798-L806"
+ },
+ {
+  "id": "c8e38342f6cd26d7614f7e7386ccb141282636475b634f629841188c3ece4c74",
+  "check": "reentrancy-benign",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L614-L642"
+ },
+ {
+  "id": "1451a459940e65a5b3772d93c21b31b8d6746db3d3c92001d54cadc0297a33a8",
+  "check": "reentrancy-events",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L1014-L1068"
+ },
+ {
+  "id": "1962ec995f1b298633fc00e54db1b8ccca2a9569164dbebd43168ce4d6a9e64c",
+  "check": "reentrancy-events",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerFactory.sol#L410-L427"
+ },
+ {
+  "id": "7cc4fb531d8e067cbae8e7317529c55ac4c7923c1ff3bb78bd5f36c2654ba00a",
+  "check": "reentrancy-events",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L798-L806"
+ },
+ {
+  "id": "84269a28a2adb4fbf8e18629b23c9a076d7f87fce3d7f38200bf849578baecfc",
+  "check": "reentrancy-events",
+  "impact": "Low",
+  "first_markdown_element": "src/destinations/EarningsDestination.sol#L69-L89"
+ },
+ {
+  "id": "8ac3d43c53bc5871916d712831aed2d8e681409fa4f50863f22b30e5a2df3cf7",
+  "check": "reentrancy-events",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L1097-L1118"
+ },
+ {
+  "id": "a124e7557a05c88c6ede7ab87d0792025840a538e937b8992967aa0291574ed1",
+  "check": "reentrancy-events",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerCreatorLock.sol#L71-L79"
+ },
+ {
+  "id": "f57c75449f7502033bb9fe2b898ffc8623537f338e1144bbc30568ac9901597f",
+  "check": "reentrancy-events",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L614-L642"
+ },
+ {
+  "id": "f9c3f08268a1b768e69971c7b9fae39f16f09adb56310999226bb86e242d6676",
+  "check": "reentrancy-events",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L675-L683"
+ },
+ {
+  "id": "4de7c9e8b1cab854288db5e8cb5d642b0a76b9d7586991c87b64920b025b3f6b",
+  "check": "reentrancy-no-eth",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerHook.sol#L1097-L1118"
+ },
+ {
+  "id": "79e38e1882611d751a50b392cd014804fc337bcdfb06569311754c484092686d",
+  "check": "reentrancy-no-eth",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerHook.sol#L1014-L1068"
+ },
+ {
+  "id": "1053d0fced50a2b1bee2da27e737113dd2b9f54f74a3dad079c23ff75c1ac392",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L931-L941"
+ },
+ {
+  "id": "2a88331b17ecd9028db45fe73f552b09ed40fca15e5d01265410a103e1bcdfbe",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/QuoteRegistry.sol#L232-L246"
+ },
+ {
+  "id": "2b401df03baa8583ee2f0827beb6d8a3151025ad958482e404d4cb66af1f1f01",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/Distributor.sol#L295-L306"
+ },
+ {
+  "id": "394046e9d33791fd456a5622e708c62a344fd58e02736ed5244fa60bf944fe78",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L869-L881"
+ },
+ {
+  "id": "3afd7e607a1d35f1c677ee60fd054a3dac99c78d8ab1f38136d2edd1000c647c",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/TaxVault.sol#L530-L534"
+ },
+ {
+  "id": "4607ef71f78dde4348f937fbcfa3e6291d827fc554f4c6eaec0e5b8ba3cda577",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerCreatorLock.sol#L87-L97"
+ },
+ {
+  "id": "645f505074a11a109fefe06d1cc2ad5d4cc5f663f2cc1f965afa2f64cfd18825",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/QuoteRegistry.sol#L248-L252"
+ },
+ {
+  "id": "6d91afc44a629e143fc26ea4796238c19262e139fe848a026533402b2b642a3a",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerHook.sol#L763-L775"
+ },
+ {
+  "id": "76bcb7d4d014cd8c7f04ad29c1f40234214b731e71c60e64b3fa355fc634f7e1",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/TaxVault.sol#L593-L599"
+ },
+ {
+  "id": "aa499818f4814710fc9019decd15912c509e576bd9ee4e83c80b694aa4cbd5e6",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/QuoteRegistry.sol#L196-L209"
+ },
+ {
+  "id": "b38087cf7247080ee349b828ccd4ac736ea72fa658845813995091db605f2ec9",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/QuoteRegistry.sol#L220-L226"
+ },
+ {
+  "id": "cc9e13967920caf907cb7e2ef807c567ad980981f42a06ffff51e512c1332a40",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/QuoteRegistry.sol#L213-L217"
+ },
+ {
+  "id": "d3813c6e2aad32d9a5d398dc83a62f217eccb1d8db866d95f9ce80335512cb4f",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/Distributor.sol#L444-L451"
+ },
+ {
+  "id": "dba179ae7356e5d1a6812ce31953768455bd0c4dfb0dd7d79dcca126a9fdc37e",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/Distributor.sol#L278-L286"
+ },
+ {
+  "id": "ff4f730337024a34e9f0c053dca540e93ac93848be8cc96b56feb62ac6dc1ded",
+  "check": "timestamp",
+  "impact": "Low",
+  "first_markdown_element": "src/StokerCreatorLock.sol#L71-L79"
+ },
+ {
+  "id": "21a99aab3aeb1d3a9b63c9540fa1ee34404e36115f1da00ab3123ad13cbc404a",
+  "check": "uninitialized-local",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerFactory.sol#L289"
+ },
+ {
+  "id": "245021c2f6b2aa8d8499cb557de34d23b4eb35d666d79e53ca069f06fb5be4c8",
+  "check": "uninitialized-local",
+  "impact": "Medium",
+  "first_markdown_element": "src/TaxVault.sol#L496"
+ },
+ {
+  "id": "ee7c7a17b953ddc72fef733f071e5582510076ba7c0682a87f5484cdd3881c7c",
+  "check": "uninitialized-local",
+  "impact": "Medium",
+  "first_markdown_element": "src/TaxVault.sol#L496"
+ },
+ {
+  "id": "bbddd71d802b7e906de7e6e798c637049479868cae6d1fc8879ddaaf35079387",
+  "check": "uninitialized-state",
+  "impact": "High",
+  "first_markdown_element": "src/StokerHook.sol#L233"
+ },
+ {
+  "id": "e852a723169d7a8a67aa88551aa6b24fb182b4322c37765c324fe96697d78c3d",
+  "check": "uninitialized-state",
+  "impact": "High",
+  "first_markdown_element": "src/StokerHook.sol#L194"
+ },
+ {
+  "id": "0af57362073433629df8e131cf3d9a28664ebb36e629ccf48e8895b743e48a2a",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerHook.sol#L986-L997"
+ },
+ {
+  "id": "2b24b255cfe0fcfb7df17152d644f0b1361294a1557219a52e65627a43040ad2",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerHook.sol#L1014-L1068"
+ },
+ {
+  "id": "2d6aad8a866a72582153b7d93a08898512fbc2f63151db9ae3b8dfa73edd63c5",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerFactory.sol#L462-L494"
+ },
+ {
+  "id": "3fac224ae82bfe6568631bf976b5b5e7b522a35ac1a04ca2db2a1b891e15a744",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerHook.sol#L931-L941"
+ },
+ {
+  "id": "5957179591eb93e7005d1da157b6c8c7d7f0bfe949ea72af51a04bbf13c93735",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/TaxVault.sol#L474-L503"
+ },
+ {
+  "id": "90291d5408163c92fc5e9d26ec3b8cb29ec5724e45bf9497bce7487dc81ac1fe",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerHook.sol#L963-L976"
+ },
+ {
+  "id": "966f8e9b3e7a21666f0e08191c36147fa646251435e3e7b62adf1b9e1af12ff1",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerHook.sol#L898-L901"
+ },
+ {
+  "id": "a760785d5843f4a563f4ed22611e02b608775791d15e0fdccd47ca64bde653a4",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/TaxVault.sol#L392-L400"
+ },
+ {
+  "id": "b817d2efa3c4c2c1235e5b8cb59b694f570c6d46062b8a62cfeb9b3abec8f385",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/TaxVault.sol#L340-L361"
+ },
+ {
+  "id": "b88d74846e0e36e621793e5750c74ca2f1e24e74b2c0cd89d78a5ad3103db551",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerFactory.sol#L271-L359"
+ },
+ {
+  "id": "dbb23dd7310b551e490f20d0656cbe95796b45d2de47a8cb9ab8497d9d7a28bf",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerHook.sol#L1071-L1090"
+ },
+ {
+  "id": "df57ebfbffd5ce9e4a1ae0379a5ad1c2abd11bdbf7304476876f514a4deaa434",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/StokerHook.sol#L1014-L1068"
+ },
+ {
+  "id": "fe3b8fc8b6a9ccd6e31bc627250623b6dac1fafd3dc6de9d9d4d85b394998d6a",
+  "check": "unused-return",
+  "impact": "Medium",
+  "first_markdown_element": "src/TaxVault.sol#L537-L544"
+ }
+]

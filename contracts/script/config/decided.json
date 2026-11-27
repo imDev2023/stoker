@@ -1,0 +1,9 @@
+{
+  "platformFeeBps": 100,
+  "creatorShareBps": 5000,
+  "secondTierShareBps": 6000,
+  "topTierShareBps": 7000,
+  "pieceBps": 50,
+  "roundDelay": 86400,
+  "graduationHold": 3600
+}
