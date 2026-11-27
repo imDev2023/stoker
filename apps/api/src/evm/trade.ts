@@ -159,8 +159,9 @@ type TradeRead = {
  * Prices an exact-in trade at the chain's latest block, and with a `trader` reads their wallet at the same block: one
  * `eth_call` through Multicall3 (the terms, the pool's price and Uniswap's protocol fee, the Quoter's run of the swap,
  * the block's time) beside one `eth_blockNumber`, since the opcode's block number is the parent chain's on this chain.
- * Nothing is cached between requests but two immutables (the tick spacing, a Launch's Referrer Fee cap), so a quote
- * inside the Opening Fee's window is always that block's.
+ * The two are asked at once, so on a chain that makes several blocks a second `block` can be the one beside the call's
+ * own; every figure, and the time, is the call's own block's. Nothing is cached between requests but two immutables
+ * (the tick spacing, a Launch's Referrer Fee cap), so a quote inside the Opening Fee's window is always that block's.
  */
 async function readTrade(cfg: Config, coin: Coin, r: EvmTradeQuoteQuery, trader: Address | null): Promise<TradeRead> {
   const { x } = coin;
@@ -413,7 +414,7 @@ export async function prepareEvmTrade(c: Context<AppEnv>, sent: unknown): Promis
   if (permit.amount < amountIn) throw refuse("This permit is for less than the trade spends. Sign a new one for this amount.");
   if (permit.nonce !== allowed.nonce) throw refuse("This permit has been used or replaced. Sign a new one.");
   const permitEnds = permit.expiration < permit.sigDeadline ? permit.expiration : permit.sigDeadline;
-  if (permitEnds < t.time + PERMIT_MIN_SECONDS_LEFT) throw refuse("This permit has expired. Sign a new one.");
+  if (permitEnds < t.time + PERMIT_MIN_SECONDS_LEFT) throw refuse("This permit has run out of time. Sign a new one.");
   // The trade never outlives its permit.
   const deadline = permitEnds < t.time + DEADLINE_SECONDS ? permitEnds : t.time + DEADLINE_SECONDS;
   const permitInput = encodeAbiParameters(permitAndSignature, [

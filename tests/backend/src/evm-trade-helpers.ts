@@ -1,11 +1,11 @@
 // What a trader's wallet does with the API on an EVM chain (#253): ask for a quote, prepare a trade, and send or sign
 // exactly what the API answered, on the test stack's fork of Robinhood Chain. Nothing here reaches into the API's
 // internals; what a test compares the answers with is read from the chain.
-import { erc20Abi, parseAbi, parseEventLogs, type Address, type Hex, type TransactionReceipt } from "viem";
+import { erc20Abi, keccak256, parseAbi, parseEventLogs, toHex, type Address, type Hex, type TransactionReceipt } from "viem";
 import { EvmTradeQuote, EvmWalletBalances, PreparedEvmTrade, type EvmTransaction, type EvmTypedData } from "@launchpad/contract";
-import { iPoolManagerAbi, quoteRegistryAbi, ROBINHOOD_CHAIN, stokerHookAbi } from "@launchpad/evm";
+import { iPoolManagerAbi, NATIVE, quoteRegistryAbi, ROBINHOOD_CHAIN, stokerFactoryAbi, stokerHookAbi } from "@launchpad/evm";
 import { env } from "./client";
-import { clients, evm, gasCost, type EvmLaunch, type PoolKey } from "./evm";
+import { clients, evm, gasCost, SWAP_GAS, type EvmLaunch, type PoolKey } from "./evm";
 
 export type Trader = { key: Hex; address: Address };
 export type TradeParams = { side: "buy" | "sell"; amount: bigint; slippageBps?: number; referrer?: Address; referrerFeeBps?: number };
@@ -143,6 +143,39 @@ export async function afterOpeningFee(launches: EvmLaunch[]) {
   }
 }
 
+/**
+ * Launches a standard coin whose transaction returns within the second its block was stamped with. On a fork a launch
+ * reads dozens of storage words of the PoolManager from the remote chain while it executes, two or three seconds after
+ * its block took its time, so a test that must act in a Launch's first seconds would always be late. The same call
+ * simulated first leaves those words in the fork's cache, and the launch itself then runs in milliseconds. `launchCoin`
+ * in `./evm` picks its own salt, so the launch is written out here.
+ */
+export async function launchWithoutDelay(creator: { key: Hex }, opts: { quote?: Address; firstBuy?: bigint } = {}): Promise<EvmLaunch> {
+  const e = evm()!;
+  const quote = opts.quote ?? NATIVE;
+  const firstBuy = opts.firstBuy ?? 0n;
+  const tag = `Q${Array.from(crypto.getRandomValues(new Uint8Array(5)), (b) => (b % 36).toString(36)).join("").toUpperCase()}`;
+  const wallet = clients().wallet(creator.key);
+  const request = {
+    address: e.factory, abi: stokerFactoryAbi, functionName: "launch", gas: SWAP_GAS, value: quote === NATIVE ? firstBuy : 0n,
+    args: [{
+      name: `Fork Coin ${tag}`, symbol: tag, quote, salt: keccak256(toHex(tag)), creatorDestination: NATIVE, firstBuy, launchType: 0, taxBps: 0, burnShareBps: 0,
+      liquidityShareBps: 0, payoutAsset: 0, creatorLockBps: 0, creatorLockCliff: 0, creatorLockUnlock: 0,
+    }],
+  } as const;
+  await clients().public.simulateContract({ ...request, account: wallet.account });
+  const hash = await wallet.writeContract(request);
+  const receipt = await clients().public.waitForTransactionReceipt({ hash, pollingInterval: 100 });
+  if (receipt.status !== "success") throw new Error(`launch reverted: ${hash}`);
+  const [launched] = parseEventLogs({ abi: stokerFactoryAbi, logs: receipt.logs, eventName: "Launched" });
+  const coin = launched!.args.coin;
+  const quoteFirst = BigInt(quote) < BigInt(coin);
+  return {
+    coin, poolId: launched!.args.poolId, quote, receipt,
+    key: { currency0: quoteFirst ? quote : coin, currency1: quoteFirst ? coin : quote, fee: 0, tickSpacing: e.tickSpacing, hooks: e.hook },
+  };
+}
+
 /** Runs `work` as an account the fork lets anyone act as (a contract, or a key nobody here holds), with gas to send from. */
 async function as<T>(account: Address, work: (anvil: ReturnType<typeof clients>["test"]) => Promise<T>): Promise<T> {
   const { test: anvil } = clients();
@@ -202,6 +235,23 @@ export async function setStockPaused(token: Address, pause: boolean) {
   });
   const now = await clients().public.readContract({ address: token, abi: pauseAbi, functionName: "paused" });
   if (now !== pause) throw new Error(`${token} is ${now ? "" : "not "}paused after the pauser's call`);
+}
+
+/** The Stock Tokens' registry, which every one of them asks about both parties of a transfer, and the holder of its `BLOCKER_ROLE` (the same note). */
+const STOCK_TOKEN_REGISTRY: Address = "0xe10b6f6B275de231345c20D14Ab812db62151b00";
+const STOCK_TOKEN_BLOCKER: Address = "0x913ca87347391218e5de2c17c5a0aeba8b0b28fd";
+const blocklistAbi = parseAbi(["function blockAccounts(address[] accounts)", "function unblockAccounts(address[] accounts)", "function isBlocked(address account) view returns (bool)"]);
+
+/** Blocks one address for every Stock Token, or lifts the block, as the issuer's blocker does. */
+export async function setStockBlocked(account: Address, blocked: boolean) {
+  await as(STOCK_TOKEN_BLOCKER, async (anvil) => {
+    const hash = await anvil.writeContract({
+      account: STOCK_TOKEN_BLOCKER, chain: anvil.chain, address: STOCK_TOKEN_REGISTRY, abi: blocklistAbi, functionName: blocked ? "blockAccounts" : "unblockAccounts", args: [[account]],
+    });
+    if ((await anvil.waitForTransactionReceipt({ hash })).status !== "success") throw new Error(`${blocked ? "blocking" : "unblocking"} ${account} reverted`);
+  });
+  const now = await clients().public.readContract({ address: STOCK_TOKEN_REGISTRY, abi: blocklistAbi, functionName: "isBlocked", args: [account] });
+  if (now !== blocked) throw new Error(`${account} is ${now ? "" : "not "}blocked after the blocker's call`);
 }
 
 /** A wallet's balances as the API answers them. */

@@ -7,10 +7,11 @@ import { erc20Abi, maxUint256, parseAbi, toFunctionSelector, type Address } from
 import { LaunchSummary, TradeList, type EvmTradeQuote } from "@launchpad/contract";
 import { feeRatesAt, feesOnGross, feesTotal, mulDivUp, NATIVE, openingBpsAt, protocolFeeOn, ROBINHOOD_CHAIN, type SwapFees } from "@launchpad/evm";
 import { env } from "./client";
+import { freePort, startApi } from "@launchpad/stack";
 import { balanceOf, clients, evmWallet, launchCoin, listQuote, runIndexer, type EvmLaunch } from "./evm";
 import {
-  afterOpeningFee, balancesOf, blockTimeOf, creditOf, feeEvents, fundFromPoolManager, listQuoteWithCap, prepareResponse, prepareTrade, quoteOf, quoteResponse,
-  refusal, revertSelectorOf, send, setProtocolFee, setStockPaused, sign, termsOf, tradeThroughApi,
+  afterOpeningFee, balancesOf, blockTimeOf, creditOf, feeEvents, fundFromPoolManager, launchWithoutDelay, listQuoteWithCap, prepareResponse, prepareTrade, quoteOf,
+  quoteResponse, refusal, revertSelectorOf, send, setProtocolFee, setStockBlocked, setStockPaused, sign, termsOf, tradeThroughApi,
 } from "./evm-trade-helpers";
 
 const hasEvm = inject("harness").evm !== null;
@@ -316,14 +317,21 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork is quote
     expect(trades.map((t) => [t.side, t.fees.raydium])).toEqual([["sell", sell.quote.protocolFee.amount], ["buy", buy.quote.protocolFee.amount]]);
   });
 
-  /** Launches a coin and runs `work` at once; `work` answers false when the fork's clock had left the part of the Opening Fee's window it needs. */
-  async function insideWindow(opts: Parameters<typeof launchCoin>[1], work: (l: EvmLaunch) => Promise<boolean>) {
+  /**
+   * Launches a coin and runs `work` at once. No test moves the fork's clock, so the seconds of an Opening Fee are the
+   * wall clock's: `work` answers why when the fork's time had passed the part of the window it needs, and another
+   * Launch is tried.
+   */
+  async function insideWindow(opts: Parameters<typeof launchWithoutDelay>[1], work: (l: EvmLaunch) => Promise<true | string>) {
+    const late: string[] = [];
     for (let attempt = 0; attempt < 4; attempt++) {
-      const l = await launchCoin(await evmWallet(), opts);
+      const l = await launchWithoutDelay(await evmWallet(), opts);
       await runIndexer();
-      if (await work(l)) return;
+      const done = await work(l);
+      if (done === true) return;
+      late.push(done);
     }
-    throw new Error("four Launches in a row were past the seconds of their Opening Fee this test trades in: the machine is too slow for it right now");
+    throw new Error(`four Launches in a row were past the seconds of their Opening Fee this test trades in (${late.join("; ")}): the machine is too slow for it right now`);
   }
 
   test("inside the Opening Fee's window a buy is quoted with that second's fee, delivers at least the quote, and pays what the hook's schedule says at its own second", async () => {
@@ -334,7 +342,7 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork is quote
       const endsAt = terms.launchedAt + BigInt(terms.openingFeeDuration);
       const quoted = await quoteOf(l.coin, { side: "buy", amount: spend });
       const at = seconds(quoted.at);
-      if (at >= endsAt) return false;
+      if (at >= endsAt) return `quoted ${at - terms.launchedAt} s after the launch`;
       expect(quoted.opening).toEqual({ endsAt: iso(endsAt) });
       expect(quoted.feeBps).toEqual({ platform: 100, tax: 0, opening: openingBpsAt(terms, at), referrer: 0 });
       expect(quoted.feeBps.opening).toBeGreaterThan(0);
@@ -347,7 +355,7 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork is quote
       const before = await balanceOf(l.coin, trader.address);
       const buy = await tradeThroughApi(trader, l.coin, { side: "buy", amount: spend });
       const landedAt = await blockTimeOf(buy.receipt);
-      if (landedAt >= endsAt) return false;
+      if (landedAt >= endsAt) return `the buy landed ${landedAt - terms.launchedAt} s after the launch`;
       expect(buy.receipt.status).toBe("success");
       expect(buy.receipt.gasUsed).toBeLessThan(BigInt(buy.prepared.transaction!.gas));
       // The fee only falls, so the trade delivers the quote it was prepared with at least, and never less.
@@ -378,7 +386,7 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork is quote
       const quoted = await quoteOf(l.coin, trade);
       const second = seconds(quoted.at) - terms.launchedAt;
       // The room under the start figure holds a 5.00% fee whole from the launch's third second on.
-      if (second > 1n) return false;
+      if (second > 1n) return `quoted ${second} s after the launch`;
       const rates = feeRatesAt(terms, seconds(quoted.at), "buy", named);
       expect(quoted.feeBps).toEqual(rates);
       expect(quoted.feeBps.referrer).toBe(second === 0n ? 0 : 490);
@@ -392,12 +400,15 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork is quote
       const buy = await tradeThroughApi(trader, l.coin, trade);
       expect(buy.steps).toEqual(["permit", "trade"]);
       const landedAt = await blockTimeOf(buy.receipt);
-      if (landedAt >= endsAt) return false;
+      if (landedAt >= endsAt) return `the buy landed ${landedAt - terms.launchedAt} s after the launch`;
       expect(buy.receipt.status).toBe("success");
       const received = (await balanceOf(l.coin, trader.address)) - before;
       expect(received >= BigInt(buy.quote.amountOut), `received ${received}, quoted ${buy.quote.amountOut}`).toBe(true);
       const events = feeEvents(buy.receipt, l.poolId);
       expect(booked(events)).toEqual(feesOnGross(spend, feeRatesAt(terms, landedAt, "buy", named)));
+      // By the second it landed in, the buy paid its Opening Fee and whatever of the Referrer Fee the room then held.
+      expect(events.opening).toBeGreaterThan(0n);
+      expect(events.referrerAddress).toBe(events.referrer > 0n ? referrer.address : null);
       expect(await creditOf(referrer.address, SGOV)).toBeGreaterThanOrEqual(events.referrer);
       return true;
     });
@@ -465,7 +476,7 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork is quote
       status: 400, error: "The signature doesn't match the permit this trade was prepared with. Sign it again.",
     });
     // Out of time.
-    expect(await refusal(await prepareResponse(trader.address, standard.coin, small, { ...permit, sigDeadline: "1" }))).toMatchObject({ status: 400, error: "This permit has expired. Sign a new one." });
+    expect(await refusal(await prepareResponse(trader.address, standard.coin, small, { ...permit, sigDeadline: "1" }))).toMatchObject({ status: 400, error: "This permit has run out of time. Sign a new one." });
     // As signed, for its own trade, it is taken.
     const trade = await prepareTrade(trader.address, standard.coin, small, permit);
     expect(trade.step).toBe("trade");
@@ -489,6 +500,58 @@ describe.skipIf(!hasEvm)("EVM chain: a coin on the Robinhood Chain fork is quote
     }
     expect((await quoteOf(stock.coin, buy)).quote.mint).toBe(CRWD);
   });
+
+  test("a wallet its Stock Token's issuer has blocked is told so before it sends anything, buying or selling", async () => {
+    const trader = await evmWallet();
+    await fundFromPoolManager(CRWD, trader.address, 10n ** 16n);
+    await tradeThroughApi(trader, stock.coin, { side: "buy", amount: 5n * 10n ** 15n });
+    const coins = await balanceOf(stock.coin, trader.address);
+    const sell = { side: "sell" as const, amount: coins };
+    // Up to the permit, a sell moves the coin alone, which no issuer can stop.
+    const approval = await prepareTrade(trader.address, stock.coin, sell);
+    expect(approval.step).toBe("approve");
+    await send(trader, approval.transaction!);
+    const asked = await prepareTrade(trader.address, stock.coin, sell);
+    const permit = { ...asked.permitDetails!, signature: await sign(trader, asked.permit!) };
+
+    await setStockBlocked(trader.address, true);
+    try {
+      const sentence = "The issuer of CRWD has blocked this wallet, so it can't trade a coin paired with it.";
+      // The sell would pay the Stock Token out to the wallet: the PoolManager's transfer is what the issuer refuses.
+      expect(await refusal(await prepareResponse(trader.address, stock.coin, sell, permit))).toEqual({ status: 409, error: sentence, details: [] });
+      // A buy by a wallet that has approved nothing yet: the Stock Token refuses the approval itself.
+      const other = await evmWallet();
+      await fundFromPoolManager(CRWD, other.address, 10n ** 15n);
+      await setStockBlocked(other.address, true);
+      try {
+        expect(await refusal(await prepareResponse(other.address, stock.coin, { side: "buy", amount: 10n ** 15n }))).toMatchObject({ status: 409, error: sentence });
+      } finally {
+        await setStockBlocked(other.address, false);
+      }
+    } finally {
+      await setStockBlocked(trader.address, false);
+    }
+    // Unblocked, the same permit is still the trade's.
+    const trade = await prepareTrade(trader.address, stock.coin, sell, permit);
+    expect(trade.step).toBe("trade");
+    expect((await send(trader, trade.transaction!)).status).toBe("success");
+  });
+
+  test("a chain the API cannot reach is said in words, without the address it was reached at", async () => {
+    // The same database, so the coin is known, behind an RPC nothing answers at.
+    const e = inject("harness");
+    const [port, nothing] = [await freePort(), await freePort()];
+    const api = await startApi({ port, databaseUrl: e.databaseUrl, vars: { ...e.apiVars, PUBLIC_API_URL: `http://127.0.0.1:${port}`, ROBINHOOD_RPC_URL: `http://127.0.0.1:${nothing}` } });
+    try {
+      const unread = { status: 503, error: "Robinhood Chain could not be read just now. Try again.", details: [] };
+      expect(await refusal(await fetch(`${api.url}/v1/launches/${standard.coin}/quote?side=buy&amount=1000000000000000`))).toEqual(unread);
+      const body = JSON.stringify({ mint: standard.coin, trader: (await evmWallet(0n)).address, side: "buy", amount: "1000000000000000" });
+      expect(await refusal(await fetch(`${api.url}/v1/trades/prepare`, { method: "POST", headers: { "content-type": "application/json" }, body }))).toEqual(unread);
+      expect(await refusal(await fetch(`${api.url}/v1/chains/robinhood/wallets/${standard.coin}`))).toEqual(unread);
+    } finally {
+      await api.stop();
+    }
+  }, 240_000);
 
   test("a wallet's balances are the chain's, at a block a client can wait for", async () => {
     const trader = await evmWallet(3n);

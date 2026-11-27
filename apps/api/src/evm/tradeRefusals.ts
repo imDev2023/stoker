@@ -118,7 +118,7 @@ export function refusalOf(revert: Revert | null, n: TradeNames): HTTPException {
       return say(409, "This trade's deadline has passed. Prepare it again.");
     case "SignatureExpired":
     case "AllowanceExpired":
-      return say(400, "This permit has expired. Sign a new one.");
+      return say(400, "This permit has run out of time. Sign a new one.");
     case "InvalidSigner":
     case "InvalidSignature":
     case "InvalidSignatureLength":
