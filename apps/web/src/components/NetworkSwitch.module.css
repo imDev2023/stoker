@@ -1,0 +1,25 @@
+/* The switch stands where the action would: a line on why, then the one button, at the action's full width. */
+.box {
+  display: grid;
+  gap: 12px;
+}
+
+.box p {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.box .error {
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--down-bg);
+  color: var(--on-down-bg);
+  font-size: var(--text-ui);
+  font-weight: 500;
+}
+
+.primary {
+  width: 100%;
+}

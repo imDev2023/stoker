@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { explorerUrl, shortAddress } from "@/lib/format";
+import { explorerUrl, shortAddress, type ExplorerTarget } from "@/lib/format";
 
 /**
  * An address (or a signature) the one way the site writes one (#131): its first and last four characters in the
@@ -8,7 +8,7 @@ import { explorerUrl, shortAddress } from "@/lib/format";
  */
 export function Address({ value, platform, kind = "address", href, className = "" }: {
   value: string;
-  platform?: { cluster: string; rpcUrl: string };
+  platform?: ExplorerTarget;
   /** What the explorer is asked for: an account, or a transaction's signature written the same way. */
   kind?: "address" | "tx";
   href?: string;

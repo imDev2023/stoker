@@ -47,11 +47,3 @@ export const evmChainsOf = (chains: readonly Chain[]): EvmChain[] => chains.filt
  * chain's launch options says the chain's own `stockName`.
  */
 export const STOCK_KIND: Partial<Record<Chain, string>> = { robinhood: "Stock Token" };
-
-/**
- * A block explorer's page for an address or a transaction on an EVM chain, from the explorer's own address as the
- * chain's launch options give it. A pool's id is not an address and has no page.
- */
-export function evmExplorerUrl(explorer: string, kind: "tx" | "address", value: string) {
-  return `${explorer.replace(/\/$/, "")}/${kind}/${value}`;
-}
