@@ -140,7 +140,7 @@ test.describe("with the chain shown", () => {
       await expect(gets).toHaveAttribute("data-coins-out", /^[1-9]\d*$/);
       const coinsOut = BigInt((await gets.getAttribute("data-coins-out"))!);
       await expect(gets).toContainText(`${units(coinsOut, COIN_DECIMALS, 0)} ANVL`);
-      await expect(fact(review, "Launch cost")).toHaveText(/^About 0\.\d+ ETH in network fees$/);
+      await expect(fact(review, "Launch cost")).toHaveText(/^About 0\.\d+\sETH in network fees$/);
       await expect(page.getByText(`Paying in ${STOCK.symbol} takes a permit and a transaction, so your wallet asks twice.`, { exact: false })).toBeVisible();
       expect(wallet.requests).toHaveLength(0);
 
@@ -257,7 +257,7 @@ test.describe("with the chain shown", () => {
     await expect(gets).toHaveAttribute("data-coins-out", /^[1-9]\d*$/);
     const coinsOut = BigInt((await gets.getAttribute("data-coins-out"))!);
     // The cost says the First Buy too: with the native asset it is sent with the launch itself.
-    await expect(fact(summary(page), "Launch cost")).toHaveText(/^About 0\.\d+ ETH in network fees, and your first buy of 0\.03 ETH$/);
+    await expect(fact(summary(page), "Launch cost")).toHaveText(/^About 0\.\d+\sETH in network fees, and your first buy of 0\.03\sETH$/);
     await expect(page.getByText("Your own buy inside the launch transaction: one signature in your wallet.", { exact: false })).toBeVisible();
 
     await signButton(page).click();
@@ -368,7 +368,7 @@ test.describe("with the chain shown", () => {
     // On the form it is there from the first look, before a wallet is connected, above the action.
     await openLaunchForm(page);
     await expectStatement(summary(page));
-    const launched = await launchEvmViaApi(await fundedEvmKey(), { name: "Open Ledger", symbol: "OPLG" });
+    const launched = await launchEvmViaApi(await fundedEvmKey(), { name: "Slate Ledger", symbol: "SLTE" });
     await page.goto(`/coin/${launched.coin}`);
     await expectHydrated(page);
     await expectStatement(tradePanel(page));
@@ -377,7 +377,7 @@ test.describe("with the chain shown", () => {
   test("the chain is named in plain text and in full alone: no image, icon or badge of it on the launch form, a coin's page, the board or the account menu", async ({ page }) => {
     test.setTimeout(180_000);
     const { contracts } = await launchOptions();
-    const launched = await launchEvmViaApi(await fundedEvmKey(), { name: "Plain Speaker", symbol: "PLSP" });
+    const launched = await launchEvmViaApi(await fundedEvmKey(), { name: "Chalk Mark", symbol: "CHLK" });
     await installEvmWallet(page, await fundedEvmKey());
 
     /**
@@ -413,7 +413,7 @@ test.describe("with the chain shown", () => {
 
     // The board lists the coin beside Solana's, as a table and as cards.
     for (const view of ["table", "cards"]) {
-      await page.goto(`/coins?view=${view}&q=Plain+Speaker`);
+      await page.goto(`/coins?view=${view}&q=Chalk+Mark`);
       await expect(page.locator(`a[href="/coin/${launched.coin}"]`).first()).toBeVisible();
       await expectPlainTextAlone(false);
     }
@@ -547,7 +547,7 @@ test.describe("with the chain shown", () => {
     // The fork is left exactly ten seconds into the window's twenty, where it stands until something is sent, so the
     // quote read there is the same on every run; its first answer is then kept for every look.
     const SECOND = 10;
-    const launched = await launchEvmViaApi(await fundedEvmKey(), { name: "First Breath", symbol: "FBRT", atSecond: SECOND });
+    const launched = await launchEvmViaApi(await fundedEvmKey(), { name: "Furnace Door", symbol: "FDOR", atSecond: SECOND });
     let kept: { at: string; feeBps: { opening: number; platform: number } } | null = null;
     await page.route(new RegExp(`/v1/launches/${launched.coin}/quote\\?`, "i"), async (route) => {
       const response = await route.fetch();
@@ -561,7 +561,7 @@ test.describe("with the chain shown", () => {
       await expectHydrated(page);
       const panel = tradePanel(page);
       await panel.getByLabel("You pay").fill("0.01");
-      await expect(panel.locator('[data-fee="Opening Fee"] dt')).toHaveText("Opening Fee, into FBRT's own liquidity");
+      await expect(panel.locator('[data-fee="Opening Fee"] dt')).toHaveText("Opening Fee, into FDOR's own liquidity");
       await expect(panel.locator("[data-opening-fee]")).toContainText("The Opening Fee is running.");
       await settled(page);
       await expect(panel).toHaveScreenshot(`evm-trade-opening-${look.name}.png`, { mask: [statement(panel).getByRole("link"), panel.locator("[data-opening-fee] time")] });
@@ -629,13 +629,9 @@ test.describe("with the chain shown", () => {
       await expect(menu.getByRole("group", { name: CHAIN_NAME }).getByRole("menuitem", { name: `Disconnect the ${CHAIN_NAME} wallet` })).toBeVisible();
       await settled(page);
       await expectNoHorizontalOverflow(page);
-      // The control with its menu open, and nothing else of the page: the box that holds both.
-      const boxes = [(await account.boundingBox())!, (await menu.boundingBox())!];
-      const left = Math.floor(Math.min(...boxes.map((b) => b.x))) - 8;
-      const top = Math.floor(Math.min(...boxes.map((b) => b.y))) - 8;
-      const right = Math.ceil(Math.max(...boxes.map((b) => b.x + b.width))) + 8;
-      const bottom = Math.ceil(Math.max(...boxes.map((b) => b.y + b.height))) + 8;
-      await expect(page).toHaveScreenshot(`evm-account-menu-${look.name}.png`, { clip: { x: left, y: top, width: right - left, height: bottom - top }, mask: moving(page) });
+      // On a phone the menu opens in the account sheet's own flow, so the sheet is the shot: the wallets, then its
+      // links. On a desktop it floats under the header's button, and is shot alone.
+      await expect(look.viewport.width < 768 ? area : menu).toHaveScreenshot(`evm-account-menu-${look.name}.png`, { mask: moving(page) });
       await page.keyboard.press("Escape");
     }
     expect(evm.requests).toHaveLength(0);
@@ -656,15 +652,16 @@ test("without the preview cookie the site is Solana's alone: no Chain section, n
   await expect(page.getByRole("heading", { name: "Chain", exact: true })).toHaveCount(0);
   await expect(page.getByRole("main")).not.toContainText(CHAIN_NAME);
 
-  // The board, newest first and by the coin's own name: it is on neither.
-  for (const query of ["sort=new", "q=Hidden+Ember"]) {
-    await page.goto(`/coins?${query}`);
-    await expect(page.getByRole("heading", { name: "Coins", exact: true })).toBeVisible();
-    await expect(page.getByRole("searchbox", { name: "Search coins" })).toBeVisible();
-    await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => undefined);
-    await expect(page.locator(`a[href="/coin/${launched.coin}"]`)).toHaveCount(0);
-    await expect(page.getByRole("main")).not.toContainText("Hidden Ember");
-  }
+  // The board: a search for the coin's own name finds nothing, and newest first, where it would lead, it is not listed.
+  await page.goto("/coins?q=Hidden+Ember");
+  await expect(page.getByRole("heading", { name: "Coins", exact: true })).toBeVisible();
+  await expect(page.getByRole("main")).toContainText('No coins match "Hidden Ember".');
+  await expect(page.locator(`a[href="/coin/${launched.coin}"]`)).toHaveCount(0);
+  await page.goto("/coins?sort=new");
+  await expect(page.getByRole("searchbox", { name: "Search coins" })).toBeVisible();
+  await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => undefined);
+  await expect(page.locator(`a[href="/coin/${launched.coin}"]`)).toHaveCount(0);
+  await expect(page.getByRole("main")).not.toContainText("Hidden Ember");
   const res = await page.goto(`/coin/${launched.coin}`);
   expect(res?.status()).toBe(404);
 
