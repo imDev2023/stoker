@@ -76,7 +76,15 @@ export async function readCreatorLock(connection: Connection, program: PublicKey
   };
 }
 
-const CLAIM_COMPUTE_UNITS = 100_000;
+/**
+ * The claim's compute-unit limit. A claim opens the wallet's account for the coin when the wallet has none, which a
+ * Creator who never bought their own coin has not, and LaunchLab then searches for the account's address three times
+ * over, at 1,500 units a try: 50,000 units with an address of one try, 4,500 more for every further one, and 1,500 for
+ * every further try of the lock record's address. At the 100,000 this was before, a Creator whose account takes 13
+ * tries, one in 4,000, could not claim at all (#282, and `PLATFORM_FEE_CLAIM_COMPUTE_UNITS` in revenue.ts for the
+ * arithmetic). Room for 44 more tries of the account's address.
+ */
+const CLAIM_COMPUTE_UNITS = 250_000;
 
 /**
  * Builds the claim of a wallet's unlocked coins, for the wallet to sign and pay for (ADR 0003): nothing here goes

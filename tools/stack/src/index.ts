@@ -12,7 +12,9 @@ import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import BN from "bn.js";
 import postgres from "postgres";
 import { runMigrations } from "@launchpad/db/migrate";
-import { bootstrapPlatform, LOCAL_QUOTE_LOGOS, LOCAL_QUOTE_PRICES_USD, LOCAL_QUOTE_TOKEN_LIST, localnetKeys, startLocalnet, type LocalnetState } from "@launchpad/localnet";
+import {
+  bootstrapPlatform, LOCAL_QUOTE_LOGOS, LOCAL_QUOTE_PRICES_USD, LOCAL_QUOTE_TOKEN_LIST, localnetKeys, startLocalnet, unluckyQuoteMint, type LocalnetState,
+} from "@launchpad/localnet";
 import { createSolRoutes, type SolRoutes } from "@launchpad/localnet/routes";
 import { startTurboStandIn, type TurboStandIn } from "./turbo";
 import { startXStandIn } from "./x";
@@ -84,6 +86,8 @@ export type StackEnv = {
   /** What a wallet's waiting Volume Rebates must reach before they are paid, in lamports, as the API has it. */
   rebateMinLamports: string;
   platform: LocalnetState;
+  /** The unlucky Quote Asset's mint (`unluckyQuote` in the options, #282), searched for once when the stack starts; null without it. */
+  unluckyQuote: string | null;
   /** The Raydium CPMM pools of SOL the API routes buys paid with SOL through, standing in for Jupiter. */
   solRoutes: SolRoutes;
   /** The API key the web server names itself with, so its server-side requests are not counted as one anonymous IP; null without the web app. */
@@ -124,6 +128,13 @@ export type StackOptions = {
    * backend suite shortens it to see a week settled and paid.
    */
   rebateWeekSeconds?: number;
+  /**
+   * Adds the unlucky Quote Asset to the chain, priced at 1 USD (#282): its account for the operations wallet has an
+   * address that takes many tries to derive (`unluckyQuoteMint` in tools/localnet), so its Platform Fee claim costs
+   * the most compute units an address can make one cost. The backend suite asks for it; the UI suite's pages, which
+   * list every Quote Asset, stay as they are.
+   */
+  unluckyQuote?: boolean;
   web?: boolean;
 };
 
@@ -427,7 +438,8 @@ export async function startStack(opts: StackOptions = {}): Promise<{ env: StackE
     cleanups.push(pg.stop);
     await runMigrations(pg.url);
 
-    const chain = await startLocalnet(opts.rpcPort === undefined ? {} : { rpcPort: opts.rpcPort });
+    const unluckyQuote = opts.unluckyQuote ? unluckyQuoteMint(localnetKeys().operations.publicKey).toBase58() : null;
+    const chain = await startLocalnet({ ...(opts.rpcPort === undefined ? {} : { rpcPort: opts.rpcPort }), unluckyQuote: unluckyQuote !== null });
     cleanups.push(() => chain.stop());
     const platform = await bootstrapPlatform(
       chain.connection,
@@ -479,7 +491,7 @@ export async function startStack(opts: StackOptions = {}): Promise<{ env: StackE
       PLATFORM_LOOKUP_TABLE: platform.lookupTable,
       GRADUATION_TARGET_LAMPORTS: platform.graduationTargetLamports,
       PRICE_SOURCE: "static",
-      QUOTE_PRICES_USD: JSON.stringify(LOCAL_QUOTE_PRICES_USD),
+      QUOTE_PRICES_USD: JSON.stringify({ ...LOCAL_QUOTE_PRICES_USD, ...(unluckyQuote ? { [unluckyQuote]: "1" } : {}) }),
       QUOTE_TOKEN_LIST: JSON.stringify(LOCAL_QUOTE_TOKEN_LIST),
       QUOTE_LOGOS: JSON.stringify(LOCAL_QUOTE_LOGOS),
       OPERATIONS_KEY: JSON.stringify(Array.from(localnetKeys().operations.secretKey)),
@@ -588,7 +600,7 @@ export async function startStack(opts: StackOptions = {}): Promise<{ env: StackE
         turbo: { url: turbo.url, depositAddress: turbo.depositAddress }, x: { url: x.url, apiKey: x.apiKey }, arweaveTopUpLamports,
         graduationAlertAfterSeconds, poolBackfillSeconds, ...fees, referralShareBps, feeChangeLeadSeconds, activeDaySeconds: opts.activeDaySeconds ?? 86_400,
         holdingDaySeconds: opts.holdingDaySeconds ?? 86_400,
-        rebateWeekSeconds: opts.rebateWeekSeconds ?? 7 * 86_400, rebateMinLamports: REBATE_MIN_LAMPORTS, platform, solRoutes, webApiKey, apiVars: vars,
+        rebateWeekSeconds: opts.rebateWeekSeconds ?? 7 * 86_400, rebateMinLamports: REBATE_MIN_LAMPORTS, platform, unluckyQuote, solRoutes, webApiKey, apiVars: vars,
         evm,
       },
       stop,
