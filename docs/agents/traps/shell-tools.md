@@ -10,6 +10,8 @@ The text is the original's, one sentence a line.
 - Editing traps met on the rework (2026-10-28 and 2026-10-29): a `perl -0pi` replacement containing `$/` writes a NUL byte (`-0` sets `$/` to NUL; escape it as `\$\/`); a `perl` substitution delimited by `|` turns an escaped `\|` in its pattern into an alternation and matches every line that ends like the second half (`env.ts` took eight insertions that way); `tsx` adds `__name` helpers to functions, so a Playwright `addInitScript` run through `tsx` throws `__name is not defined` in the page (run such scripts through Playwright's own runner with a throwaway config); zsh does not word-split `$files` in a `for` loop (use `find -exec` or `$(...)`).
   Exact-string edits through a short Python script that asserts one match per replacement are safer than any of them.
 - TypeScript is pinned to 6.0 because typescript-eslint doesn't support 7. pnpm 11 needs `allowBuilds` in `pnpm-workspace.yaml` for native deps.
+- A shell that waits for the Mac's suites to end and then starts one counts itself when the suite's command is on its own command line: `until [ "$(ps ... | grep -c '[p]npm test:backend')" -eq 0 ]; do sleep 30; done; ... pnpm test:backend` never ends, since the waiting shell's line holds `pnpm test:backend` (lane `evm-site` waited 54 minutes for nothing, 2026-11-27).
+  Put the wait and the run in a script file, whose line is only `sh <file>`, and count real suites alone: `'[c]affeinate -i pnpm test:backend'` for a backend suite (a suite is three or four processes) and `'[@]playwright/test/cli.js test'` for a UI run.
 
 ## Git and CI
 
