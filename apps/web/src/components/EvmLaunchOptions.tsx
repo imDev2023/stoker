@@ -420,5 +420,8 @@ export function EvmFirstBuy({ options: o }: { options: EvmLaunchOptionsState }) 
   );
 }
 
-/** A raw amount of an asset in whole units with its symbol, every decimal it has kept: what a summary row says exactly. */
-export const exact = (raw: string, decimals: number, symbol: string) => `${formatUnits(raw, decimals, decimals)} ${symbol}`;
+/**
+ * A raw amount of an asset in whole units with its symbol, every decimal it has kept: what a summary row says exactly.
+ * The two are joined by a no-break space, so a sentence that holds one never breaks between the figure and its ticker.
+ */
+export const exact = (raw: string, decimals: number, symbol: string) => `${formatUnits(raw, decimals, decimals)}\u00a0${symbol}`;

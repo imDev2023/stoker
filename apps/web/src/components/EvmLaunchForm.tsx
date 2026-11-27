@@ -396,7 +396,8 @@ function Summary({ options, o, ticker, symbol, preview, step, failed, error, exp
   const wrongNetwork = onAnotherNetwork(connected, options.chainId);
   const prepared = step.kind === "signing" || step.kind === "confirming" ? step.prepared : null;
   const preparedFirstBuy = prepared?.firstBuy && quote && ticker ? exact(prepared.firstBuy.amountIn, quote.decimals, ticker) : null;
-  const fee = (wei: string) => `${formatUnits(wei, native.decimals, 8)} ${native.symbol}`;
+  // An amount and its ticker are joined by a no-break space, so a sentence never breaks between the two.
+  const fee = (wei: string) => `${formatUnits(wei, native.decimals, 8)}\u00a0${native.symbol}`;
 
   return (
     <div className={`card card-raised ${styles.summary}`}>
@@ -503,7 +504,7 @@ function Summary({ options, o, ticker, symbol, preview, step, failed, error, exp
       </dl>
 
       <ul className={styles.checks}>
-        <li>Sold supply locked in its pool for good</li>
+        <li>Liquidity locked in its pool for good</li>
         <li>No owner and no mint on the coin</li>
         <li>Metadata stored on Arweave</li>
       </ul>
