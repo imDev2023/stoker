@@ -87,7 +87,7 @@ The text is the original's, one sentence a line.
 
 ## The EVM chain's flows (#253)
 
-- The site shows the fork's chain only to a browser with the preview cookie (`stoker.chains=preview`, set by `withEvm` in `tests/ui/src/evm.ts`): every other spec and every baseline from before #253 sees Solana alone, and `fixtures.listLaunches()` asks for Solana's coins, since the EVM flows' coins share the API.
+- The site shows the fork's chain only to a browser with the preview cookie (`stoker.chains=preview`, set by `showPreviewChains` in `tests/ui/src/evm.ts`): every other spec and every baseline from before #253 sees Solana alone, and `fixtures.listLaunches()` asks for Solana's coins, since the EVM flows' coins share the API.
   A new spec that needs the chain sets the cookie itself; nothing else may.
 - The EVM test wallet stand-in (`tests/ui/src/evmWallet.ts`) sends exactly what the page gave it and then mines the chain's finality depth, so the Indexer can read the transaction; it must wait for the transaction's own block first, or it mines before that block exists and the transaction sits one block short of final for good (2026-11-27: the launch's report stayed `pending` and the flow timed out).
 - The fork makes a block only when something is sent, and stamps blocks a second apart: a flow that must be outside a Launch's Opening Fee waits its seconds out and mines an empty block, and the shot inside the window leaves the fork ten seconds in by empty blocks and holds the first real answer of the quote with `page.route` (`evm-trade-opening`), since the fee falls every second.
