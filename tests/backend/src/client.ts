@@ -1,11 +1,12 @@
 // What a client of the platform does: call the public API, sign with a wallet, send to the chain.
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction } from "@solana/web3.js";
-import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { inject } from "vitest";
 import {
   LaunchList, LaunchSummary, PlatformInfo, PreparedLaunch, PreparedTrade, QuoteAssetList, TradeList, type PayWith, type TradeSide,
 } from "@launchpad/contract";
 import { WSOL_MINT, type RawTransaction } from "@launchpad/chain";
+import { accountAddressTries } from "@launchpad/localnet";
 import { QUOTE_REGISTRY_CRON } from "@launchpad/stack";
 
 export const env = () => inject("harness");
@@ -22,6 +23,18 @@ export async function fundedWallet(sol = 5) {
   const sig = await conn.requestAirdrop(kp.publicKey, sol * LAMPORTS_PER_SOL);
   await conn.confirmTransaction({ signature: sig, ...(await conn.getLatestBlockhash("confirmed")) }, "confirmed");
   return kp;
+}
+
+/**
+ * A fresh mint key whose account for `owner` has an unlucky address: one that takes at least `tries` tries to derive,
+ * which whatever opens or checks that account pays for on-chain (#282, `accountAddressTries`). Half of all keys take
+ * one try and every further try halves the rest, so the search looks at about 2^(tries - 1) keys: seconds at 13.
+ */
+export function mintWithUnluckyAccount(owner: PublicKey, tries: number, tokenProgram: PublicKey = TOKEN_PROGRAM_ID) {
+  for (;;) {
+    const mint = Keypair.generate();
+    if (accountAddressTries(owner, mint.publicKey, tokenProgram) >= tries) return mint;
+  }
 }
 
 export type LaunchForm = {

@@ -32,6 +32,41 @@ import { readFeeVaults, type FeeVault } from "./vaults";
 
 const meta = (pubkey: PublicKey, isSigner = false, isWritable = false): AccountMeta => ({ pubkey, isSigner, isWritable });
 
+/**
+ * The compute-unit limits of the three collections. What a collection costs is no fixed figure: a program that opens a
+ * wallet's account for an asset, or checks that an account is the wallet's, searches for the account's address
+ * on-chain, bump 255 first and then down, at 1,500 units a try. One try serves half of all pairs of wallet and asset
+ * and each further try half of the rest, so a pair of 14 tries turns up once in 8,000, and the operations wallet meets
+ * a new pair with every Quote Asset and every graduated coin. A limit sized on the transactions seen is then enough by
+ * luck: the Platform Fee claim's was 100,000, an account of 12 tries put the claim over it, and nothing else opens that
+ * account, so the claim failed on every run (#282).
+ *
+ * Each limit below is therefore the costliest case measured with every address at one try, plus room for at least 40
+ * more tries of the address the transaction derives most often: an address unluckier than that is one in 2^40. None of our
+ * transactions sets a compute-unit price, so the room costs nothing; with a price, a transaction pays the price on the
+ * limit it asked for, and the limit should then come from a simulation of the transaction instead.
+ * Measured on the local chain (`UNITS_REPORT`, docs/agents/traps/chain.md), SPL Token and Token-2022 assets alike.
+ */
+/**
+ * The Platform Fee claim: 47,000 units when it opens the account, and then 4,500 for every further try of the account's
+ * address (LaunchLab derives it twice and the program that opens it once) and 1,500 for every further try of the
+ * vault's; 24,000 and 1,500 a try once the account is open. Room for 45 more tries of the account's address.
+ */
+const PLATFORM_FEE_CLAIM_COMPUTE_UNITS = 250_000;
+/**
+ * A pool's creator fee: 79,000 units when it opens both of the creator's accounts, and 3,000 for every further try of
+ * either's address (our own instruction that opens it, and the pool program's check). The coin's account is a new
+ * address with every coin: at the 150,000 this was before, a coin whose account takes 25 tries could never have been
+ * collected, and one of 18 where the Quote Asset's own account takes 8, as the worst of mainnet's does.
+ * Room for 56 more tries between the two.
+ */
+const POOL_CREATOR_FEE_COMPUTE_UNITS = 250_000;
+/**
+ * A Fee Key's collection: 126,000 units, and 1,500 for every further try of the owner's two accounts and of the lock
+ * program's own LP account. Room for 82 more tries between them, as it had before.
+ */
+const FEE_KEY_COMPUTE_UNITS = 250_000;
+
 export const MEMO_PROGRAM = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 const U64_MAX = new BN("18446744073709551615");
 
@@ -78,7 +113,7 @@ export function claimPlatformFeeIx(p: PlatformFeeClaimParams) {
 /** The Platform Fee claim for one Quote Asset, paying SOL out as plain SOL. */
 export function platformFeeClaimInstructions(p: PlatformFeeClaimParams) {
   return [
-    ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: PLATFORM_FEE_CLAIM_COMPUTE_UNITS }),
     claimPlatformFeeIx(p),
     ...unwrapSol(p.feeWallet, [p.quoteMint]),
   ];
@@ -118,7 +153,7 @@ export function collectCreatorFeeIx(cpmm: PublicKey, pool: PoolKeys, creator: Pu
 /** Collecting a graduated pool's creator fee, with SOL paid out as plain SOL. */
 export function poolCreatorFeeInstructions(cpmm: PublicKey, pool: PoolKeys, creator: PublicKey) {
   return [
-    ComputeBudgetProgram.setComputeUnitLimit({ units: 150_000 }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: POOL_CREATOR_FEE_COMPUTE_UNITS }),
     ...openTokenAccounts(creator, pool),
     collectCreatorFeeIx(cpmm, pool, creator),
     ...unwrapSol(creator, pool.tokens.map((t) => t.mint)),
@@ -206,7 +241,7 @@ export function collectFeeKeyIx(programs: Pick<Programs, "cpmm" | "lock">, pool:
  */
 export function feeKeyInstructions(programs: Pick<Programs, "cpmm" | "lock">, pool: PoolKeys, key: FeeKey, owner: PublicKey, unwrap = true) {
   return [
-    ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: FEE_KEY_COMPUTE_UNITS }),
     ...openTokenAccounts(owner, pool),
     collectFeeKeyIx(programs, pool, key, owner),
     ...(unwrap ? unwrapSol(owner, pool.tokens.map((t) => t.mint)) : []),
