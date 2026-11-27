@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { LaunchSummary } from "@launchpad/contract";
 import type { CSSProperties } from "react";
 import { formatDelta, formatMarketValue, kindOf, tintOf } from "@/lib/board";
+import { isEvm } from "@/lib/chains";
 import { lockShare } from "@/lib/creatorLock";
 import { quoteTicker } from "@/lib/format";
 import { LIQUIDITY_LAUNCH, liquidityTaxBadge } from "@/lib/liquidityLaunch";
@@ -39,6 +40,9 @@ function CurveState({ launch }: { launch: LaunchSummary }) {
   const { status } = launch.curve;
   if (status === "graduating") return <span className={`${styles.curve} ${styles.graduating}`}>Sold out, graduating</span>;
   if (status === "graduated") return <span className={`${styles.curve} ${styles.graduated}`}>Graduated</span>;
+  // A coin on an EVM chain (#253) has no curve to fill: it trades in its own pool from its first block and graduates by
+  // its price, so the card says whether it has and draws no progress until the board reads how far it is (#256).
+  if (isEvm(launch.chain)) return <span className={`${styles.curve} ${styles.waiting}`}>Not graduated yet</span>;
   const pct = progressOf(launch);
   return (
     <span className={styles.curve} title="How far the curve is toward its Graduation Target">

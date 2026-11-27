@@ -7,6 +7,7 @@ import { listLaunches } from "@/lib/api";
 import type { HeroVariant } from "@/lib/landing";
 import { quoteKind } from "@/lib/landing";
 import { quoteTicker } from "@/lib/format";
+import { isEvm } from "@/lib/chains";
 import { useChains } from "./ChainsProvider";
 import { CoinImage } from "./CoinImage";
 import { Change } from "./Change";
@@ -72,7 +73,8 @@ function Rows({ initial, quotes }: { initial: LaunchSummary[]; quotes: QuoteAsse
                   <span className={`t-figure ${styles.price}`}>{l.market.price === null ? "-" : <><Price value={l.market.price} /> {quote}</>}</span>
                   <Change value={l.market.change24h} />
                 </span>
-                <span className={styles.curve} aria-label={l.curve.status === "live" ? `${pct}% of the way to graduation` : "Graduated"}>
+                {/* A coin on an EVM chain (#253) has no curve: its bar stays empty until it graduates, and says only that. */}
+                <span className={styles.curve} aria-label={l.curve.status !== "live" ? "Graduated" : isEvm(l.chain) ? "Not graduated yet" : `${pct}% of the way to graduation`}>
                   <span className={styles.track} aria-hidden>
                     <span className={styles.fill} style={{ width: `${pct}%` }} />
                   </span>

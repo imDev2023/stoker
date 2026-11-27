@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { LaunchSummary } from "@launchpad/contract";
 import { formatDelta, formatMarketValue } from "@/lib/board";
+import { isEvm } from "@/lib/chains";
 import { quoteTicker } from "@/lib/format";
 import { LIQUIDITY_LAUNCH, liquidityTaxBadge } from "@/lib/liquidityLaunch";
 import { CoinActions, type ExplorerCluster } from "./CoinActions";
@@ -91,7 +92,10 @@ export function CoinRow({ launch, now, platform }: { launch: LaunchSummary; now:
       <span className={`${styles.num} ${styles.vol}`} data-label="Vol">{formatMarketValue(launch.market.volume24h, launch.quote)}</span>
       <span className={`${styles.num} ${styles.mcap}`} data-label="Cap">{launch.market.marketCap ? formatMarketValue(launch.market.marketCap, launch.quote) : "-"}</span>
       <span className={styles.curve}>
-        {status === "live" ? (
+        {status === "live" && isEvm(launch.chain) ? (
+          // A coin on an EVM chain (#253) has no curve: no progress is written until the board reads how far its price is (#256).
+          <span className={styles.pct} title="Not graduated yet">-</span>
+        ) : status === "live" ? (
           <>
             <span className={styles.track} aria-hidden>
               {pct > 0 && <span className={styles.fill} style={{ width: `${pct}%` }} />}

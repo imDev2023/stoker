@@ -261,6 +261,7 @@ export function EvmLaunchForm({
     rewardBurnBps: o.rewardTax === null ? 0 : o.rewardBurn,
     rewardLiquidityBps: o.rewardTax === null ? 0 : o.rewardLiquidity,
     liquidityTaxBps: o.liquidityTax,
+    ownPool: true,
   };
   // While a launch is in flight or uncertain, nothing on the form may change under it.
   const locked = busy || failed !== null;
@@ -474,7 +475,8 @@ function Summary({ options, o, ticker, symbol, preview, step, failed, error, exp
             </div>
             <div>
               <dt>You get</dt>
-              <dd>
+              {/* The exact figure in raw units, as the trade panel's quote carries its own: what the wallet's balance is checked against. */}
+              <dd data-coins-out={firstBuy.coinsOut}>
                 {formatUnits(firstBuy.coinsOut, options.decimals, 0)} {symbol || "coins"} ({evmSupplyShare(BigInt(firstBuy.coinsOut), supply)})
               </dd>
             </div>
@@ -524,7 +526,7 @@ function Summary({ options, o, ticker, symbol, preview, step, failed, error, exp
             <dl className={styles.signingAmounts}>
               <div>
                 <dt>Network fee, about</dt>
-                <dd className="mono">{fee(step.prepared.cost.fee)}</dd>
+                <dd className="mono" data-network-fee="">{fee(step.prepared.cost.fee)}</dd>
               </div>
               {preparedFirstBuy && (
                 <div>
