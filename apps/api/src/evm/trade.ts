@@ -122,14 +122,18 @@ function rememberCap(key: string, cap: number) {
   referrerCaps.set(key, cap);
 }
 
-/** The referrer a request names, or a refusal: the hook reverts the addresses it could never pay (README, "The Referrer Fee"). */
+/**
+ * The referrer a request names, or a refusal: the hook reverts the addresses it could never pay (README, "The Referrer
+ * Fee"), and a Referrer Fee credited to the Tax Vault would be stranded there, as one credited to a Creator Earnings
+ * Destination's contract is (#248): a deployment that publishes its Destination contracts adds them here.
+ */
 function referrerOf(x: EvmContext, r: EvmTradeQuoteQuery): Address | null {
   if (r.referrer === undefined) {
     if (r.referrerFeeBps !== undefined) throw new HTTPException(400, { message: "referrerFeeBps names a Referrer Fee, so the trade must name its referrer too." });
     return null;
   }
   const referrer = checksum(r.referrer.toLowerCase());
-  const refused: Address[] = [NATIVE, x.config.hook, x.config.factory, x.config.profile.uniswap.poolManager];
+  const refused: Address[] = [NATIVE, x.config.hook, x.config.factory, x.config.profile.uniswap.poolManager, x.config.taxVault];
   if (refused.includes(referrer)) throw new HTTPException(400, { message: "That address can't be named as a trade's referrer." });
   return referrer;
 }
