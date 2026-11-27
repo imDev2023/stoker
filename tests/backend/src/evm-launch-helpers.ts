@@ -7,7 +7,7 @@ import { expect } from "vitest";
 import {
   CopyCheck, EvmLaunchOptions, EvmLaunchQuote, EvmTransactionReport, LaunchSummary, PreparedEvmLaunch, type EvmTransaction, type EvmTypedData,
 } from "@launchpad/contract";
-import { stokerFactoryAbi } from "@launchpad/evm";
+import { quoteRegistryAbi, stokerFactoryAbi } from "@launchpad/evm";
 import { QUOTE_CANDIDATES } from "@launchpad/stack";
 import { env, PNG, uniqueTag } from "./client";
 import { clients, evm, listQuote } from "./evm";
@@ -147,6 +147,16 @@ export async function fundWith(asset: Address, to: Address, amount: bigint) {
 
 /** CrowdStrike's Stock Token listed on the fork's Quote Registry, as `evm-indexer.test.ts` lists it. */
 export const listCrwd = () => listQuote(CRWD, STOCK_START_TICK);
+
+/** An asset's Listing as the fork's Quote Registry has it now: the stack is shared, so a test reads it rather than assume it. */
+export const listingOnChain = (quote: Address) => clients().public.readContract({ address: evm()!.registry, abi: quoteRegistryAbi, functionName: "listingOf", args: [quote] });
+
+/** Delists a Quote Asset on the fork's Quote Registry as the Admin: no new Launch may pair with it from that block. */
+export async function delistQuote(quote: Address) {
+  const e = evm()!;
+  const hash = await clients().wallet(e.admin.key).writeContract({ address: e.registry, abi: quoteRegistryAbi, functionName: "delist", args: [quote] });
+  await clients().public.waitForTransactionReceipt({ hash });
+}
 
 async function api(path: string, init?: RequestInit) {
   const res = await fetch(`${env().apiUrl}${path}`, init);

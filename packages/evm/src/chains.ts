@@ -107,10 +107,16 @@ export type EvmDeployment = {
 };
 
 /**
- * The gas a Creator's First Buy adds to a launch (#253), for an estimate made before the buy can be tried out (no
- * allowance yet, or only a form's choices): PLACEHOLDER until measured on the fork.
+ * The gas a Creator's First Buy adds to a launch (#253): an allowance for an estimate made before the buy can be
+ * tried out (the factory may not take the asset yet, or there are only a form's choices to go by). Measured on the
+ * fork of Robinhood Chain at block 120,800,000 on 2026-11-27, as a launch with a First Buy less the same launch
+ * without one: 178,160 to 211,439 in the native asset and 198,356 to 248,626 in a Stock Token the factory may already
+ * take, across a standard coin, a Reward Launch, a Stoke Launch and a coin with a Creator Lock; 307,376 in a Stock
+ * Token by its permit, the permit's own call included. The allowance is the largest of them, rounded up, so the figure
+ * shown is under for none; the prepared launch's own estimate replaces it as soon as the launch can be tried.
+ * `evm-launch.test.ts` holds each of its launches to it, so a contract change that outgrows it fails there.
  */
-export const FIRST_BUY_GAS = 250_000n;
+export const FIRST_BUY_GAS = 310_000n;
 
 /** The native asset's address as a Quote Asset: the zero address, native ETH in the pool key (#242). */
 export const NATIVE: Address = "0x0000000000000000000000000000000000000000";

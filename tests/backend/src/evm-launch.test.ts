@@ -8,8 +8,8 @@ import { NATIVE, ROBINHOOD_CHAIN, stokerFactoryAbi, stokerHookAbi } from "@launc
 import { env, launchedCoin, uniqueTag } from "./client";
 import { balanceOf, clients, evm, evmWallet, launchCoin, listQuote, runIndexer } from "./evm";
 import {
-  AAPL, check, coinPage, CRWD, fundWith, launchedIn, launchQuote, listCrwd, NVDA, optionsListing, ownName, prepared, quoted, refusal, report, send, signTypedData,
-  USDG,
+  AAPL, check, coinPage, CRWD, delistQuote, fundWith, launchedIn, launchOptions, launchQuote, listCrwd, listingOnChain, NVDA, optionsListing, ownName, prepared,
+  quoted, refusal, report, send, signTypedData, USDG,
 } from "./evm-launch-helpers";
 
 const hasEvm = inject("harness").evm !== null;
@@ -39,6 +39,16 @@ function expectGasWithin(receipt: { gasUsed: bigint }, p: { transaction: { gas: 
   expect(BigInt(p.cost.fee)).toBe(BigInt(p.cost.gas) * BigInt(p.cost.gasPrice));
 }
 
+/**
+ * A cost said before the First Buy could be tried (the launch without it and the measured allowance, `FIRST_BUY_GAS`):
+ * not under what the launch then used, and not far over it.
+ */
+function expectGasForeseen(receipt: { gasUsed: bigint }, said: { cost: { gas: string } }) {
+  const ratio = Number(receipt.gasUsed) / Number(said.cost.gas);
+  expect(ratio).toBeGreaterThan(0.75);
+  expect(ratio).toBeLessThanOrEqual(1);
+}
+
 describe.skipIf(!hasEvm)("EVM launch: what a chain offers, and what a launch would buy and cost", () => {
   test("the launch options are the chain's own, with only the assets its registry lists, the native asset first", async () => {
     await listCrwd();
@@ -58,22 +68,30 @@ describe.skipIf(!hasEvm)("EVM launch: what a chain offers, and what a launch wou
     });
     expect(o.contracts).toEqual({ factory: e.factory, hook: e.hook, registry: e.registry, taxVault: e.taxVault, source: `${explorer}/address/${e.factory}?tab=contract` });
 
+    // Each asset's Listing is the registry's own, as it stands on the shared fork: the start price as whole Quote Asset
+    // for a whole coin, and the Opening Value, the start price times the whole supply in raw units (about 1.67 ETH on the
+    // stack's native Listing).
+    const listingOf = async (asset: Address) => {
+      const onChain = await listingOnChain(asset);
+      const rawPrice = 1.0001 ** onChain.startTick;
+      return { onChain, rawPrice, figures: { graduationMultiple: onChain.graduationMultiple, referrerFeeCapBps: onChain.referrerFeeCapBps } };
+    };
     const [native, ...others] = o.quotes;
-    expect(native).toMatchObject({
-      chain: "robinhood", mint: NATIVE, native: true, symbol: "ETH", decimals: 18, category: "native", multiplier: null, listing: { graduationMultiple: 20, referrerFeeCapBps: 100 },
-    });
-    // The Opening Value is the start price times the whole supply, in wei: about 1.67 ETH on the stack's Listing.
-    const startPrice = 1.0001 ** -271_200;
-    expect(native!.listing.startPrice / startPrice).toBeCloseTo(1, 12);
-    expect(Number(BigInt(native!.listing.openingValue)) / (startPrice * 1e30)).toBeCloseTo(1, 9);
+    const nativeListing = await listingOf(NATIVE);
+    expect(native).toMatchObject({ chain: "robinhood", mint: NATIVE, native: true, symbol: "ETH", decimals: 18, category: "native", multiplier: null, listing: nativeListing.figures });
+    expect(native!.listing.startPrice / nativeListing.rawPrice).toBeCloseTo(1, 12);
+    expect(Number(BigInt(native!.listing.openingValue)) / (nativeListing.rawPrice * 1e30)).toBeCloseTo(1, 9);
     // A Stock Token is one by its multiplier, read from its contract.
     const multiplier = await clients().public.readContract({ address: CRWD, abi: parseAbi(["function uiMultiplier() view returns (uint256)"]), functionName: "uiMultiplier" });
     const crwd = o.quotes.find((q) => q.mint === CRWD);
-    expect(crwd).toMatchObject({ native: false, symbol: "CRWD", decimals: 18, category: "tokenized_stock", multiplier: multiplier.toString(), listing: { graduationMultiple: 20 } });
-    expect(Number(BigInt(crwd!.listing.openingValue)) / (1.0001 ** -244_200 * 1e30)).toBeCloseTo(1, 9);
+    const crwdListing = await listingOf(CRWD);
+    expect(crwd).toMatchObject({ native: false, symbol: "CRWD", decimals: 18, category: "tokenized_stock", multiplier: multiplier.toString(), listing: crwdListing.figures });
+    expect(Number(BigInt(crwd!.listing.openingValue)) / (crwdListing.rawPrice * 1e30)).toBeCloseTo(1, 9);
     expect(others.every((q) => !q.native)).toBe(true);
     // A candidate the registry does not list is never offered: the registry alone gates a Launch.
-    for (const unlisted of [AAPL, NVDA, USDG]) expect(o.quotes.map((q) => q.mint)).not.toContain(unlisted);
+    for (const candidate of [AAPL, NVDA, USDG]) {
+      if (!(await listingOnChain(candidate)).listed) expect(o.quotes.map((q) => q.mint)).not.toContain(candidate);
+    }
 
     expect((await fetch(`${env().apiUrl}/v1/chains/solana/launch-options`)).status).toBe(404);
     expect((await fetch(`${env().apiUrl}/v1/chains/nowhere/launch-options`)).status).toBe(400);
@@ -101,11 +119,12 @@ describe.skipIf(!hasEvm)("EVM launch: what a chain offers, and what a launch wou
     expect(bare.cost.value).toBe("0");
     expect(BigInt(bare.cost.gas)).toBeLessThan(BigInt(q.cost.gas));
 
-    const sentence = "That asset isn't a Quote Asset on Robinhood Chain. Choose one from the list.";
-    for (const quote of [AAPL, "0x00000000000000000000000000000000000000Aa"]) {
+    // An asset nobody listed: a coin of ours, which is an ERC-20 like any other, and an address with no contract at all.
+    const stranger = await launchCoin(creator);
+    for (const quote of [stranger.coin, "0x00000000000000000000000000000000000000Aa"]) {
       const unlisted = await launchQuote({ quote });
       expect(unlisted.status).toBe(400);
-      expect(await unlisted.json()).toEqual({ error: sentence });
+      expect(await unlisted.json()).toEqual({ error: "That asset isn't a Quote Asset on Robinhood Chain. Choose one from the list." });
     }
     const dust = await launchQuote({ quote: NATIVE, firstBuy: "1" });
     expect(dust.status).toBe(400);
@@ -146,10 +165,8 @@ describe.skipIf(!hasEvm)("EVM launch: prepared by the API, sent by the Creator's
     // One transaction: the wallet paid the First Buy and its gas, and nothing else.
     expect(ethBefore - (await balanceOf(NATIVE, creator.address))).toBe(amount + receipt.gasUsed * receipt.effectiveGasPrice);
     expectGasWithin(receipt, p);
-    // The form's own estimate, made before the First Buy could be tried, is in the launch's neighbourhood.
-    const ratio = Number(receipt.gasUsed) / Number(quote.cost.gas);
-    expect(ratio).toBeGreaterThan(0.7);
-    expect(ratio).toBeLessThan(1.3);
+    // The form's own estimate, made before the First Buy could be tried, was not under either.
+    expectGasForeseen(receipt, quote);
     expect((await termsOf(p.pool)).launchType).toBe(0);
   });
 
@@ -178,6 +195,8 @@ describe.skipIf(!hasEvm)("EVM launch: prepared by the API, sent by the Creator's
     expect(second.firstBuy).toEqual(first.firstBuy);
     const crwdBefore = await balanceOf(CRWD, creator.address);
     const receipt = await send(creator, second.transaction!);
+    // What the first answer said the launch would cost, before the First Buy could be tried, was not under.
+    expectGasForeseen(receipt, first);
     const launched = launchedIn(receipt);
     expect(launched).toMatchObject({ coin: first.coin, poolId: first.pool, quote: CRWD, firstBuy: amount });
     // To the wei, in whichever order the coin's address put the pool's two currencies.
@@ -218,11 +237,22 @@ describe.skipIf(!hasEvm)("EVM launch: prepared by the API, sent by the Creator's
     const second = await prepared({ ...form, salt: first.salt, image: null });
     expect(second).toMatchObject({ step: "launch", coin: first.coin, pool: first.pool, transaction: { to: evm()!.factory, value: "0" } });
     const receipt = await send(creator, second.transaction!);
+    expectGasForeseen(receipt, first);
     const launched = launchedIn(receipt);
     expect(launched.firstBuyCoins.toString()).toBe(second.firstBuy!.coinsOut);
     expect((await balanceOf(first.coin as Address, creator.address)).toString()).toBe(second.firstBuy!.coinsOut);
     expect(held - (await balanceOf(plain.coin, creator.address))).toBe(amount);
     expectGasWithin(receipt, second);
+
+    // The registry alone gates a Launch. While it lists the asset the form offers it; once the Admin delists it, it
+    // leaves the form within the seconds the options are kept, and a launch against it is refused in words at once.
+    expect((await optionsListing(plain.coin)).quotes.find((q) => q.mint === plain.coin)).toMatchObject({ native: false, category: "community", multiplier: null });
+    await delistQuote(plain.coin);
+    const unlisted = { status: 400, error: "That asset isn't a Quote Asset on Robinhood Chain. Choose one from the list." };
+    expect(await refusal({ creator: creator.address, quote: plain.coin })).toMatchObject(unlisted);
+    await expect.poll(async () => (await launchOptions()).quotes.map((q) => q.mint), { timeout: 15_000, interval: 1_000 }).not.toContain(plain.coin);
+    const quote = await launchQuote({ quote: plain.coin });
+    expect([quote.status, await quote.json()]).toEqual([400, { error: unlisted.error }]);
   });
 
   test("a standard, a Reward and a Stoke Launch each land with the terms the API answered", async () => {
@@ -296,9 +326,9 @@ describe.skipIf(!hasEvm)("EVM launch: prepared by the API, sent by the Creator's
     // The picture.
     await says({ ...base, image: null }, 400, /^an image is required$/);
     await says({ ...base, image: new TextEncoder().encode("not a picture at all") }, 400, /^image must be PNG, JPEG, WebP or GIF$/);
-    // An asset the registry does not list, whether the form's list names it or nobody does.
+    // An asset the registry does not list: a coin of ours nobody listed, and an address with no contract at all.
     const unlisted = /^That asset isn't a Quote Asset on Robinhood Chain\. Choose one from the list\.$/;
-    await says({ ...base, quote: AAPL }, 400, unlisted);
+    await says({ ...base, quote: (await launchCoin(creator)).coin }, 400, unlisted);
     await says({ ...base, quote: "0x00000000000000000000000000000000000000Bb" }, 400, unlisted);
     // The terms.
     await says({ ...base, rewardTax: "100", liquidityTax: "100" }, 400, /never both/);
