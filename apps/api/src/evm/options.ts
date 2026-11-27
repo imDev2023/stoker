@@ -82,14 +82,15 @@ async function load(db: Db, x: EvmContext): Promise<ChainOptions> {
   // The registry has no list to read, only `listingOf`: the native asset, every asset the API has met, and the
   // deployment's own candidates are asked about, and only those it lists are answered. It alone gates a Launch.
   const candidates = [...new Set<Address>([NATIVE, ...byAddress.keys(), ...(config.quotes ?? [])])];
-  // The factory's settings and bounds, then each candidate's Listing: one `eth_call` through Multicall3, so every
-  // figure is of one block. The calls are of two contracts and a length known only here, so the answers are read by place.
+  // The factory's settings and bounds, then each candidate's Listing: one `eth_call` through Multicall3 however many
+  // candidates there are (no size limit on the batch), so every figure is of one block. The calls are of two contracts
+  // and a length known only here, so the answers are read by place.
   const views = ["platformFeeBps", "tickSpacing", "openingFeeStartBps", "openingFeeDuration", "MAX_CREATOR_LOCK_BPS", "MIN_CREATOR_LOCK_TIME", "MAX_CREATOR_LOCK_PART"] as const;
   const contracts: { address: Address; abi: Abi; functionName: string; args?: readonly unknown[] }[] = [
     ...views.map((functionName) => ({ address: config.factory, abi: stokerFactoryAbi as Abi, functionName })),
     ...candidates.map((quote) => ({ address: config.registry, abi: quoteRegistryAbi as Abi, functionName: "listingOf", args: [quote] })),
   ];
-  const answers: unknown[] = await client.multicall({ allowFailure: false, multicallAddress: profile.multicall3, contracts });
+  const answers: unknown[] = await client.multicall({ allowFailure: false, multicallAddress: profile.multicall3, batchSize: 0, contracts });
   const [platformFeeBps, tickSpacing, startBps, seconds, maxBps, minSeconds, maxPartSeconds] = answers.slice(0, views.length).map(Number) as [number, number, number, number, number, number, number];
   const listings = answers.slice(views.length) as Listing[];
 

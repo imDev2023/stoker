@@ -97,21 +97,27 @@ function refuseRevert(e: unknown, chainName: string, { collision = false } = {})
   if (!revert) throw e;
   if (revert.empty && collision)
     return refuse(409, "This coin has already been launched: a launch from this wallet with this name, ticker and salt has landed. Start a new launch.");
-  const words: Record<string, string> = {
-    NotListed: notListed(chainName),
-    InvalidStartTick: `That asset's Listing on ${chainName} can't open a Launch right now. Choose another asset.`,
-    InvalidGraduationMultiple: `That asset's Listing on ${chainName} can't open a Launch right now. Choose another asset.`,
-    InvalidCreatorLock: "The Creator Lock is outside the limits. Lock a fifth of the supply at most, for seven days at least.",
-    InvalidTaxRate: "A tax is 1% to 5% in whole percents.",
-    InvalidShares: "A Reward Launch's burn and liquidity shares are none, a tenth, a quarter or half, and half together at most.",
-    InvalidPayoutAsset: "Only a Reward Launch has a payout asset.",
-    ValueMismatch: "The launch must be sent exactly its first buy in the native asset, and nothing with any other asset.",
-    SwapTooSmall: TOO_SMALL,
-    SwapStoppedEarly: TOO_LARGE,
-    SafeERC20FailedOperation: "The Quote Asset refused to move the first buy from your wallet. Check your balance and what the factory may spend, then try again.",
-  };
-  return refuse(400, (revert.name && words[revert.name]) || `${chainName} refused this launch when it was tried out${revert.name ? ` (${revert.name})` : ""}. Nothing was sent.`);
+  return refuse(400, wordsFor(chainName, revert.name) ?? `${chainName} refused this launch when it was tried out${revert.name ? ` (${revert.name})` : ""}. Nothing was sent.`);
 }
+
+/** What the factory's and the hook's own refusals of a launch mean, by their names in the contracts; undefined for any other. */
+function wordsFor(chainName: string, errorName: string | null): string | undefined {
+  const words = launchRefusalWords(chainName);
+  return errorName !== null && Object.hasOwn(words, errorName) ? words[errorName] : undefined;
+}
+
+const launchRefusalWords = (chainName: string): Record<string, string> => ({
+  NotListed: notListed(chainName),
+  InvalidStartTick: `That asset's Listing on ${chainName} can't open a Launch right now. Choose another asset.`,
+  InvalidGraduationMultiple: `That asset's Listing on ${chainName} can't open a Launch right now. Choose another asset.`,
+  InvalidCreatorLock: "The Creator Lock is outside the limits. Lock a fifth of the supply at most, for seven days at least.",
+  InvalidTaxRate: "A tax is 1% to 5% in whole percents.",
+  InvalidShares: "A Reward Launch's burn and liquidity shares are none, a tenth, a quarter or half, and half together at most.",
+  InvalidPayoutAsset: "Only a Reward Launch has a payout asset.",
+  ValueMismatch: "The launch must be sent exactly its first buy in the native asset, and nothing with any other asset.",
+  SwapTooSmall: TOO_SMALL,
+  SwapStoppedEarly: TOO_LARGE,
+});
 
 /** The First Buy as the contract answers it. */
 const firstBuyToContract = (q: Extract<FirstBuyQuote, { ok: true }>): EvmFirstBuy => ({
@@ -190,6 +196,7 @@ async function permitOf(x: EvmContext, asset: Address, owner: Address): Promise<
   const [nonce, separator, described, name, version] = await x.client.multicall({
     allowFailure: true,
     multicallAddress: x.config.profile.multicall3,
+    batchSize: 0,
     contracts: [
       { ...token, functionName: "nonces", args: [owner] }, { ...token, functionName: "DOMAIN_SEPARATOR" }, { ...token, functionName: "eip712Domain" },
       { address: asset, abi: erc20Abi, functionName: "name" }, { ...token, functionName: "version" },
@@ -362,10 +369,11 @@ export async function prepareEvmLaunch(c: Context<AppEnv>, form: FormData): Prom
       const { r, s, yParity } = parseSignature(f.permitSignature as Hex);
       const args = [params, { deadline, v: 27 + yParity, r, s }] as const;
       const gas = await client.estimateContractGas({ ...factory, functionName: "launchWithPermit", args, account: creator }).catch((e: unknown) => {
-        // The factory goes on when a permit fails, so a bad one shows as the Quote Asset refusing the transfer.
+        // The factory goes on when a permit fails, so a bad one shows as the Quote Asset refusing the transfer, by
+        // whatever error that asset has; a refusal the factory or the hook names is the launch's own.
         const revert = revertOf(e);
         if (!revert) throw e;
-        if (revert.name && revert.name !== "SafeERC20FailedOperation") refuseRevert(e, chainName);
+        if (wordsFor(chainName, revert.name)) refuseRevert(e, chainName);
         return refuse(400, "That permit doesn't let the factory take the first buy: it was signed for another launch or amount, or has been used. Prepare the launch again and sign the new one.");
       });
       const data = encodeFunctionData({ abi: stokerFactoryAbi, functionName: "launchWithPermit", args });
