@@ -185,7 +185,12 @@ CI builds from nothing and is not affected; anyone who changes `src` and runs th
 **What it adds to CI.**
 The campaign runs fewer and longer runs than the profile's, since Graduation, a raise, a lock's claim and a paid round each come at the end of a sequence: in CI 64 runs of 256 calls for the eight invariants (16,384 calls, every invariant after each), and 32 runs of 128 for the two probing properties, each probe a snapshot rolled back.
 On the loaded Mac at CI's depth that is 168 seconds and 56, of 1,507 seconds of CPU for the whole local suite, whose wall time, 180 seconds, is set by its longest contracts.
-CI_JOB_TIME
+In CI's `contracts` job (run 46056373135, 2026-11-27) the campaign's main contract took 103 seconds and its probes 16, and the step that runs every local test went from 1 minute 52 on `main` to 2 minutes 16.
+The job as a whole went from 14 minutes to 19 minutes 15, of its 30: four minutes of that is the build, which now compiles this slice's scripts and tests; 24 seconds the tests; and 28 seconds the gate itself (Slither's install, the sources built for it, solhint, Slither and the pre-deployment gate).
+
+The build is the part to watch, and not for its time.
+With this slice's tests added, one compiler process building the whole workspace held 11 GB, and CI's 16 GB runner died in the build step twice with no compiler error.
+CI now builds in parts (`script/build.sh`), each a process that ends; the largest of them held 4.7 GB, measured the same way (`README.md`, gotcha 48).
 
 ## 4. The checks of a deployment
 
