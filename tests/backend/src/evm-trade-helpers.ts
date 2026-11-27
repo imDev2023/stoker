@@ -262,14 +262,16 @@ export async function balancesOf(wallet: Address, assets: Address[]) {
 }
 
 /**
- * Why a mined transaction reverted, as the four-byte selector of its error: the same call replayed on the block before
- * it. Null when it replays without reverting, which points at the gas it was given.
+ * Why a mined transaction reverted, as the four-byte selector of its error: the same call replayed on the chain as it
+ * stands, which is as that transaction found it while nothing has been sent since (a revert changes nothing). Never on
+ * the block before it: the fork keeps few past states, fewer the more blocks a suite mines (traps/backend-tests.md).
+ * Null when it replays without reverting, which points at the gas it was given.
  */
 export async function revertSelectorOf(hash: Hex): Promise<Hex | null> {
   const pub = clients().public;
   const tx = await pub.getTransaction({ hash });
   try {
-    await pub.call({ account: tx.from, to: tx.to!, data: tx.input, value: tx.value, blockNumber: tx.blockNumber! - 1n });
+    await pub.call({ account: tx.from, to: tx.to!, data: tx.input, value: tx.value });
     return null;
   } catch (e) {
     for (let x: unknown = e, i = 0; x && i < 10; x = (x as { cause?: unknown }).cause, i++) {

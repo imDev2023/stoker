@@ -405,7 +405,8 @@ app.post("/v1/operator/indexer/replay", async (c) => {
   const deployment = evmChains(c.env).find((d) => d.chain === body.data.chain);
   if (!deployment) return c.json({ error: `this API reads no EVM chain called ${body.data.chain}` }, 400);
   try {
-    const replay = await withLease(c.get("db"), "indexer", () => replayEvmChain(c.get("db"), deployment, body.data));
+    // With the platform's settings, as the Indexer's own run has them: a replayed launch takes its prepared record (#253).
+    const replay = await withLease(c.get("db"), "indexer", () => replayEvmChain(c.get("db"), { ...deployment, platform: c.get("cfg") }, body.data));
     if (!replay) return c.json({ error: "the Indexer is running: ask again when its run has ended" }, 409);
     await notifyPending(c.get("db"), c.get("cfg"));
     return c.json(replay.done);
