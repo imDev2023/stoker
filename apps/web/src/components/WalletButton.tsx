@@ -284,7 +284,7 @@ function AccountControl({ variant, evm }: { variant: Variant; evm: EvmWalletStat
         <ConnectButton variant={variant} open={open} connecting={solana.connecting || evm.connecting} onClick={() => setOpen((o) => !o)} />
       )}
       {open && (
-        <div className={styles.menu} role="menu" aria-label="Wallets">
+        <div className={`${styles.menu} ${styles.families}`} role="menu" aria-label="Wallets">
           <Group name={CHAIN_NAMES.solana}>
             {solana.address ? (
               <>

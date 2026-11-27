@@ -190,6 +190,16 @@
   color: var(--ink-3);
 }
 
+/*
+ * In the phone's account sheet the menu of two families is as tall as the sheet has room under its button, and taller
+ * once a Creator's wallet adds its earnings link: floating, it lay over every link of the sheet and its last row could
+ * run past the window's foot, which nothing scrolls. There it opens in the sheet's own flow, and the sheet grows to hold it.
+ */
+.inMenu .families {
+  position: static;
+  margin-top: 8px;
+}
+
 /* The wallet connected in a group: its avatar and address, as the header's button writes them. */
 .account {
   display: flex;
